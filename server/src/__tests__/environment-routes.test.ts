@@ -440,6 +440,30 @@ describe("environment routes", () => {
     });
   });
 
+  it("keeps the structural provider key for non-admin board readers", async () => {
+    mockEnvironmentService.list.mockResolvedValue([{
+      ...createEnvironment(),
+      driver: "sandbox",
+      config: { provider: "daytona", apiKey: "secret-value", image: "ghcr.io/example:tag" },
+    }]);
+    const app = createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "member" }],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments");
+
+    expect(res.status).toBe(200);
+    // `provider` is a driver key, not a credential, and the sign-in surfaces
+    // need it to look up `supportsLoginPty`. Everything else stays blanked.
+    expect(res.body[0].config).toEqual({ provider: "daytona" });
+    expect(res.body[0]).toMatchObject({ envVars: {}, metadata: null });
+  });
+
   it("redacts environment detail config for non-admin board readers", async () => {
     mockEnvironmentService.getById.mockResolvedValue(createEnvironment());
     const app = createApp({

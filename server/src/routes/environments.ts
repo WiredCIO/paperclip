@@ -378,14 +378,26 @@ export function environmentRoutes(
       && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
   }
 
+  /**
+   * Restricted readers keep the structural `provider` key and nothing else
+   * from `config`. `provider` is a driver key ("daytona", "e2b", ...), never
+   * a credential, and the sign-in surfaces need it: they decide whether an
+   * environment can host a browser login by looking up
+   * `capabilities.sandboxProviders[config.provider].supportsLoginPty`. With
+   * `config` blanked wholesale, that lookup missed for every non-admin and
+   * the picker fell back to "This environment does not support browser
+   * sign-in", so only instance admins could connect a subscription. Every
+   * other config key stays blanked, as do env vars and metadata.
+   */
   function redactEnvironmentForRestrictedView<T extends {
     config: Record<string, unknown> | null;
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(environment: T): T {
+    const provider = isPlainRecord(environment.config) ? environment.config.provider : undefined;
     return {
       ...environment,
-      config: {},
+      config: typeof provider === "string" ? { provider } : {},
       ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
       metadata: null,
     };
