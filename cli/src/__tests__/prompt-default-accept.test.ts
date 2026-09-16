@@ -248,3 +248,48 @@ describe("promptSecrets accepts defaults", () => {
     expect(keyPath("   ")).toBeTruthy();
   });
 });
+
+describe("invalid saved or derived defaults are still validated", () => {
+  // Accepting a default must not bypass validation: the validators check the
+  // effective value (typed input, or the default), so a bad value from the
+  // environment or a hand-edited config errors at the prompt instead of
+  // blowing up later at config-schema parsing.
+  it("rejects accepting an out-of-range saved server port", async () => {
+    queueSelects(["loopback"]);
+
+    await expect(
+      promptServer({ currentServer: { port: 70000 as never } }),
+    ).rejects.toThrow(/integer between 1 and 65535/);
+  });
+
+  it("rejects accepting a non-integer saved embedded PostgreSQL port", async () => {
+    queueSelects(["embedded-postgres"]);
+
+    await expect(
+      promptDatabase({ ...dbFixture, mode: "embedded-postgres", embeddedPostgresPort: 12.5 as never }),
+    ).rejects.toThrow(/Port must be an integer/);
+  });
+
+  it("rejects accepting an invalid saved public base URL", async () => {
+    queueSelects(["custom", "authenticated", "public"]);
+
+    await expect(
+      promptServer({
+        currentServer: { host: "0.0.0.0", port: 8443 },
+        currentAuth: { publicBaseUrl: "not a url" },
+      }),
+    ).rejects.toThrow(/valid URL/);
+  });
+
+  it("rejects accepting a whitespace-only saved S3 bucket", async () => {
+    queueSelects(["s3"]);
+
+    await expect(
+      promptStorage({
+        provider: "s3",
+        localDisk: { baseDir: "" },
+        s3: { bucket: "   ", region: "us-east-1", endpoint: "", forcePathStyle: false },
+      } as never),
+    ).rejects.toThrow(/Bucket is required/);
+  });
+});
