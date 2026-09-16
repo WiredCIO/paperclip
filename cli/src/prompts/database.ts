@@ -46,7 +46,12 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
       defaultValue: base.connectionString ?? "",
       placeholder: "postgres://user:pass@localhost:5432/paperclip",
       validate: (val) => {
-        if (!val) return "Connection string is required for PostgreSQL mode";
+        if (!val) {
+          // Empty input accepts the shown default; clack validates the raw
+          // input before applying defaultValue, so allow it when one exists.
+          if (base.connectionString) return;
+          return "Connection string is required for PostgreSQL mode";
+        }
         if (!val.startsWith("postgres")) return "Must be a postgres:// or postgresql:// URL";
       },
     });
@@ -76,6 +81,7 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
       defaultValue: String(base.embeddedPostgresPort || 54329),
       placeholder: "54329",
       validate: (val) => {
+        if (!val) return; // empty input accepts the shown default
         const n = Number(val);
         if (!Number.isInteger(n) || n < 1 || n > 65535) return "Port must be an integer between 1 and 65535";
       },
@@ -103,7 +109,8 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     message: "Backup directory",
     defaultValue: base.backup.dir || defaultBackupDir,
     placeholder: defaultBackupDir,
-    validate: (val) => (!val || val.trim().length === 0 ? "Backup directory is required" : undefined),
+    // Empty input accepts the shown default; whitespace-only input is still rejected.
+    validate: (val) => (val && val.trim().length === 0 ? "Backup directory is required" : undefined),
   });
   if (p.isCancel(backupDirInput)) {
     p.cancel("Setup cancelled.");
@@ -115,6 +122,7 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     defaultValue: String(base.backup.intervalMinutes || 60),
     placeholder: "60",
     validate: (val) => {
+      if (!val) return undefined; // empty input accepts the shown default
       const n = Number(val);
       if (!Number.isInteger(n) || n < 1) return "Interval must be a positive integer";
       if (n > 10080) return "Interval must be 10080 minutes (7 days) or less";
@@ -131,6 +139,7 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     defaultValue: String(base.backup.retentionDays || 30),
     placeholder: "30",
     validate: (val) => {
+      if (!val) return undefined; // empty input accepts the shown default
       const n = Number(val);
       if (!Number.isInteger(n) || n < 1) return "Retention must be a positive integer";
       if (n > 3650) return "Retention must be 3650 days or less";

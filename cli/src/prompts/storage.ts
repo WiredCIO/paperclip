@@ -53,7 +53,8 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
       defaultValue: base.localDisk.baseDir || defaultStorageBaseDir(),
       placeholder: defaultStorageBaseDir(),
       validate: (value) => {
-        if (!value || value.trim().length === 0) return "Storage base directory is required";
+        if (!value) return; // empty input accepts the shown default
+        if (value.trim().length === 0) return "Storage base directory is required";
       },
     });
 
@@ -76,7 +77,8 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
     defaultValue: base.s3.bucket || "paperclip",
     placeholder: "paperclip",
     validate: (value) => {
-      if (!value || value.trim().length === 0) return "Bucket is required";
+      if (!value) return; // empty input accepts the shown default
+      if (value.trim().length === 0) return "Bucket is required";
     },
   });
 
@@ -90,7 +92,8 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
     defaultValue: base.s3.region || "us-east-1",
     placeholder: "us-east-1",
     validate: (value) => {
-      if (!value || value.trim().length === 0) return "Region is required";
+      if (!value) return; // empty input accepts the shown default
+      if (value.trim().length === 0) return "Region is required";
     },
   });
 

@@ -55,6 +55,7 @@ export async function promptServer(opts?: {
     defaultValue: String(currentServer?.port ?? 3100),
     placeholder: "3100",
     validate: (val) => {
+      if (!val) return; // empty input accepts the shown default
       const n = Number(val);
       if (isNaN(n) || n < 1 || n > 65535 || !Number.isInteger(n)) {
         return "Must be an integer between 1 and 65535";
@@ -156,8 +157,11 @@ export async function promptServer(opts?: {
     defaultValue: defaultHost,
     placeholder: defaultHost,
     validate: (val) => {
-      if (!val || !val.trim()) return "Host is required";
-      if (deploymentMode === "local_trusted" && !isLoopbackHost(val.trim())) {
+      // Empty input accepts the shown default, so validate what will actually
+      // be submitted (clack applies defaultValue only after validation passes).
+      const candidate = (val || defaultHost).trim();
+      if (!candidate) return "Host is required";
+      if (deploymentMode === "local_trusted" && !isLoopbackHost(candidate)) {
         return "Local trusted mode requires a loopback host such as 127.0.0.1";
       }
     },
@@ -192,6 +196,9 @@ export async function promptServer(opts?: {
       defaultValue: currentAuth?.publicBaseUrl ?? "",
       placeholder: "https://paperclip.example.com",
       validate: (val) => {
+        // Empty input accepts the shown default when one exists; clack
+        // validates the raw input before applying defaultValue.
+        if (!val && currentAuth?.publicBaseUrl) return;
         const candidate = val?.trim() ?? "";
         if (!candidate) return "Public base URL is required for public exposure";
         try {

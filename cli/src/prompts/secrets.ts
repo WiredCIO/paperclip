@@ -71,7 +71,8 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
       defaultValue: keyFilePath,
       placeholder: fallbackDefault,
       validate: (value) => {
-        if (!value || value.trim().length === 0) return "Key file path is required";
+        if (!value) return; // empty input accepts the shown default
+        if (value.trim().length === 0) return "Key file path is required";
       },
     });
 
