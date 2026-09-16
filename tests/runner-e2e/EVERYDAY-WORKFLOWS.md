@@ -51,8 +51,9 @@ pnpm test:e2e:runner -- --suite everyday-workflows --environment daytona --max-p
 ```
 
 Before project stories or the Python calibration tests, start Docker on the
-harness host and fetch the pinned oracle image. This is required for local and
-Daytona stories; artifact checks run on the harness host.
+harness host and fetch the pinned oracle image. CI prepares and verifies this
+same pinned image before the paid project-story cells; artifact checks run on
+the harness host. This is required for local and Daytona stories.
 
 ```sh
 docker pull python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285

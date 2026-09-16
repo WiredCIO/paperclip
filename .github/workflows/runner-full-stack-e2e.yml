@@ -1002,6 +1002,15 @@ jobs:
           execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
           NODE
 
+      - name: Prepare pinned Python artifact oracle image
+        if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
+        run: |
+          set -euo pipefail
+          oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
+          timeout 30s docker version --format '{{.Server.Version}}'
+          timeout 120s docker pull "$oracle_image"
+          timeout 30s sh -c 'docker image ls --no-trunc --format "{{.Repository}}@{{.Digest}}" | grep -Fx "$1"' -- "$oracle_image"
+
       - name: Run paid cell
         env:
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
