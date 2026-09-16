@@ -2,9 +2,24 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { runnerMatrix } from "./catalog.js";
+import { requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
+
 const root = path.resolve(import.meta.dirname, "../..");
 
 describe("Codex CI sandbox trust boundary", () => {
+  it.each([
+    ["everyday-workflows.runner-codex.local.build-revise", true],
+    ["everyday-workflows.runner-codex-mini.local.build-revise", true],
+    ["everyday-workflows.runner-acpx-claude.local.build-revise", false],
+    ["everyday-workflows.runner-codex.daytona.build-revise", false],
+    ["core-compatibility.legacy-codex.local.message-marker", false],
+  ] as const)("qualifies the native local Codex sandbox for %s: %s", (id, expected) => {
+    const execution = runnerMatrix.find((cell) => cell.id === id);
+    expect(execution, id).toBeDefined();
+    expect(requiresCodexCiSandbox(execution!)).toBe(expected);
+  });
+
   it("keeps privileged policy changes out of target-controlled tests", async () => {
     const source = await readFile(
       path.join(root, "tests/runner-e2e/codex-ci-sandbox.ts"),
@@ -40,6 +55,7 @@ describe("Codex CI sandbox trust boundary", () => {
     );
     expect(paid).toBeGreaterThan(setup);
     const step = workflow.slice(setup, paid);
+    expect(step).toContain("matrix.profileId == 'runner-codex-mini'");
     expect(step).toContain('binary.startsWith(root + "/node_modules/.pnpm/")');
     expect(step).toContain("binary.endsWith(suffix)");
     expect(step).toContain('"-n", "apparmor_parser", "-r", profilePath');
