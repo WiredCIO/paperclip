@@ -20,6 +20,31 @@ describe("Codex CI sandbox trust boundary", () => {
     expect(requiresCodexCiSandbox(execution!)).toBe(expected);
   });
 
+  it("keeps trusted CI provisioning in sync with every catalog cell", async () => {
+    const workflow = await readFile(
+      path.join(root, ".github/workflows/runner-full-stack-e2e.yml"),
+      "utf8",
+    );
+    const condition = workflow.match(
+      /- name: Provision Codex sandbox on the disposable trusted runner\n\s+if: ([^\n]+)/,
+    )?.[1];
+    expect(condition).toMatch(
+      /^matrix\.environmentId == 'local' && \(matrix\.profileId == '[^']+'(?: \|\| matrix\.profileId == '[^']+')*\)$/,
+    );
+    const provisionedProfiles = new Set(
+      [...condition!.matchAll(/matrix\.profileId == '([^']+)'/g)].map((match) => match[1]),
+    );
+    expect([...provisionedProfiles].sort()).toEqual(
+      [...new Set(runnerMatrix.filter(requiresCodexCiSandbox).map((cell) => cell.profile.id))].sort(),
+    );
+    for (const cell of runnerMatrix) {
+      expect(
+        cell.environment.id === "local" && provisionedProfiles.has(cell.profile.id),
+        cell.id,
+      ).toBe(requiresCodexCiSandbox(cell));
+    }
+  });
+
   it("keeps privileged policy changes out of target-controlled tests", async () => {
     const source = await readFile(
       path.join(root, "tests/runner-e2e/codex-ci-sandbox.ts"),
