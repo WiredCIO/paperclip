@@ -144,8 +144,11 @@ Sources: [hosted MCP](https://docs.railway.com/ai/mcp-server),
 [GraphQL](https://docs.railway.com/integrations/api),
 [SSH](https://docs.railway.com/cli/ssh), and
 [official CLI GraphQL schema and commands](https://github.com/railwayapp/cli/tree/ac4f16e5f3db047b941bf0b9ac3be388e7c73697).
-Brand marks are sanitized from Railway's own homepage inline SVG; provenance is
-in `ui/public/brands/apps/manifest.json`.
+Brand marks were sanitized from the inline SVG at
+[Railway's official homepage](https://railway.com) on 2026-09-13. The original mark
+contains the Railway train silhouette; the dark variant changes only its fill
+for contrast. The public
+manifest contains runtime artwork paths; this record retains source provenance.
 
 ## Recovery
 

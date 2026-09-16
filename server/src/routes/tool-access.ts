@@ -6,6 +6,7 @@ import {
   APP_STORE_DEFINITIONS,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  isAgentStatusAssignableToWork,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   TOOL_ACTION_REQUEST_STATUSES,
@@ -711,7 +712,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
     throw forbidden(`Missing one of permissions: ${permissionKeys.join(", ")}`);
   }
 
-  async function assertCanTestAsAgent(req: Request, companyId: string, agentId: string) {
+  async function assertCanTestAsAgent(req: Request, companyId: string, agentId: string, knownAgent?: { id: string; status: string }) {
+    const agent = knownAgent ?? (await db
+      .select({ id: agents.id, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+      .limit(1))[0];
+    // Admin permission bypasses must not make unassignable agents testable.
+    if (!agent || agent.id !== agentId || !isAgentStatusAssignableToWork(agent.status)) {
+      throw forbidden("This agent is not available for testing");
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "tasks:assign",
@@ -2007,7 +2017,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const candidates = [];
     for (const agent of rows) {
       try {
-        await assertCanTestAsAgent(req, connection.companyId, agent.id);
+        await assertCanTestAsAgent(req, connection.companyId, agent.id, agent);
       } catch {
         continue;
       }
