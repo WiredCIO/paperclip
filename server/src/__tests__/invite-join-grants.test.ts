@@ -116,6 +116,7 @@ describe("human invite roles", () => {
   it("falls back to role grants when human invite defaults omit explicit grants", () => {
     expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual([
       { permissionKey: "tasks:assign", scope: null },
+      { permissionKey: "agents:configure", scope: null },
     ]);
   });
 

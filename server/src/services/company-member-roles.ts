@@ -55,7 +55,14 @@ export function grantsForHumanRole(
         { permissionKey: "tools:admin", scope: null },
       ];
     case "operator":
-      return [{ permissionKey: "tasks:assign", scope: null }];
+      // `agents:configure` lets an operator attach their own AI connection to
+      // an agent. Without it `assertAiConnectionCreateAccess` rejects the save
+      // with "You cannot configure this agent", so an operator can reach the
+      // browser sign-in panel and still not finish connecting a subscription.
+      return [
+        { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "agents:configure", scope: null },
+      ];
     case "viewer":
       return [];
   }
