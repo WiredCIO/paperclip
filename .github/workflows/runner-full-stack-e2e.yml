@@ -1009,7 +1009,7 @@ jobs:
           oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
           timeout 30s docker version --format '{{.Server.Version}}'
           timeout 120s docker pull "$oracle_image"
-          timeout 30s sh -c 'docker image ls --no-trunc --format "{{.Repository}}@{{.Digest}}" | grep -Fx "$1"' -- "$oracle_image"
+          timeout 30s docker image inspect "$oracle_image" --format '{{.Id}}'
 
       - name: Run paid cell
         env:

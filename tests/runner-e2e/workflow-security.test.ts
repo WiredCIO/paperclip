@@ -311,8 +311,16 @@ describe("public repository paid workflow security", () => {
       'timeout 120s docker pull "$oracle_image"',
     );
     expect(everydayOracleStep).toContain(
-      'timeout 30s sh -c \'docker image ls --no-trunc --format "{{.Repository}}@{{.Digest}}" | grep -Fx "$1"\' -- "$oracle_image"',
+      "timeout 30s docker image inspect \"$oracle_image\" --format '{{.Id}}'",
     );
+    const artifactSource = await readFile(
+      path.join(repositoryRoot, "tests/runner-e2e/everyday-artifact.py"),
+      "utf8",
+    );
+    const artifactImage = artifactSource.match(
+      /^SANDBOX_IMAGE = '([^']+)'$/mu,
+    )?.[1];
+    expect(artifactImage).toBe(everydayOracleImage);
     expect(everydayOracleStep).not.toMatch(/secrets\./u);
     const awsFfmpegStep = paidJob.slice(
       awsFfmpegInstall,
