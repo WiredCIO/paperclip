@@ -1561,6 +1561,11 @@ async function startServerWithDatabaseTeardown(
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
+
+        const staleBlocksSwept = await heartbeat.sweepStaleBlocks();
+        if (staleBlocksSwept.restored > 0) {
+          logger.warn({ ...staleBlocksSwept }, "startup stale-block sweeper returned runtime-stalled issues to the queue");
+        }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;
@@ -1798,6 +1803,12 @@ async function startServerWithDatabaseTeardown(
               const swept = await heartbeat.sweepStaleIssueLocks();
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+              }
+            })
+            .then(async () => {
+              const staleBlocksSwept = await heartbeat.sweepStaleBlocks();
+              if (staleBlocksSwept.restored > 0) {
+                logger.warn({ ...staleBlocksSwept }, "periodic stale-block sweeper returned runtime-stalled issues to the queue");
               }
             })
             .catch((err) => {
