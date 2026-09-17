@@ -513,6 +513,59 @@ describeEmbeddedPostgres("decision training", () => {
     });
   });
 
+  it("rejects the export for an active board member without owner/admin membership", async () => {
+    const seeded = await seedResolvedInteraction();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "regular-member",
+        source: "session",
+        companyIds: [seeded.companyId],
+        memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    const res = await request(app).get(`/api/companies/${seeded.companyId}/decision-training/export.jsonl`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only company owners or admins");
+  });
+
+  it("allows the export for a board owner membership", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Owner-only export.",
+      createdByUserId: "board-user",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "owner-user",
+        source: "session",
+        companyIds: [seeded.companyId],
+        memberships: [{ companyId: seeded.companyId, membershipRole: "owner", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    const res = await request(app).get(`/api/companies/${seeded.companyId}/decision-training/export.jsonl`);
+    expect(res.status).toBe(200);
+    const line = JSON.parse(res.text.trim());
+    expect(line.label.notes).toBe(example.notes);
+  });
+
   it("logs individual example reads", async () => {
     const seeded = await seedResolvedInteraction();
     const example = await decisionTrainingService(db).create({

@@ -72,6 +72,33 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+/**
+ * True for a local-trusted/instance-admin board session, or a board actor
+ * with an active owner/admin membership on the given company. Every other
+ * board actor (viewer, operator, or no membership) is not company-admin.
+ * Mirrors `hasSecretDefinitionAdminAccess` in routes/secrets.ts.
+ */
+export function hasCompanyOwnerOrAdminMembership(req: Request, companyId: string): boolean {
+  if (req.actor.type !== "board") return false;
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+  const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
+  return membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole));
+}
+
+/**
+ * Board-only gate for company-wide bulk-data surfaces (exports, feedback
+ * traces, decision-training dumps): the whole company bundle is sensitive
+ * enough that plain active membership is not sufficient, unlike ordinary
+ * company reads/writes.
+ */
+export function assertBoardCompanyOwnerOrAdmin(req: Request, companyId: string, capability: string) {
+  assertBoard(req);
+  assertCompanyAccess(req, companyId);
+  if (!hasCompanyOwnerOrAdminMembership(req, companyId)) {
+    throw forbidden(`Only company owners or admins can access ${capability}`);
+  }
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {

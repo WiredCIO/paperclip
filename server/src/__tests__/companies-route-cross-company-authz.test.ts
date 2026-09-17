@@ -47,6 +47,11 @@ const mockFeedbackService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockExportFidelity = vi.hoisted(() => ({
+  collectExportFidelityCounts: vi.fn(),
+  buildExportFidelityReport: vi.fn(),
+}));
+
 function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
@@ -57,6 +62,8 @@ function registerCompanyRouteMocks() {
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
+    collectExportFidelityCounts: mockExportFidelity.collectExportFidelityCounts,
+    buildExportFidelityReport: mockExportFidelity.buildExportFidelityReport,
   }));
 }
 
@@ -175,6 +182,9 @@ function resetMockDefaults() {
   mockCompanyPortabilityService.previewExport.mockResolvedValue(exportPreviewResult());
   mockCompanyPortabilityService.previewImport.mockResolvedValue({ ok: true });
   mockCompanyPortabilityService.importBundle.mockResolvedValue(importResult());
+  mockFeedbackService.listFeedbackTraces.mockResolvedValue([]);
+  mockExportFidelity.collectExportFidelityCounts.mockResolvedValue({});
+  mockExportFidelity.buildExportFidelityReport.mockReturnValue({ ok: true });
 }
 
 function assertNoTargetMutationSideEffects() {
@@ -387,14 +397,31 @@ describe.sequential("company route cross-company authorization", () => {
       companyIds: [companyBId],
       memberships: [{ companyId: companyBId, membershipRole: "member", status: "active" }],
     }));
+    // Ordinary active membership is still enough for company settings and
+    // lifecycle routes; it is the bulk-data surfaces below that require
+    // owner/admin (see the dedicated "bulk-export hole" test).
     await request(memberApp).patch(`/api/companies/${companyBId}`).send({ description: "Updated" }).expect(200);
     await request(memberApp).patch(`/api/companies/${companyBId}/branding`).send({ description: "Branding" }).expect(200);
     await request(memberApp).post(`/api/companies/${companyBId}/archive`).send({}).expect(200);
     await request(memberApp).delete(`/api/companies/${companyBId}`).expect(200);
-    await request(memberApp).post(`/api/companies/${companyBId}/export`).send(exportRequest).expect(200);
-    await request(memberApp).post(`/api/companies/${companyBId}/exports/preview`).send(exportRequest).expect(200);
-    await request(memberApp).post(`/api/companies/${companyBId}/imports/preview`).send(importRequest()).expect(200);
-    await request(memberApp).post(`/api/companies/${companyBId}/imports/apply`).send(importRequest()).expect(200);
+    const memberExport = await request(memberApp).post(`/api/companies/${companyBId}/export`).send(exportRequest);
+    expect(memberExport.status).toBe(403);
+    const memberExportPreview = await request(memberApp)
+      .post(`/api/companies/${companyBId}/exports/preview`)
+      .send(exportRequest);
+    expect(memberExportPreview.status).toBe(403);
+    const memberImportPreview = await request(memberApp)
+      .post(`/api/companies/${companyBId}/imports/preview`)
+      .send(importRequest());
+    expect(memberImportPreview.status).toBe(403);
+    const memberImportApply = await request(memberApp)
+      .post(`/api/companies/${companyBId}/imports/apply`)
+      .send(importRequest());
+    expect(memberImportApply.status).toBe(403);
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
     resetMockDefaults();
@@ -419,5 +446,89 @@ describe.sequential("company route cross-company authorization", () => {
     expect(adminWrite.status).toBe(403);
     expect(adminWrite.body.error).toContain("access to this company");
     assertNoTargetMutationSideEffects();
+  });
+
+  // T0b: POST /export, GET /export/fidelity, GET /feedback-traces, and
+  // GET /decision-training/export.jsonl expose the whole company bundle.
+  // Any active board membership used to be enough (a viewer bypass was
+  // already closed for export/import via assertCompanyAccess's viewer
+  // write-block; this closes the wider hole where any non-viewer member —
+  // not just an owner/admin — could still pull the full company export).
+  it("rejects a viewer board membership on the bulk-export surfaces", async () => {
+    const app = await createApp(boardActor({
+      userId: "non-admin",
+      companyIds: [companyAId],
+      memberships: [{ companyId: companyAId, membershipRole: "viewer", status: "active" }],
+    }));
+
+    // POST /export is a write, so the pre-existing viewer write-block in
+    // assertCompanyAccess fires before the new owner/admin check even runs.
+    const exportRes = await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest);
+    expect(exportRes.status).toBe(403);
+    expect(exportRes.body.error).toContain("Viewer access is read-only");
+
+    // The GET surfaces pass the (safe-method) viewer check and are caught by
+    // the new owner/admin requirement instead.
+    const fidelityRes = await request(app).get(`/api/companies/${companyAId}/export/fidelity`);
+    expect(fidelityRes.status).toBe(403);
+    expect(fidelityRes.body.error).toContain("Only company owners or admins");
+
+    const feedbackRes = await request(app).get(`/api/companies/${companyAId}/feedback-traces`);
+    expect(feedbackRes.status).toBe(403);
+    expect(feedbackRes.body.error).toContain("Only company owners or admins");
+
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockExportFidelity.collectExportFidelityCounts).not.toHaveBeenCalled();
+    expect(mockFeedbackService.listFeedbackTraces).not.toHaveBeenCalled();
+  });
+
+  it("rejects an operator board membership on the bulk-export surfaces", async () => {
+    const app = await createApp(boardActor({
+      userId: "non-admin",
+      companyIds: [companyAId],
+      memberships: [{ companyId: companyAId, membershipRole: "operator", status: "active" }],
+    }));
+
+    const exportRes = await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest);
+    expect(exportRes.status).toBe(403);
+    expect(exportRes.body.error).toContain("Only company owners or admins");
+
+    const fidelityRes = await request(app).get(`/api/companies/${companyAId}/export/fidelity`);
+    expect(fidelityRes.status).toBe(403);
+    expect(fidelityRes.body.error).toContain("Only company owners or admins");
+
+    const feedbackRes = await request(app).get(`/api/companies/${companyAId}/feedback-traces`);
+    expect(feedbackRes.status).toBe(403);
+    expect(feedbackRes.body.error).toContain("Only company owners or admins");
+
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockExportFidelity.collectExportFidelityCounts).not.toHaveBeenCalled();
+    expect(mockFeedbackService.listFeedbackTraces).not.toHaveBeenCalled();
+  });
+
+  it.each(["owner", "admin"])(
+    "allows a %s board membership on the bulk-export surfaces",
+    async (membershipRole) => {
+      const app = await createApp(boardActor({
+        userId: "admin-user",
+        companyIds: [companyAId],
+        memberships: [{ companyId: companyAId, membershipRole, status: "active" }],
+      }));
+
+      await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest).expect(200);
+      await request(app).get(`/api/companies/${companyAId}/export/fidelity`).expect(200);
+      await request(app).get(`/api/companies/${companyAId}/feedback-traces`).expect(200);
+    },
+  );
+
+  it("keeps the CEO-agent path unchanged on the bulk-export surfaces", async () => {
+    const app = await createApp(companyACeoActor());
+
+    await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest).expect(200);
+    await request(app).get(`/api/companies/${companyAId}/export/fidelity`).expect(200);
+    // feedback-traces and decision-training export are board-only regardless
+    // of this change; an agent gets 403 from assertBoard, not from the new check.
+    const feedbackRes = await request(app).get(`/api/companies/${companyAId}/feedback-traces`);
+    expect(feedbackRes.status).toBe(403);
   });
 });
