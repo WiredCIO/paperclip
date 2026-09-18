@@ -48,6 +48,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
+import type { RateLimitInfo } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -24360,12 +24361,39 @@ export function heartbeatService(
                 : "failed";
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+        // A run that emits no rate_limit_event must not clobber the agent's
+        // last known usage window — carry the most recent prior value forward.
+        const rateLimit: RateLimitInfo | null =
+          adapterResult.rateLimit ??
+          (agent.adapterType === "claude_local"
+            ? await db
+                .select({ usageJson: heartbeatRuns.usageJson })
+                .from(heartbeatRuns)
+                .where(
+                  and(
+                    eq(heartbeatRuns.companyId, run.companyId),
+                    eq(heartbeatRuns.agentId, agent.id),
+                    ne(heartbeatRuns.id, run.id),
+                    isNotNull(heartbeatRuns.finishedAt),
+                    sql`${heartbeatRuns.usageJson} -> 'rateLimit' is not null`,
+                  ),
+                )
+                .orderBy(desc(heartbeatRuns.finishedAt))
+                .limit(1)
+                .then(
+                  (rows) =>
+                    ((rows[0]?.usageJson as Record<string, unknown> | undefined)
+                      ?.rateLimit as RateLimitInfo | undefined) ?? null,
+                )
+            : null);
         const usageJson =
           normalizedUsage ||
           adapterResult.costUsd != null ||
-          cacheAdjustedCostUsd != null
+          cacheAdjustedCostUsd != null ||
+          rateLimit != null
             ? ({
                 ...(normalizedUsage ?? {}),
+                ...(rateLimit ? { rateLimit } : {}),
                 ...(rawUsage
                   ? {
                       rawInputTokens: rawUsage.inputTokens,

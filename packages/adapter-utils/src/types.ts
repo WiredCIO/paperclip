@@ -115,6 +115,8 @@ export interface AdapterExecutionResult {
    * provider-reported `costUsd` as the cache-adjusted billed amount.
    */
   cacheAdjustedCostUsd?: number | null;
+  /** the most recent rate_limit_event seen on this run's stream-json output, if any */
+  rateLimit?: RateLimitInfo | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   /**
@@ -394,6 +396,34 @@ export interface ProviderQuotaResult {
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];
+}
+
+// ---------------------------------------------------------------------------
+// rate_limit_event — the Claude Code CLI's own stream-json usage-window push,
+// captured host-side from the run's stdout. Distinct from QuotaWindow/
+// ProviderQuotaResult above, which back a live on-demand provider quota probe.
+// ---------------------------------------------------------------------------
+
+/** one unified usage window inside a rate_limit_event's unifiedWindows map */
+export interface RateLimitWindow {
+  /** fraction consumed, 0-1 */
+  utilization: number | null;
+  /** unix seconds when this window resets */
+  resetsAt: number | null;
+}
+
+/** the rate_limit_info payload of a Claude CLI stream-json rate_limit_event */
+export interface RateLimitInfo {
+  status?: string | null;
+  rateLimitType?: string | null;
+  resetsAt?: number | null;
+  overageStatus?: string | null;
+  overageDisabledReason?: string | null;
+  isUsingOverage?: boolean | null;
+  unifiedWindows?: {
+    five_hour?: RateLimitWindow | null;
+    seven_day?: RateLimitWindow | null;
+  } | null;
 }
 
 // ---------------------------------------------------------------------------
