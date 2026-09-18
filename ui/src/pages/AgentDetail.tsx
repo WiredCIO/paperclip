@@ -449,6 +449,16 @@ function agentUsesNonSeatClaudeAuth(agent: AgentDetailRecord): boolean {
   );
 }
 
+/**
+ * True for a claude_local agent on a Claude subscription seat — the only
+ * agents with five-hour/weekly usage windows at all. This is independent of
+ * whether any run has reported a window yet: a freshly hired seat-backed
+ * agent with zero completed runs is still seat-backed, just without data.
+ */
+function agentIsClaudeSeatBacked(agent: AgentDetailRecord): boolean {
+  return agent.adapterType === "claude_local" && !agentUsesNonSeatClaudeAuth(agent);
+}
+
 /** Formats a unix-seconds reset time as "resets in Nh" / "resets in Nd". */
 function formatRateLimitReset(resetsAtUnixSeconds: number | null | undefined): string | null {
   if (typeof resetsAtUnixSeconds !== "number" || !Number.isFinite(resetsAtUnixSeconds)) return null;
@@ -1814,24 +1824,34 @@ function ClaudeRateLimitWindow({ label, window }: { label: string; window: { uti
 /**
  * The agent's position in Claude's own five-hour and weekly usage windows,
  * as last reported by the CLI's rate_limit_event on its most recent
- * completed run. Seat-backed agents only — see agentUsesNonSeatClaudeAuth.
+ * completed run. Seat-backed agents only — see agentIsClaudeSeatBacked.
+ *
+ * `rateLimit` is null for a seat-backed agent with no completed run yet (or
+ * whose completed runs never reported a window) — a distinct "no usage
+ * recorded yet" state, not 0% and not hidden. Rendering 0% would read as
+ * "plenty of headroom" when the truth is "unknown"; hiding the card would be
+ * indistinguishable from a non-seat agent or a bug.
  */
-function ClaudeRateLimitCard({ rateLimit }: { rateLimit: RateLimitInfo }) {
-  const fiveHour = rateLimit.unifiedWindows?.five_hour ?? null;
-  const sevenDay = rateLimit.unifiedWindows?.seven_day ?? null;
-  if (!fiveHour && !sevenDay) return null;
+function ClaudeRateLimitCard({ rateLimit }: { rateLimit: RateLimitInfo | null }) {
+  const fiveHour = rateLimit?.unifiedWindows?.five_hour ?? null;
+  const sevenDay = rateLimit?.unifiedWindows?.seven_day ?? null;
+  if (rateLimit && !fiveHour && !sevenDay) return null;
   return (
     <section className="rounded-lg border border-border p-4" aria-labelledby="agent-rate-limit-heading">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 id="agent-rate-limit-heading" className="text-sm font-medium">Claude usage</h3>
-        {rateLimit.isUsingOverage === false && rateLimit.overageDisabledReason && (
+        {rateLimit?.isUsingOverage === false && rateLimit.overageDisabledReason && (
           <span className="text-xs text-muted-foreground">Overage disabled</span>
         )}
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <ClaudeRateLimitWindow label="5-hour" window={fiveHour} />
-        <ClaudeRateLimitWindow label="Weekly" window={sevenDay} />
-      </div>
+      {rateLimit ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ClaudeRateLimitWindow label="5-hour" window={fiveHour} />
+          <ClaudeRateLimitWindow label="Weekly" window={sevenDay} />
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">No usage recorded yet.</p>
+      )}
     </section>
   );
 }
@@ -1867,13 +1887,14 @@ export function AgentOverview({
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
   const lastRun = runs[0] ?? null;
-  const rateLimit = agentUsesNonSeatClaudeAuth(agent) ? null : runRateLimit(mostRecentCompletedRun(runs));
+  const seatBacked = agentIsClaudeSeatBacked(agent);
+  const rateLimit = seatBacked ? runRateLimit(mostRecentCompletedRun(runs)) : null;
 
   return (
     <div className="space-y-6">
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
 
-      {rateLimit && <ClaudeRateLimitCard rateLimit={rateLimit} />}
+      {seatBacked && <ClaudeRateLimitCard rateLimit={rateLimit} />}
 
       <div className="grid gap-4 md:grid-cols-2">
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">

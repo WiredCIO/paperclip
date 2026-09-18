@@ -275,4 +275,82 @@ describe("AgentOverview", () => {
 
     expect(markup).not.toContain("Claude usage");
   });
+
+  it("shows a distinct 'no usage recorded yet' state for a seat-backed agent with no completed runs", () => {
+    const agent = {
+      id: "agent-6",
+      companyId: "company-1",
+      name: "Sales Engineer",
+      urlKey: "salesengineer",
+      role: "sales",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="salesengineer"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Claude usage");
+    expect(markup).toContain("No usage recorded yet");
+    expect(markup).not.toContain("0%");
+  });
+
+  it("shows the same 'no usage recorded yet' state when completed runs exist but none carried a rateLimit", () => {
+    const agent = {
+      id: "agent-7",
+      companyId: "company-1",
+      name: "Sales Engineer",
+      urlKey: "salesengineer-2",
+      role: "sales",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-5",
+      agentId: "agent-7",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: { inputTokens: 100, outputTokens: 50 },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="salesengineer-2"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Claude usage");
+    expect(markup).toContain("No usage recorded yet");
+  });
 });
