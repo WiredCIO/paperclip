@@ -227,4 +227,52 @@ describe("AgentOverview", () => {
 
     expect(markup).not.toContain("Claude usage");
   });
+
+  it("shows nothing for an agent routed through Bedrock even with a stale rateLimit value", () => {
+    const agent = {
+      id: "agent-5",
+      companyId: "company-1",
+      name: "Bedrock Coder",
+      urlKey: "bedrock-coder",
+      role: "engineer",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } },
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-4",
+      agentId: "agent-5",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: {
+        rateLimit: {
+          status: "allowed",
+          unifiedWindows: {
+            five_hour: { utilization: 0.05, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+          },
+        },
+      },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="bedrock-coder"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).not.toContain("Claude usage");
+  });
 });

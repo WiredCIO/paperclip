@@ -403,22 +403,50 @@ function isEnvBindingRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * True when the agent's adapter configuration carries a non-empty
- * ANTHROPIC_API_KEY. API-key auth has no five-hour/weekly usage windows, so
- * an agent bound this way must never show the Claude rate-limit widget, even
- * if a stale value lingers in usage_json from an earlier seat-backed run.
- */
-function agentHasAnthropicApiKey(agent: AgentDetailRecord): boolean {
-  const env = agent.adapterConfig?.env;
-  if (!isEnvBindingRecord(env)) return false;
-  const binding = env.ANTHROPIC_API_KEY;
+function envBindingNonEmptyString(binding: unknown): boolean {
   if (typeof binding === "string") return binding.trim().length > 0;
   if (!isEnvBindingRecord(binding)) return false;
   if (binding.type === "plain") {
     return typeof binding.value === "string" && binding.value.trim().length > 0;
   }
   return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+}
+
+function envBindingIsTruthyFlag(binding: unknown): boolean {
+  const raw = typeof binding === "string"
+    ? binding
+    : isEnvBindingRecord(binding) && binding.type === "plain" && typeof binding.value === "string"
+      ? binding.value
+      : null;
+  if (raw == null) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
+// Non-seat auth env keys that carry credentials or route through a
+// cloud provider instead of an Anthropic subscription seat — none of these
+// have Claude's five-hour/weekly usage windows.
+const CLAUDE_NON_SEAT_TOKEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+const CLAUDE_NON_SEAT_PROVIDER_FLAG_ENV_KEYS = [
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/**
+ * True when the agent's adapter configuration binds a non-seat Claude auth
+ * method (an API key/auth token, or a cloud-provider passthrough). None of
+ * these have Claude's five-hour/weekly usage windows, so an agent bound this
+ * way must never show the Claude rate-limit widget, even if a stale value
+ * lingers in usage_json from an earlier seat-backed run.
+ */
+function agentUsesNonSeatClaudeAuth(agent: AgentDetailRecord): boolean {
+  const env = agent.adapterConfig?.env;
+  if (!isEnvBindingRecord(env)) return false;
+  return (
+    CLAUDE_NON_SEAT_TOKEN_ENV_KEYS.some((key) => envBindingNonEmptyString(env[key])) ||
+    CLAUDE_NON_SEAT_PROVIDER_FLAG_ENV_KEYS.some((key) => envBindingIsTruthyFlag(env[key]))
+  );
 }
 
 /** Formats a unix-seconds reset time as "resets in Nh" / "resets in Nd". */
@@ -1786,7 +1814,7 @@ function ClaudeRateLimitWindow({ label, window }: { label: string; window: { uti
 /**
  * The agent's position in Claude's own five-hour and weekly usage windows,
  * as last reported by the CLI's rate_limit_event on its most recent
- * completed run. Seat-backed agents only — see agentHasAnthropicApiKey.
+ * completed run. Seat-backed agents only — see agentUsesNonSeatClaudeAuth.
  */
 function ClaudeRateLimitCard({ rateLimit }: { rateLimit: RateLimitInfo }) {
   const fiveHour = rateLimit.unifiedWindows?.five_hour ?? null;
@@ -1839,7 +1867,7 @@ export function AgentOverview({
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
   const lastRun = runs[0] ?? null;
-  const rateLimit = agentHasAnthropicApiKey(agent) ? null : runRateLimit(mostRecentCompletedRun(runs));
+  const rateLimit = agentUsesNonSeatClaudeAuth(agent) ? null : runRateLimit(mostRecentCompletedRun(runs));
 
   return (
     <div className="space-y-6">
