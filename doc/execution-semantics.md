@@ -411,6 +411,26 @@ Workspace incoherence feeds into the same non-terminal liveness and stranded ass
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
 
+### Workspace scan failures before provider startup
+
+Repository discovery distinguishes an ordinary folder from a failed Git read.
+A timeout, full scan queue, cancellation, output limit, or Git failure must keep
+its typed cause through workspace preparation and run persistence. It must not
+be reported as a missing repository or fall back to an unfiltered directory copy.
+
+When workspace preparation fails before provider work starts, scan timeouts and
+queue saturation use the existing durable failure budget: two automatic retries,
+30 seconds apart. The scheduled successor is persisted before execution is
+released. Restart and duplicate wake handling reuse that successor. Normal task,
+ownership, pause, dependency, approval, and budget gates still apply. Existing
+workspace content is retained, and incomplete temporary clones are not published.
+
+Cancelled scans, output-limit failures, and other Git failures do not authorize
+an automatic setup retry. Exhaustion or an unsafe retry opens the source-scoped
+recovery path with the specific scan cause and an operator action. Generic
+stranded-work recovery must not grant another budget for these errors. This
+does not automatically replay historical generic `setup_failed` runs.
+
 ### ACP startup handshake bound
 
 An adapter-backed live path also requires that the ACP startup handshake itself cannot hang forever. The engine bounds the handshake with a fixed startup deadline and a poll of the duplex control-channel disposition. Either condition ends the handshake and reports a closed, typed code, so the issue can reach a settled disposition instead of staying `in_progress` with no observable next action.
@@ -1250,3 +1270,24 @@ awaits it. That background invocation observes rejection immediately, including
 when a remote sandbox has already disappeared. The owner's awaited close still
 receives the original failure; containment never fabricates a successful close
 or permission to reuse an unverified execution.
+
+### Assigned connections in native ACPX sessions
+
+Native ACPX sessions register the assigned Paperclip MCP gateway alongside the
+task tool bridge. Gateway calls retain the existing connection grants and action
+approvals. Missing assigned bindings and names that collide with the task bridge
+stop admission. Upstream credentials remain with the gateway; providers receive
+its scoped access binding. The qualified ACPX sidecar receives the gateway name,
+URL, and token together through the launch allowlist; unrelated environment
+secrets remain excluded. This does not restrict arbitrary network access to a
+public service outside the gateway.
+
+
+### Use real connection requests (2026-09-14)
+
+When a user asks to connect a known service, the agent searches for that service
+and uses `connection_request` if setup is needed. The agent must not ask the same
+permission again or copy Connect / Not now into a generic question. A generic
+question does not start setup. The real connection card keeps user identity,
+access grants, the decision, and continuation together. This guidance does not
+approve a connection or bypass its normal user decision.
