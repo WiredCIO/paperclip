@@ -958,6 +958,8 @@ export type {
   ProjectGoalRef,
   ProjectManagedByPlugin,
   ProjectWorkspace,
+  ProjectBindingTargetType,
+  OrgEdgeParticipantType,
   CompanySearchCountType,
   CompanySearchExtractIssueResult,
   CompanySearchExtractKind,
