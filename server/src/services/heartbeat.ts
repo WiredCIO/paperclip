@@ -1015,6 +1015,63 @@ export function computeWorkspaceBusyRetryDelayMs(
 
 export { isNonAssigneeWorkspaceBusyRetry };
 
+/**
+ * True when resultJson carries evidence that a background subagent was
+ * reaped at terminal_result_cleanup (SIGTERM/SIGKILL) after the adapter's
+ * own transcript already reached a terminal result. See WIR-192 and
+ * doc/background-subagents.md.
+ */
+function hasReapedBackgroundTaskEvidence(
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!resultJson) return false;
+  const evidence = resultJson.unmanagedBackgroundTask;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence))
+    return false;
+  const record = evidence as Record<string, unknown>;
+  return (
+    record.stopped === true &&
+    (record.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON ||
+      record.reason === UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON)
+  );
+}
+
+/**
+ * A run whose process exited cleanly is "succeeded". A run that was
+ * signal-killed is ordinarily "failed" — except when the only reason for the
+ * signal was cleanup of an orphaned background subagent after the adapter's
+ * own transcript already reported success (`is_error: false`, no error
+ * message/code). That reap is a runtime-lifecycle event, not an adapter
+ * failure: the run's own work completed. See WIR-192.
+ */
+export function resolveProcessAdapterRunOutcome(input: {
+  exitCode: number | null | undefined;
+  errorMessage: string | null | undefined;
+  errorCode: string | null | undefined;
+  signal: string | null | undefined;
+  resultJson: Record<string, unknown> | null | undefined;
+  cancellationFailed: boolean;
+}): "succeeded" | "failed" {
+  if (
+    (input.exitCode ?? 0) === 0 &&
+    !input.errorMessage &&
+    !input.signal &&
+    !input.cancellationFailed
+  ) {
+    return "succeeded";
+  }
+  if (
+    Boolean(input.signal) &&
+    !input.errorMessage &&
+    !input.errorCode &&
+    !input.cancellationFailed &&
+    hasReapedBackgroundTaskEvidence(input.resultJson)
+  ) {
+    return "succeeded";
+  }
+  return "failed";
+}
+
 function resolveCodexTransientFallbackMode(
   attempt: number,
 ): CodexTransientFallbackMode {
@@ -24271,15 +24328,15 @@ export function heartbeatService(
                 : "failed";
         } else if (adapterResult.timedOut) {
           outcome = "timed_out";
-        } else if (
-          (adapterResult.exitCode ?? 0) === 0 &&
-          !adapterResult.errorMessage &&
-          !adapterResult.signal &&
-          !processCancellation?.failed
-        ) {
-          outcome = "succeeded";
         } else {
-          outcome = "failed";
+          outcome = resolveProcessAdapterRunOutcome({
+            exitCode: adapterResult.exitCode,
+            errorMessage: adapterResult.errorMessage,
+            errorCode: adapterResult.errorCode,
+            signal: adapterResult.signal,
+            resultJson: adapterResult.resultJson,
+            cancellationFailed: Boolean(processCancellation?.failed),
+          });
         }
 
         const nextSessionState = resolveNextSessionState({
