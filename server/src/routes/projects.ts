@@ -25,7 +25,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -325,6 +325,9 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if ("categoryId" in req.body && !hasCompanyOwnerOrAdminMembership(req, existing.companyId)) {
+      throw forbidden("Only company owners or admins can change a project's category");
+    }
     const body = { ...req.body };
     assertNoAgentHostWorkspaceCommandMutation(
       req,
