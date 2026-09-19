@@ -20,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { projectAccessRoutes } from "../routes/project-access.js";
+import { projectRoutes } from "../routes/projects.js";
 import { projectService } from "../services/projects.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -46,6 +47,18 @@ function appFor(db: Db, actor: Record<string, unknown>) {
     next();
   });
   app.use("/api", projectAccessRoutes(db));
+  app.use(errorHandler);
+  return app;
+}
+
+function projectsAppFor(db: Db, actor: Record<string, unknown>) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = actor;
+    next();
+  });
+  app.use("/api", projectRoutes(db));
   app.use(errorHandler);
   return app;
 }
@@ -350,6 +363,30 @@ describeEmbeddedPostgres("project-access routes", () => {
         .then((rows) => rows[0]!);
       const updated = await svc.update(project.id, { categoryId: categoryA.id });
       expect(updated?.categoryId).toBe(categoryA.id);
+    });
+
+    it("403s a non-owner/admin member at the route level, and allows an owner", async () => {
+      const company = await seedCompany("PatchAuthz");
+      const project = await seedProject(company.id);
+      const category = await db
+        .insert(projectCategories)
+        .values({ companyId: company.id, name: "Route level" })
+        .returning()
+        .then((rows) => rows[0]!);
+
+      const memberId = await seedMember(company.id, "member");
+      const memberApp = projectsAppFor(db, boardActor(company.id, memberId, "member"));
+      const denied = await request(memberApp).patch(`/api/projects/${project.id}`).send({ categoryId: category.id });
+      expect(denied.status).toBe(403);
+
+      const [untouched] = await db.select().from(projects).where(eq(projects.id, project.id));
+      expect(untouched?.categoryId).toBeNull();
+
+      const ownerId = await seedMember(company.id, "owner");
+      const ownerApp = projectsAppFor(db, boardActor(company.id, ownerId, "owner"));
+      const allowed = await request(ownerApp).patch(`/api/projects/${project.id}`).send({ categoryId: category.id });
+      expect(allowed.status).toBe(200);
+      expect(allowed.body.categoryId).toBe(category.id);
     });
   });
 });
