@@ -233,6 +233,9 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if ("categoryId" in req.body && !hasCompanyOwnerOrAdminMembership(req, companyId)) {
+      throw forbidden("Only company owners or admins can set a project's category");
+    }
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];

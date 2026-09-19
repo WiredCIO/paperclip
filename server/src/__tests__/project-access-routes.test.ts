@@ -342,6 +342,35 @@ describeEmbeddedPostgres("project-access routes", () => {
     });
   });
 
+  describe("POST /companies/:id/projects categoryId", () => {
+    it("403s a non-owner/admin member at the route level, and allows an owner", async () => {
+      const company = await seedCompany("CreateAuthz");
+      const category = await db
+        .insert(projectCategories)
+        .values({ companyId: company.id, name: "Create-time" })
+        .returning()
+        .then((rows) => rows[0]!);
+
+      const memberId = await seedMember(company.id, "member");
+      const memberApp = projectsAppFor(db, boardActor(company.id, memberId, "member"));
+      const denied = await request(memberApp)
+        .post(`/api/companies/${company.id}/projects`)
+        .send({ name: "Member project", categoryId: category.id });
+      expect(denied.status).toBe(403);
+
+      const [projectRows] = await db.select().from(projects).where(eq(projects.companyId, company.id));
+      expect(projectRows).toBeUndefined();
+
+      const ownerId = await seedMember(company.id, "owner");
+      const ownerApp = projectsAppFor(db, boardActor(company.id, ownerId, "owner"));
+      const allowed = await request(ownerApp)
+        .post(`/api/companies/${company.id}/projects`)
+        .send({ name: "Owner project", categoryId: category.id });
+      expect(allowed.status).toBe(201);
+      expect(allowed.body.categoryId).toBe(category.id);
+    });
+  });
+
   describe("PATCH /projects/:id categoryId", () => {
     it("validates the categoryId belongs to the project's own company", async () => {
       const companyA = await seedCompany("PatchA");
