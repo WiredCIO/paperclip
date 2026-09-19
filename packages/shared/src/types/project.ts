@@ -9,6 +9,10 @@ import type { AgentEnvConfig } from "./secrets.js";
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
 
+export type ProjectBindingTargetType = "agent" | "tool_connection" | "skill" | "document";
+
+export type OrgEdgeParticipantType = "agent" | "user";
+
 export interface ProjectGoalRef {
   id: string;
   title: string;
