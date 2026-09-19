@@ -85,6 +85,19 @@ describe("resolveProcessAdapterRunOutcome", () => {
     expect(outcome).toBe("succeeded");
   });
 
+  it("fails a non-zero exit with reap evidence but no signal (evidence alone is not enough)", () => {
+    const outcome = resolveProcessAdapterRunOutcome({
+      exitCode: 1,
+      errorMessage: null,
+      errorCode: null,
+      signal: null,
+      resultJson: REAPED_BACKGROUND_SUBAGENT_RESULT_JSON,
+      cancellationFailed: false,
+    });
+
+    expect(outcome).toBe("failed");
+  });
+
   it("fails a run that was cancelled mid-cleanup even with reaped-task evidence", () => {
     const outcome = resolveProcessAdapterRunOutcome({
       exitCode: null,

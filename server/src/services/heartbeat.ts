@@ -1061,6 +1061,7 @@ export function resolveProcessAdapterRunOutcome(input: {
     return "succeeded";
   }
   if (
+    Boolean(input.signal) &&
     !input.errorMessage &&
     !input.errorCode &&
     !input.cancellationFailed &&
