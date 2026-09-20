@@ -32,13 +32,13 @@ function createEmptyDb() {
   } as any;
 }
 
-function buildApp(db: any) {
+function buildApp(db: any, deploymentMode: "local_trusted" | "authenticated" = "local_trusted") {
   const app = express();
   app.use(express.json());
   app.use(stripChatWebhookAuthorization);
   app.use(
     actorMiddleware(db, {
-      deploymentMode: "local_trusted",
+      deploymentMode,
       resolveSession: async () => null,
     }),
   );
@@ -91,6 +91,28 @@ describe("chat webhook Authorization bypass", () => {
       actorType: "board",
     });
     expect(res.body).not.toHaveProperty("authorization");
+  });
+
+  it("lets a bearer-carrying Teams webhook reach the provider route in authenticated deployment mode", async () => {
+    // Production runs with deploymentMode "authenticated". With no session and
+    // the header stripped, actorMiddleware resolves req.actor to { type: "none" },
+    // unlike the "board" actor local_trusted produces above. The route must still
+    // be reached and the header must still be restored for the provider SDK.
+    const db = createEmptyDb();
+    const app = buildApp(db, "authenticated");
+
+    const res = await request(app)
+      .post("/api/chat-webhooks/abc123/microsoft-teams")
+      .set("Authorization", "Bearer teams.bot.framework.jwt")
+      .set("Content-Type", "application/json")
+      .send('{"type":"message"}');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      reachedWebhook: true,
+      authorization: "Bearer teams.bot.framework.jwt",
+      actorType: "none",
+    });
   });
 
   it("still rejects a bogus bearer on non-webhook API routes", async () => {
