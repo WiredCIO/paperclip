@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   projects,
   projectGoals,
+  projectCategories,
   goals,
   issues,
   budgetPolicies,
@@ -427,6 +428,18 @@ async function assertGoalsBelongToCompany(db: Db, companyId: string, goalIds: st
   }
 }
 
+/** A project's categoryId must belong to the same company, same rationale as `assertGoalsBelongToCompany`. */
+async function assertCategoryBelongsToCompany(db: Db, companyId: string, categoryId: string): Promise<void> {
+  const found = await db
+    .select({ id: projectCategories.id })
+    .from(projectCategories)
+    .where(and(eq(projectCategories.companyId, companyId), eq(projectCategories.id, categoryId)))
+    .then((rows) => rows[0] ?? null);
+  if (!found) {
+    throw unprocessable(`Unknown project category id for this company: ${categoryId}`, { unknownCategoryId: categoryId });
+  }
+}
+
 async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
   await db.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
@@ -574,6 +587,7 @@ export function projectService(db: Db) {
     const { goalIds: inputGoalIds, ...projectData } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
     if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
+    if (projectData.categoryId) await assertCategoryBelongsToCompany(db, companyId, projectData.categoryId);
 
     // Note: color is intentionally NOT auto-assigned. New projects default to
     // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
@@ -873,6 +887,9 @@ export function projectService(db: Db) {
       if (!existingProject) return null;
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
+      }
+      if (projectData.categoryId) {
+        await assertCategoryBelongsToCompany(db, existingProject.companyId, projectData.categoryId);
       }
 
       if (projectData.name !== undefined) {
