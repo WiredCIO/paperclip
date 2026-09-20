@@ -18,6 +18,32 @@ export interface ProjectGoalRef {
   title: string;
 }
 
+export interface ProjectCategory {
+  id: string;
+  companyId: string;
+  name: string;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ProjectBinding {
+  id: string;
+  companyId: string;
+  projectId: string;
+  targetType: ProjectBindingTargetType;
+  targetId: string;
+  createdByUserId: string;
+  createdAt: Date;
+}
+
+export type ProjectAccessScope = { categoryIds?: string[]; projectIds?: string[] } | null;
+
+export interface ProjectAccessGrant {
+  scope: ProjectAccessScope;
+  updatedAt: Date;
+}
+
 /**
  * Lightweight per-project budget summary surfaced on the projects list payload
  * (IA Phase 4 — PAP-60). Reflects the active `billed_cents` budget policy scoped
@@ -90,6 +116,7 @@ export interface Project {
   name: string;
   description: string | null;
   status: ProjectStatus;
+  categoryId: string | null;
   leadAgentId: string | null;
   targetDate: string | null;
   color: string | null;
