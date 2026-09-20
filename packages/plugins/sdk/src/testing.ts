@@ -1069,6 +1069,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             name: declaration.displayName,
             description: declaration.description ?? null,
             status: declaration.status ?? "in_progress",
+            categoryId: null,
             leadAgentId: null,
             targetDate: null,
             color: declaration.color ?? null,
