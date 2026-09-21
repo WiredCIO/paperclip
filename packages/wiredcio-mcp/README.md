@@ -84,16 +84,20 @@ revocation all-or-nothing.
 
 ### Network
 
-The machine running the server must reach the Paperclip instance. On a
-deployment bound to a tailnet (`PAPERCLIP_DEPLOYMENT_EXPOSURE=private`), **the
-teammate's device has to be on the tailnet** — that is the real gating step, and
-it is worth doing before issuing keys.
+The machine running the server must reach the Paperclip instance over HTTPS. The
+WiredCIO deployment is **public** (`deploymentExposure: public`) at
+`https://bullpen.wiredcio.com`, so set:
 
-It also means claude.ai's hosted connectors cannot be used: they call out from
-Anthropic's infrastructure and have no route to a private tailnet address. This
-server runs locally over stdio beside Claude Code, which is why it works.
-Exposing Paperclip publicly to change that would trade away the reason it is
-private.
+```
+PAPERCLIP_API_URL=https://bullpen.wiredcio.com
+```
+
+No VPN or tailnet membership is required. The tailnet exists so Paperclip can
+reach the on-premise AI server outbound; it is not the access boundary for
+people, and nothing here should assume it is.
+
+Access control is the board API key plus the user's role and permissions, which
+is what `deploymentMode: authenticated` means.
 
 ### Artifacts
 
