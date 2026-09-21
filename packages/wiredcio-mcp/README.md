@@ -116,8 +116,16 @@ and `@paperclipai/shared` through their `workspace:*` links, so on a fresh clone
 ```sh
 pnpm install --filter "@wiredcio/paperclip-mcp..."
 cd packages/wiredcio-mcp
-npm publish --access public
+pnpm publish --access public --no-git-checks
 ```
+
+**Publish with pnpm, not npm.** `publishConfig.main`, `.types`, `.exports` and
+`.bin` are a pnpm extension. npm ignores them — it warns
+`Unknown publishConfig config` and ships a package whose `exports` still points
+at `./src/index.ts`, which is not in the tarball, and whose `bin` it strips
+outright (`script name dist/stdio.js was invalid and removed`). The result
+installs cleanly and then does nothing. `pnpm publish` resolves all four against
+`dist`.
 
 (An unrelated `postinstall: Failed` from the `cloudflare` sandbox-provider
 plugin is pre-existing in this repo and does not affect this package.)
