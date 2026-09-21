@@ -108,10 +108,19 @@ self-contained build. The workspace dependencies are **bundled in**: they are
 `workspace:*` links whose local versions do not exist on the registry, so a
 plain publish would hand every installer a resolution failure.
 
+**Install the workspace first.** The bundle resolves `@paperclipai/mcp-server`
+and `@paperclipai/shared` through their `workspace:*` links, so on a fresh clone
+— or right after merging this package for the first time — `prepack` fails with
+`Could not resolve "@paperclipai/mcp-server"` until pnpm has created them:
+
 ```sh
+pnpm install --filter "@wiredcio/paperclip-mcp..."
 cd packages/wiredcio-mcp
 npm publish --access public
 ```
+
+(An unrelated `postinstall: Failed` from the `cloudflare` sandbox-provider
+plugin is pre-existing in this repo and does not affect this package.)
 
 Requires the `wiredcio` npm scope and an authenticated publish token.
 `publishFromCi` is `false` in `scripts/release-package-manifest.json` — the fork's
