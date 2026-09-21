@@ -110,6 +110,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/wiredcio-mcp",
+    "name": "@wiredcio/paperclip-mcp",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/google-sheets-mcp-server",
     "name": "@paperclipai/google-sheets-mcp-server",
     "publishFromCi": false
