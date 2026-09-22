@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project, ProjectCategory } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
+import { projectAccessApi } from "../api/project-access";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -13,6 +15,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ManageCategoriesDialog } from "../components/ManageCategoriesDialog";
 import { formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
 import {
   isStarred,
@@ -22,7 +25,7 @@ import {
 } from "../hooks/useResourceMemberships";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { ArrowUpDown, Check, Hexagon, Plus, Tags } from "lucide-react";
 import { Card } from "@/components/ui/card";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
@@ -59,6 +62,40 @@ function compareOptionalTime(
   return sortDir === "asc" ? leftTime - rightTime : rightTime - leftTime;
 }
 
+function groupProjectsByCategory(
+  projectsInSection: Project[],
+  categories: ProjectCategory[],
+): Array<{ key: string; label: string; projects: Project[] }> {
+  const knownCategoryIds = new Set(categories.map((category) => category.id));
+  const byCategory = new Map<string, Project[]>();
+  const uncategorized: Project[] = [];
+
+  for (const project of projectsInSection) {
+    if (project.categoryId && knownCategoryIds.has(project.categoryId)) {
+      const bucket = byCategory.get(project.categoryId) ?? [];
+      bucket.push(project);
+      byCategory.set(project.categoryId, bucket);
+    } else {
+      uncategorized.push(project);
+    }
+  }
+
+  const groups = [...categories]
+    .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name))
+    .map((category) => ({
+      key: category.id,
+      label: category.name,
+      projects: byCategory.get(category.id) ?? [],
+    }))
+    .filter((group) => group.projects.length > 0);
+
+  if (uncategorized.length > 0) {
+    groups.push({ key: "uncategorized", label: "Uncategorized", projects: uncategorized });
+  }
+
+  return groups;
+}
+
 function sortProjects(projects: Project[], sortField: ProjectSortField, sortDir: ProjectSortDir) {
   return [...projects].sort((left, right) => {
     let comparison = 0;
@@ -82,6 +119,7 @@ export function Projects() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
+  const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Projects" }]);
@@ -92,6 +130,24 @@ export function Projects() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const boardAccessQuery = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const membership = boardAccessQuery.data?.memberships?.find((m) => m.companyId === selectedCompanyId);
+  // Categories management is owner/admin-gated server-side (`assertBoardCompanyOwnerOrAdmin` in
+  // project-access.ts) — the fetch below would 403 for anyone else, so it stays gated on the same check.
+  const isCategoryAdmin =
+    Boolean(boardAccessQuery.data?.isInstanceAdmin) ||
+    membership?.membershipRole === "owner" ||
+    membership?.membershipRole === "admin";
+  const categoriesQuery = useQuery({
+    queryKey: queryKeys.projectCategories.list(selectedCompanyId ?? ""),
+    queryFn: () => projectAccessApi.listCategories(selectedCompanyId!),
+    enabled: !!selectedCompanyId && isCategoryAdmin,
+  });
+  const categories = categoriesQuery.data ?? [];
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
   const projects = useMemo(
@@ -117,6 +173,78 @@ export function Projects() {
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
   const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
+
+  const renderProjectRow = (project: Project) => {
+    const state = resourceMembershipState(membershipsQuery.data, "project", project.id);
+    const pending = membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "project" &&
+      membershipMutation.variables.resourceId === project.id;
+    const starPending = pending && membershipMutation.variables?.starred !== undefined;
+    const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+    const starred = isStarred(membershipsQuery.data, "project", project.id);
+    return (
+      <EntityRow
+        key={project.id}
+        leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
+        title={project.name}
+        subtitle={project.description ?? undefined}
+        reserveSubtitleSpace
+        to={projectUrl(project)}
+        className={state === "left" ? "group text-foreground/55" : "group"}
+        trailing={
+          <div className="flex items-center gap-3">
+            <span
+              className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
+              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+            >
+              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+            </span>
+            {project.budget && (
+              <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
+                {formatProjectBudget(project.budget)}
+              </span>
+            )}
+            {project.targetDate && (
+              <span className="hidden text-xs text-muted-foreground md:inline">
+                {formatDate(project.targetDate)}
+              </span>
+            )}
+            <StatusBadge status={project.status} />
+            <MembershipAction
+              state={state}
+              pending={joinLeavePending}
+              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+              resourceName={project.name}
+              onJoin={() => membershipMutation.mutate({
+                resourceType: "project",
+                resourceId: project.id,
+                resourceName: project.name,
+                state: "joined",
+              })}
+              onLeave={() => membershipMutation.mutate({
+                resourceType: "project",
+                resourceId: project.id,
+                resourceName: project.name,
+                state: "left",
+              })}
+            />
+            <StarToggle
+              size="row"
+              starred={starred}
+              pending={starPending}
+              resourceName={project.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "project",
+                resourceId: project.id,
+                resourceName: project.name,
+                starred: next,
+              })}
+            />
+          </div>
+        }
+      />
+    );
+  };
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Hexagon} message="Select an organization to view projects." />;
@@ -168,11 +296,27 @@ export function Projects() {
             </div>
           </PopoverContent>
         </Popover>
-        <Button size="sm" variant="outline" onClick={openNewProject}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Project
-        </Button>
+        <div className="flex items-center gap-2">
+          {isCategoryAdmin && (
+            <Button size="sm" variant="ghost" onClick={() => setManageCategoriesOpen(true)}>
+              <Tags className="h-4 w-4 mr-1" />
+              Manage categories
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={openNewProject}>
+            <Plus className="h-4 w-4 mr-1" />
+            Add Project
+          </Button>
+        </div>
       </div>
+
+      {isCategoryAdmin && selectedCompanyId && (
+        <ManageCategoriesDialog
+          open={manageCategoriesOpen}
+          onOpenChange={setManageCategoriesOpen}
+          companyId={selectedCompanyId}
+        />
+      )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
@@ -201,79 +345,24 @@ export function Projects() {
                     {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
                   </span>
                 </div>
-                <Card className="block py-0 overflow-hidden divide-y divide-border">
-                  {sectionProjects.map((project) => {
-                    const state = resourceMembershipState(membershipsQuery.data, "project", project.id);
-                    const pending = membershipMutation.isPending &&
-                      membershipMutation.variables?.resourceType === "project" &&
-                      membershipMutation.variables.resourceId === project.id;
-                    const starPending = pending && membershipMutation.variables?.starred !== undefined;
-                    const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
-                    const starred = isStarred(membershipsQuery.data, "project", project.id);
-                    return (
-                      <EntityRow
-                        key={project.id}
-                        leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
-                        title={project.name}
-                        subtitle={project.description ?? undefined}
-                        reserveSubtitleSpace
-                        to={projectUrl(project)}
-                        className={state === "left" ? "group text-foreground/55" : "group"}
-                        trailing={
-                          <div className="flex items-center gap-3">
-                            <span
-                              className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
-                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
-                            >
-                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
-                            </span>
-                            {project.budget && (
-                              <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
-                                {formatProjectBudget(project.budget)}
-                              </span>
-                            )}
-                            {project.targetDate && (
-                              <span className="hidden text-xs text-muted-foreground md:inline">
-                                {formatDate(project.targetDate)}
-                              </span>
-                            )}
-                            <StatusBadge status={project.status} />
-                            <MembershipAction
-                              state={state}
-                              pending={joinLeavePending}
-                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-                              resourceName={project.name}
-                              onJoin={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "joined",
-                              })}
-                              onLeave={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "left",
-                              })}
-                            />
-                            <StarToggle
-                              size="row"
-                              starred={starred}
-                              pending={starPending}
-                              resourceName={project.name}
-                              onToggle={(next) => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                starred: next,
-                              })}
-                            />
-                          </div>
-                        }
-                      />
-                    );
-                  })}
-                </Card>
+                {isCategoryAdmin && categories.length > 0 ? (
+                  <div className="space-y-3">
+                    {groupProjectsByCategory(sectionProjects, categories).map((group) => (
+                      <div key={group.key} className="space-y-1">
+                        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          {group.label}
+                        </h3>
+                        <Card className="block py-0 overflow-hidden divide-y divide-border">
+                          {group.projects.map((project) => renderProjectRow(project))}
+                        </Card>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Card className="block py-0 overflow-hidden divide-y divide-border">
+                    {sectionProjects.map((project) => renderProjectRow(project))}
+                  </Card>
+                )}
               </section>
             );
           })}

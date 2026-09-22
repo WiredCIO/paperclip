@@ -155,6 +155,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     name: "Paperclip Content",
     description: null,
     status: "in_progress",
+    categoryId: null,
     leadAgentId: null,
     targetDate: null,
     color: null,

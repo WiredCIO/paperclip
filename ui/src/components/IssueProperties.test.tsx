@@ -385,6 +385,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     name: "Project",
     description: null,
     status: "in_progress",
+    categoryId: null,
     leadAgentId: null,
     targetDate: null,
     color: "#6366f1",
