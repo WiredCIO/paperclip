@@ -166,6 +166,10 @@ export const STALE_BLOCK_SWEEP_MIN_AGE_MS = Math.max(
   Number(process.env.STALE_BLOCK_SWEEP_MIN_AGE_MS) || 4 * 60 * 60 * 1000,
 );
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// Terminal, non-actionable issueWorkProducts.status values (see
+// issueWorkProductStatusSchema in packages/shared) that must not count as
+// "there is live work here" when the stale-block sweep decides in_review vs todo.
+const STALE_WORK_PRODUCT_STATUSES: string[] = ["closed", "failed", "archived"];
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -914,8 +918,8 @@ export function recoveryService(
   const budgets = budgetService(db);
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
-  async function getAgent(agentId: string) {
-    return db
+  async function getAgent(agentId: string, dbOrTx: Pick<Db, "select"> = db) {
+    return dbOrTx
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -924,8 +928,9 @@ export function recoveryService(
 
   async function isAgentInvokable(
     agent: typeof agents.$inferSelect | null | undefined,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
-    return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+    return (await evaluateAgentInvokabilityFromDb(dbOrTx, agent)).invokable;
   }
 
   async function getLatestIssueRun(
@@ -5750,17 +5755,11 @@ export function recoveryService(
         readNonEmptyString(evidence.sourceRunId);
 
       const agentId = issue.assigneeAgentId ?? recoveryAction.previousOwnerAgentId;
-      if (agentId) {
-        const agent = await getAgent(agentId);
-        if (!(await isAgentInvokable(agent))) {
-          result.skipped += 1;
-          continue;
-        }
-      }
 
-      // Excludes closed work products (e.g. a rejected/abandoned PR from an
-      // earlier, unrelated attempt) so stale evidence can't misroute this
-      // restore to in_review when there is nothing left for a reviewer to see.
+      // Excludes work products in a terminal, non-actionable state (e.g. a
+      // rejected/abandoned/archived PR from an earlier, unrelated attempt)
+      // so stale evidence can't misroute this restore to in_review when
+      // there is nothing left for a reviewer to see.
       const [workProduct] = await db
         .select({ id: issueWorkProducts.id })
         .from(issueWorkProducts)
@@ -5768,7 +5767,7 @@ export function recoveryService(
           and(
             eq(issueWorkProducts.companyId, issue.companyId),
             eq(issueWorkProducts.issueId, issue.id),
-            not(eq(issueWorkProducts.status, "closed")),
+            notInArray(issueWorkProducts.status, STALE_WORK_PRODUCT_STATUSES),
           ),
         )
         .limit(1);
@@ -5826,6 +5825,11 @@ export function recoveryService(
         ) {
           // The run that produced the catch-all is still in flight. Not stale yet.
           return null;
+        }
+
+        if (agentId) {
+          const agent = await getAgent(agentId, tx);
+          if (!(await isAgentInvokable(agent, tx))) return null;
         }
 
         const updated = await issuesSvc.update(

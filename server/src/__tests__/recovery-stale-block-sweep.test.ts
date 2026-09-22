@@ -335,24 +335,54 @@ describeEmbeddedPostgres("recovery sweepStaleBlockRecoveryCatchAlls", () => {
     expect(issue?.status).toBe("blocked");
   });
 
-  it("does not route to in_review because of a closed work product from an earlier, unrelated attempt", async () => {
+  it.each(["closed", "failed", "archived"])(
+    "does not route to in_review because of a %s work product from an earlier, unrelated attempt",
+    async (status) => {
+      const { companyId, agentId, runId } = await seed();
+      const issueId = await seedBlockedIssue({ companyId, agentId, title: `Stale catch-all — only a ${status} work product` });
+      await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(),
+        companyId,
+        issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "An earlier, unrelated attempt",
+        status,
+      });
+
+      const result = await heartbeatService(db).sweepStaleBlocks();
+
+      expect(result.restored).toBe(1);
+      const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(issue?.status).toBe("todo");
+    },
+  );
+
+  // TOCTOU regression: the agent-invokability check must also be re-verified
+  // inside the locked transaction, not just the blocker/comment/terminal-run
+  // gates. We simulate a concurrent termination the same way — hooking
+  // `db.transaction` to flip the assignee to "terminated" right as the
+  // sweep's transaction opens, after any pre-transaction gate would already
+  // have passed.
+  it("closes the TOCTOU window — an assignee terminated as the transaction opens still blocks the restore", async () => {
     const { companyId, agentId, runId } = await seed();
-    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Stale catch-all — only a closed work product" });
+    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Agent terminates mid-sweep" });
     await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
-    await db.insert(issueWorkProducts).values({
-      id: randomUUID(),
-      companyId,
-      issueId,
-      type: "pull_request",
-      provider: "github",
-      title: "An earlier, unrelated attempt",
-      status: "closed",
-    });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (callback: Parameters<typeof db.transaction>[0]) => {
+        await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+        return originalTransaction(callback);
+      });
 
     const result = await heartbeatService(db).sweepStaleBlocks();
+    transactionSpy.mockRestore();
 
-    expect(result.restored).toBe(1);
+    expect(result.restored).toBe(0);
     const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
-    expect(issue?.status).toBe("todo");
+    expect(issue?.status).toBe("blocked");
   });
 });
