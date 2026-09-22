@@ -1,4 +1,4 @@
-import type { UsageSummary } from "@paperclipai/adapter-utils";
+import type { RateLimitInfo, UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -59,6 +59,9 @@ export function parseClaudeStreamJson(stdout: string) {
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  // rate_limit_event can fire more than once per run (e.g. once at startup,
+  // again mid-run as usage climbs) — the last occurrence is the most current.
+  let rateLimit: RateLimitInfo | null = null;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -91,6 +94,15 @@ export function parseClaudeStreamJson(stdout: string) {
     if (type === "result") {
       finalResult = event;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+      continue;
+    }
+
+    if (type === "rate_limit_event") {
+      const info = event.rate_limit_info;
+      if (typeof info === "object" && info !== null && !Array.isArray(info)) {
+        rateLimit = info as RateLimitInfo;
+      }
+      continue;
     }
   }
 
@@ -103,6 +115,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usageBasis: null as "per_run" | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      rateLimit,
     };
   }
 
@@ -127,6 +140,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usageBasis: "per_run" as const,
     summary,
     resultJson: finalResult,
+    rateLimit,
   };
 }
 

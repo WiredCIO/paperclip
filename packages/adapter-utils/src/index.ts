@@ -35,6 +35,8 @@ export type {
   ServerAdapterModule,
   QuotaWindow,
   ProviderQuotaResult,
+  RateLimitWindow,
+  RateLimitInfo,
   TranscriptEntry,
   PaperclipQuestion,
   PaperclipQuestionOption,
