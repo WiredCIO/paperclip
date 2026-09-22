@@ -335,6 +335,19 @@ function stopReasonLabel(run: RunForIssue) {
   return timeoutText;
 }
 
+/**
+ * Names the background subagent type(s) reaped at terminal_result_cleanup,
+ * or null when no subagent was reaped. See doc/background-subagents.md.
+ */
+function reapedBackgroundSubagentTypes(run: RunForIssue): string[] | null {
+  const result = asRecord(run.resultJson);
+  const evidence = asRecord(result?.unmanagedBackgroundTask);
+  if (evidence?.stopped !== true) return null;
+  const byType = asRecord(asRecord(result?.subagent_stats)?.by_type);
+  if (!byType) return [];
+  return Object.keys(byType).filter((key) => (readNumber(byType[key]) ?? 0) > 0);
+}
+
 function stopStatusLabel(run: LedgerRun, stopReason: string | null) {
   if (stopReason) return stopReason;
   if (run.status === "scheduled_retry") return "Retry pending";
@@ -858,6 +871,7 @@ export function IssueRunLedgerContent({
             const sourceResolvedFold = readSourceResolvedWatchdogFold(
               run.resultJson,
             );
+            const reapedSubagentTypes = reapedBackgroundSubagentTypes(run);
             return (
               <article
                 key={`run:${run.runId}`}
@@ -937,6 +951,17 @@ export function IssueRunLedgerContent({
                     </span>
                   ) : null}
                   {sourceResolvedFold ? <SourceResolvedFoldBadge /> : null}
+                  {reapedSubagentTypes ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-amber-700 dark:text-amber-300"
+                      title="A background subagent was still running when this run ended and was stopped at cleanup; its work (e.g. a posted review) may not have completed. See doc/background-subagents.md."
+                    >
+                      Background subagent reaped
+                      {reapedSubagentTypes.length
+                        ? `: ${reapedSubagentTypes.join(", ")}`
+                        : ""}
+                    </span>
+                  ) : null}
                   <span className="ml-auto shrink-0">
                     {relativeTime(item.timestamp)}
                   </span>

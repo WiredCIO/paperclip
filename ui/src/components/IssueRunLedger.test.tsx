@@ -396,6 +396,45 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("paused by board");
   });
 
+  it("badges a succeeded run whose background subagent was reaped at cleanup, naming its type", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-reaped-subagent",
+          status: "succeeded",
+          resultJson: {
+            stopReason: "completed",
+            is_error: false,
+            subtype: "success",
+            subagent_stats: { by_type: { "hostile-reviewer": 1 } },
+            unmanagedBackgroundTask: {
+              stopped: true,
+              stopReason: "unmanaged_background_task_stopped",
+              signal: "SIGTERM",
+              terminalResultSeen: true,
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Background subagent reaped: hostile-reviewer");
+  });
+
+  it("does not badge a succeeded run with no reaped background task", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-clean-success",
+          status: "succeeded",
+          resultJson: { stopReason: "completed", is_error: false, subtype: "success" },
+        }),
+      ],
+    });
+
+    expect(container.textContent).not.toContain("Background subagent reaped");
+  });
+
   it("surfaces active and completed child issue summaries", () => {
     renderLedger({
       childIssues: [
