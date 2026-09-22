@@ -385,4 +385,43 @@ describeEmbeddedPostgres("recovery sweepStaleBlockRecoveryCatchAlls", () => {
     const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
     expect(issue?.status).toBe("blocked");
   });
+
+  // TOCTOU regression: the agent-invokability gate must check the agent
+  // actually assigned at write time, not the assignee captured in the
+  // pre-transaction candidate snapshot. We simulate a concurrent
+  // reassignment (not just a termination of the original assignee) to a
+  // second, unhealthy agent right as the sweep's transaction opens.
+  it("closes the TOCTOU window — a reassignment to an unhealthy agent as the transaction opens still blocks the restore", async () => {
+    const { companyId, agentId, runId } = await seed();
+    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Issue reassigned mid-sweep" });
+    await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
+
+    const unhealthyAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: unhealthyAgentId,
+      companyId,
+      name: "Terminated Reassignee",
+      role: "builder",
+      status: "terminated",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (callback: Parameters<typeof db.transaction>[0]) => {
+        await db.update(issues).set({ assigneeAgentId: unhealthyAgentId }).where(eq(issues.id, issueId));
+        return originalTransaction(callback);
+      });
+
+    const result = await heartbeatService(db).sweepStaleBlocks();
+    transactionSpy.mockRestore();
+
+    expect(result.restored).toBe(0);
+    const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("blocked");
+  });
 });

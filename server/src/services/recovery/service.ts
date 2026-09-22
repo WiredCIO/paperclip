@@ -5754,8 +5754,6 @@ export function recoveryService(
         readNonEmptyString(evidence.latestRunId) ??
         readNonEmptyString(evidence.sourceRunId);
 
-      const agentId = issue.assigneeAgentId ?? recoveryAction.previousOwnerAgentId;
-
       // Excludes work products in a terminal, non-actionable state (e.g. a
       // rejected/abandoned/archived PR from an earlier, unrelated attempt)
       // so stale evidence can't misroute this restore to in_review when
@@ -5827,6 +5825,11 @@ export function recoveryService(
           return null;
         }
 
+        // Re-derived from the locked row and the freshly re-fetched active
+        // action rather than the pre-transaction `issue`/`recoveryAction`
+        // snapshot, so a concurrent reassignment to a different, unhealthy
+        // agent is caught too — not just the original assignee terminating.
+        const agentId = locked.assigneeAgentId ?? activeAction.previousOwnerAgentId;
         if (agentId) {
           const agent = await getAgent(agentId, tx);
           if (!(await isAgentInvokable(agent, tx))) return null;
