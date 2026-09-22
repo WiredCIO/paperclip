@@ -5748,28 +5748,12 @@ export function recoveryService(
       );
 
     for (const { issue, recoveryAction } of candidates) {
-      // Excludes work products in a terminal, non-actionable state (e.g. a
-      // rejected/abandoned/archived PR from an earlier, unrelated attempt)
-      // so stale evidence can't misroute this restore to in_review when
-      // there is nothing left for a reviewer to see.
-      const [workProduct] = await db
-        .select({ id: issueWorkProducts.id })
-        .from(issueWorkProducts)
-        .where(
-          and(
-            eq(issueWorkProducts.companyId, issue.companyId),
-            eq(issueWorkProducts.issueId, issue.id),
-            notInArray(issueWorkProducts.status, STALE_WORK_PRODUCT_STATUSES),
-          ),
-        )
-        .limit(1);
-      const targetStatus: "in_review" | "todo" = workProduct
-        ? "in_review"
-        : "todo";
       const ageHours = Math.round(STALE_BLOCK_SWEEP_MIN_AGE_MS / 3_600_000);
 
       const publications: ActivityPublication[] = [];
       let relevantRunId: string | null = null;
+      let workProduct: { id: string } | null = null;
+      let targetStatus: "in_review" | "todo" = "todo";
       const restored = await db.transaction(async (tx) => {
         const [locked] = await tx
           .select()
@@ -5837,6 +5821,23 @@ export function recoveryService(
           const agent = await getAgent(agentId, tx);
           if (!(await isAgentInvokable(agent, tx))) return null;
         }
+
+        // Re-derived inside the transaction, against `tx`, so a work product
+        // created or resolved out of a terminal status in the gap between the
+        // candidate scan and the row lock is still reflected in the status
+        // this sweep writes below — not the pre-transaction snapshot.
+        [workProduct] = await tx
+          .select({ id: issueWorkProducts.id })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, issue.companyId),
+              eq(issueWorkProducts.issueId, issue.id),
+              notInArray(issueWorkProducts.status, STALE_WORK_PRODUCT_STATUSES),
+            ),
+          )
+          .limit(1);
+        targetStatus = workProduct ? "in_review" : "todo";
 
         const updated = await issuesSvc.update(
           locked.id,

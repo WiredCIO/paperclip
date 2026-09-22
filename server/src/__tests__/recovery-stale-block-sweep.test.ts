@@ -466,4 +466,42 @@ describeEmbeddedPostgres("recovery sweepStaleBlockRecoveryCatchAlls", () => {
     const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
     expect(issue?.status).toBe("blocked");
   });
+
+  // TOCTOU regression: the work-product lookup that decides whether to
+  // restore to `todo` or `in_review` must also be re-evaluated inside the
+  // locked transaction, not on the pre-transaction candidate snapshot. A
+  // work product (e.g. a PR) can land between the candidate scan and the
+  // row lock. We simulate that by hooking `db.transaction` to insert the
+  // work product right as the sweep's transaction opens — a sweep that only
+  // re-checks the other gates inside the transaction, while still reading
+  // work-product existence on the plain `db` handle beforehand, would miss
+  // this and restore to `todo` instead of `in_review`.
+  it("closes the TOCTOU window — a work product created as the transaction opens still routes to in_review", async () => {
+    const { companyId, agentId, runId } = await seed();
+    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Work product lands mid-sweep" });
+    await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (callback: Parameters<typeof db.transaction>[0]) => {
+        await db.insert(issueWorkProducts).values({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          type: "pull_request",
+          provider: "github",
+          title: "Landed right as the sweep opened its transaction",
+          status: "open",
+        });
+        return originalTransaction(callback);
+      });
+
+    const result = await heartbeatService(db).sweepStaleBlocks();
+    transactionSpy.mockRestore();
+
+    expect(result.restored).toBe(1);
+    const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("in_review");
+  });
 });
