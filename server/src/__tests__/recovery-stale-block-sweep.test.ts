@@ -297,4 +297,62 @@ describeEmbeddedPostgres("recovery sweepStaleBlockRecoveryCatchAlls", () => {
     expect(first.restored).toBe(1);
     expect(second.restored).toBe(0);
   });
+
+  // TOCTOU regression: the dependency-blocker, explicit-hold-comment, and
+  // terminal-run checks must be re-verified inside the same locked
+  // transaction as the write, not on a plain `db` read before the
+  // transaction opens. We simulate a concurrent writer by hooking
+  // `db.transaction` to insert the ⛔ BLOCKED comment at the moment the
+  // sweep opens its transaction — i.e. after any pre-transaction gate would
+  // already have run and passed, but before the locked re-check. A sweep
+  // that only re-checks issue status and the active recovery action id
+  // inside the transaction would miss this and restore the issue anyway.
+  it("closes the TOCTOU window — a ⛔ BLOCKED comment written as the transaction opens still blocks the restore", async () => {
+    const { companyId, agentId, runId } = await seed();
+    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Comment races the sweep" });
+    await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (callback: Parameters<typeof db.transaction>[0]) => {
+        await db.insert(issueComments).values({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          authorType: "agent",
+          authorAgentId: agentId,
+          body: "⛔ BLOCKED: a dependency surfaced right as the sweep ran.",
+        });
+        return originalTransaction(callback);
+      });
+
+    const result = await heartbeatService(db).sweepStaleBlocks();
+    transactionSpy.mockRestore();
+
+    expect(result.restored).toBe(0);
+    const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("blocked");
+  });
+
+  it("does not route to in_review because of a closed work product from an earlier, unrelated attempt", async () => {
+    const { companyId, agentId, runId } = await seed();
+    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Stale catch-all — only a closed work product" });
+    await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "An earlier, unrelated attempt",
+      status: "closed",
+    });
+
+    const result = await heartbeatService(db).sweepStaleBlocks();
+
+    expect(result.restored).toBe(1);
+    const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("todo");
+  });
 });

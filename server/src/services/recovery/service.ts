@@ -2797,8 +2797,9 @@ export function recoveryService(
   async function existingUnresolvedBlockerIssues(
     companyId: string,
     issueId: string,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
-    return db
+    return dbOrTx
       .select({ id: issueRelations.issueId, identifier: issues.identifier })
       .from(issueRelations)
       .innerJoin(
@@ -2821,9 +2822,10 @@ export function recoveryService(
   async function existingUnresolvedBlockerIssueIds(
     companyId: string,
     issueId: string,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
-    return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) =>
-      rows.map((row) => row.id),
+    return existingUnresolvedBlockerIssues(companyId, issueId, dbOrTx).then(
+      (rows) => rows.map((row) => row.id),
     );
   }
 
@@ -5741,44 +5743,11 @@ export function recoveryService(
       );
 
     for (const { issue, recoveryAction } of candidates) {
-      const unresolvedBlockerIssueIds = await existingUnresolvedBlockerIssueIds(
-        issue.companyId,
-        issue.id,
-      );
-      if (unresolvedBlockerIssueIds.length > 0) {
-        result.skipped += 1;
-        continue;
-      }
-
-      const explicitBlockComment = await db
-        .select({ id: issueComments.id })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.issueId, issue.id),
-            sql`${issueComments.body} like '⛔ BLOCKED:%'`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (explicitBlockComment) {
-        result.skipped += 1;
-        continue;
-      }
-
       const evidence = parseObject(recoveryAction.evidence);
       const relevantRunId =
         readNonEmptyString(evidence.correctiveRunId) ??
         readNonEmptyString(evidence.latestRunId) ??
         readNonEmptyString(evidence.sourceRunId);
-      if (
-        relevantRunId &&
-        !(await heartbeatRunIsTerminalOrMissing(db, relevantRunId))
-      ) {
-        // The run that produced the catch-all is still in flight. Not stale yet.
-        result.skipped += 1;
-        continue;
-      }
 
       const agentId = issue.assigneeAgentId ?? recoveryAction.previousOwnerAgentId;
       if (agentId) {
@@ -5789,6 +5758,9 @@ export function recoveryService(
         }
       }
 
+      // Excludes closed work products (e.g. a rejected/abandoned PR from an
+      // earlier, unrelated attempt) so stale evidence can't misroute this
+      // restore to in_review when there is nothing left for a reviewer to see.
       const [workProduct] = await db
         .select({ id: issueWorkProducts.id })
         .from(issueWorkProducts)
@@ -5796,6 +5768,7 @@ export function recoveryService(
           and(
             eq(issueWorkProducts.companyId, issue.companyId),
             eq(issueWorkProducts.issueId, issue.id),
+            not(eq(issueWorkProducts.status, "closed")),
           ),
         )
         .limit(1);
@@ -5820,6 +5793,41 @@ export function recoveryService(
           tx,
         );
         if (!activeAction || activeAction.id !== recoveryAction.id) return null;
+
+        // Re-verify every race-sensitive safety gate against the same locked
+        // transaction as the write below. A blocker relation, an explicit
+        // hold comment, or the source run finishing written after the
+        // candidate scan (but before this point) must still stop the sweep —
+        // checking them on the plain `db` handle before the transaction
+        // opened leaves a window where exactly that write is invisible.
+        const unresolvedBlockerIssueIds = await existingUnresolvedBlockerIssueIds(
+          issue.companyId,
+          issue.id,
+          tx,
+        );
+        if (unresolvedBlockerIssueIds.length > 0) return null;
+
+        const explicitBlockComment = await tx
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.issueId, issue.id),
+              sql`${issueComments.body} like '⛔ BLOCKED:%'`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (explicitBlockComment) return null;
+
+        if (
+          relevantRunId &&
+          !(await heartbeatRunIsTerminalOrMissing(tx, relevantRunId))
+        ) {
+          // The run that produced the catch-all is still in flight. Not stale yet.
+          return null;
+        }
+
         const updated = await issuesSvc.update(
           locked.id,
           { status: targetStatus, companyGuard: issue.companyId },
