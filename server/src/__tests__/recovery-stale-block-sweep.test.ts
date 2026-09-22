@@ -424,4 +424,46 @@ describeEmbeddedPostgres("recovery sweepStaleBlockRecoveryCatchAlls", () => {
     const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
     expect(issue?.status).toBe("blocked");
   });
+
+  // TOCTOU regression: the terminal-run check must be evaluated against the
+  // run recorded on the freshly re-fetched active recovery action, not the
+  // pre-transaction candidate snapshot's evidence. A fresh corrective run
+  // can be dispatched and recorded (in place, same action id — see
+  // issue-recovery-actions.ts's upsertSourceScopedUnlocked) between the
+  // candidate scan and this row's transaction. We simulate that by hooking
+  // `db.transaction` to update the same recovery-action row's evidence to
+  // point at a newly-running run right as the sweep's transaction opens.
+  it("closes the TOCTOU window — a fresh corrective run recorded on the same action as the transaction opens still blocks the restore", async () => {
+    const { companyId, agentId, runId } = await seed();
+    const issueId = await seedBlockedIssue({ companyId, agentId, title: "Fresh corrective run races the sweep" });
+    const actionId = await seedRecoveryAction({ companyId, issueId, runId, updatedAt: STALE_AT });
+
+    const freshRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (callback: Parameters<typeof db.transaction>[0]) => {
+        await db
+          .update(issueRecoveryActions)
+          .set({ evidence: { correctiveRunId: freshRunId, latestRunId: freshRunId } })
+          .where(eq(issueRecoveryActions.id, actionId));
+        return originalTransaction(callback);
+      });
+
+    const result = await heartbeatService(db).sweepStaleBlocks();
+    transactionSpy.mockRestore();
+
+    expect(result.restored).toBe(0);
+    const issue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("blocked");
+  });
 });

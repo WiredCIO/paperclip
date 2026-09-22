@@ -5748,12 +5748,6 @@ export function recoveryService(
       );
 
     for (const { issue, recoveryAction } of candidates) {
-      const evidence = parseObject(recoveryAction.evidence);
-      const relevantRunId =
-        readNonEmptyString(evidence.correctiveRunId) ??
-        readNonEmptyString(evidence.latestRunId) ??
-        readNonEmptyString(evidence.sourceRunId);
-
       // Excludes work products in a terminal, non-actionable state (e.g. a
       // rejected/abandoned/archived PR from an earlier, unrelated attempt)
       // so stale evidence can't misroute this restore to in_review when
@@ -5775,6 +5769,7 @@ export function recoveryService(
       const ageHours = Math.round(STALE_BLOCK_SWEEP_MIN_AGE_MS / 3_600_000);
 
       const publications: ActivityPublication[] = [];
+      let relevantRunId: string | null = null;
       const restored = await db.transaction(async (tx) => {
         const [locked] = await tx
           .select()
@@ -5792,10 +5787,13 @@ export function recoveryService(
         if (!activeAction || activeAction.id !== recoveryAction.id) return null;
 
         // Re-verify every race-sensitive safety gate against the same locked
-        // transaction as the write below. A blocker relation, an explicit
-        // hold comment, or the source run finishing written after the
-        // candidate scan (but before this point) must still stop the sweep —
-        // checking them on the plain `db` handle before the transaction
+        // transaction as the write below, deriving each from `locked` /
+        // `activeAction` rather than the pre-transaction candidate scan. A
+        // blocker relation, an explicit hold comment, a fresh corrective run
+        // recorded on this same action, or the source run finishing written
+        // after the candidate scan (but before this point) must still stop
+        // the sweep — checking any of them on the plain `db` handle (or
+        // against stale pre-transaction values) before the transaction
         // opened leaves a window where exactly that write is invisible.
         const unresolvedBlockerIssueIds = await existingUnresolvedBlockerIssueIds(
           issue.companyId,
@@ -5817,6 +5815,11 @@ export function recoveryService(
           .then((rows) => rows[0] ?? null);
         if (explicitBlockComment) return null;
 
+        const evidence = parseObject(activeAction.evidence);
+        relevantRunId =
+          readNonEmptyString(evidence.correctiveRunId) ??
+          readNonEmptyString(evidence.latestRunId) ??
+          readNonEmptyString(evidence.sourceRunId);
         if (
           relevantRunId &&
           !(await heartbeatRunIsTerminalOrMissing(tx, relevantRunId))
