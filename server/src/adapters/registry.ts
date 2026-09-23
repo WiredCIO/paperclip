@@ -77,6 +77,7 @@ import {
   syncGrokSkills,
   testEnvironment as grokTestEnvironment,
   sessionCodec as grokSessionCodec,
+  getConfigSchema as getGrokConfigSchema,
   GROK_DEVICE_LOGIN_COMMAND,
   parseGrokDeviceLoginPrompt,
 } from "@paperclipai/adapter-grok-local/server";
@@ -730,7 +731,11 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
-  runtimeToolDelivery: "environment",
+  // Grok Build discovers MCP servers from a project `.grok/config.toml`, which
+  // the adapter writes per run. Under "environment" the connections server was
+  // never added to the runtime MCP set, so a Grok agent saw no connected tools
+  // at all — only `PAPERCLIP_RUNTIME_TOOLS_*` env vars nothing surfaces to it.
+  runtimeToolDelivery: "native_mcp",
   execute: grokExecute,
   testEnvironment: grokTestEnvironment,
   listSkills: listGrokSkills,
@@ -748,6 +753,7 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+  getConfigSchema: getGrokConfigSchema,
   loginCapability: grokLoginCapability,
 };
 

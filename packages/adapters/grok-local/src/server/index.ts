@@ -84,3 +84,17 @@ export {
 export { decideGrokAuthMerge } from "./grok-auth-merge-decision.js";
 
 export { parseGrokAuthPayload, hasUsableGrokAuthValue } from "./grok-home.js";
+
+export { getConfigSchema } from "./config-schema.js";
+export {
+  renderGrokMcpConfigToml,
+  writeGrokProjectMcpConfig,
+  toGrokServerKey,
+  toTomlBasicString,
+  GROK_PROJECT_CONFIG_DIRNAME,
+  GROK_PROJECT_CONFIG_FILENAME,
+} from "./mcp-config.js";
+
+export { ensureGrokProjectConfigGitExcluded, GROK_GIT_EXCLUDE_ENTRY } from "./mcp-config.js";
+
+export { DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC } from "./mcp-config.js";

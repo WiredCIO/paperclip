@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type {
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  AdapterRuntimeMcpServer,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -45,6 +49,13 @@ import {
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import {
+  DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC,
+  ensureGrokProjectConfigGitExcluded,
+  GROK_PROJECT_CONFIG_DIRNAME,
+  GROK_PROJECT_CONFIG_FILENAME,
+  writeGrokProjectMcpConfig,
+} from "./mcp-config.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +109,8 @@ type StagedGrokAssets = {
   stagedSkillsCount: number;
   stagedInstructionsPath: string | null;
   rulesFilePath: string | null;
+  stagedMcpConfigPath: string | null;
+  stagedMcpServerCount: number;
 };
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -106,9 +119,12 @@ async function pathExists(candidate: string): Promise<boolean> {
 
 async function stageGrokProjectAssets(input: {
   cwd: string;
+  runId: string;
   instructionsFilePath: string;
   skillEntries: Array<{ key: string; runtimeName: string; source: string }>;
   desiredSkillNames: string[];
+  mcpServers: AdapterRuntimeMcpServer[];
+  mcpToolTimeoutSec: number;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<StagedGrokAssets> {
   const cleanup: StageCleanup[] = [];
@@ -122,6 +138,8 @@ async function stageGrokProjectAssets(input: {
   let stagedInstructionsPath: string | null = null;
   let rulesFilePath: string | null = null;
   let stagedSkillsCount = 0;
+  let stagedMcpConfigPath: string | null = null;
+  let stagedMcpServerCount = 0;
 
   const instructionsTarget = path.join(input.cwd, "Agents.md");
   if (input.instructionsFilePath) {
@@ -142,6 +160,35 @@ async function stageGrokProjectAssets(input: {
       await fs.copyFile(canonicalAgents, instructionsTarget);
       ensureCleanupFile(instructionsTarget);
       stagedInstructionsPath = instructionsTarget;
+    }
+  }
+
+  // Grok reads project MCP servers from `<cwd>/.grok/config.toml`. Paperclip
+  // mints the runtime tool token per run, so the file is written for the run
+  // and removed with the rest of the staged assets.
+  if (input.mcpServers.length > 0) {
+    const mcpConfigTarget = path.join(input.cwd, GROK_PROJECT_CONFIG_DIRNAME, GROK_PROJECT_CONFIG_FILENAME);
+    if (await pathExists(mcpConfigTarget)) {
+      // A repo-owned project config wins for same-named servers and merging
+      // TOML here would silently rewrite what the repository ships. Leave it
+      // alone and say so: the run continues without Paperclip's tools rather
+      // than continuing while appearing to have them.
+      await input.onLog(
+        "stdout",
+        `[paperclip] Grok workspace already contains ${mcpConfigTarget}; leaving it unchanged. ${input.mcpServers.length} Paperclip MCP server(s) are NOT available to this run.\n`,
+      );
+    } else {
+      const written = await writeGrokProjectMcpConfig({
+        cwd: input.cwd,
+        servers: input.mcpServers,
+        runId: input.runId,
+        toolTimeoutSec: input.mcpToolTimeoutSec,
+      });
+      await ensureGrokProjectConfigGitExcluded(input.cwd);
+      if (written.createdDir) ensureCleanupDir(written.configDir);
+      ensureCleanupFile(written.configPath);
+      stagedMcpConfigPath = written.configPath;
+      stagedMcpServerCount = input.mcpServers.length;
     }
   }
 
@@ -178,6 +225,8 @@ async function stageGrokProjectAssets(input: {
     stagedSkillsCount,
     stagedInstructionsPath,
     rulesFilePath,
+    stagedMcpConfigPath,
+    stagedMcpServerCount,
     cleanup: async () => {
       for (const entry of [...cleanup].reverse()) {
         if (entry.kind === "file") {
@@ -218,7 +267,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
-  const disableWebSearch = asBoolean(config.disableWebSearch, true);
+  // Grok has no MCP-free way to check a vendor's current behaviour, so a run
+  // with search disabled has only its priors to work from. Opt-out, not
+  // opt-in: set disableWebSearch for a deliberately offline workspace.
+  const disableWebSearch = asBoolean(config.disableWebSearch, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -242,11 +294,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const grokSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGrokSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, grokSkillEntries);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
   const stagedAssets = await stageGrokProjectAssets({
     cwd,
+    runId,
     instructionsFilePath,
     skillEntries: grokSkillEntries,
     desiredSkillNames: desiredGrokSkillNames,
+    mcpServers: runtimeMcpServers,
+    mcpToolTimeoutSec: asNumber(config.mcpToolTimeoutSec, DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC),
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
@@ -466,6 +522,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (stagedAssets.stagedSkillsCount > 0) {
         notes.push(`Staged ${stagedAssets.stagedSkillsCount} Paperclip skill(s) into .claude/skills for native Grok discovery.`);
       }
+      if (stagedAssets.stagedMcpConfigPath) {
+        notes.push(
+          `Staged ${stagedAssets.stagedMcpServerCount} Paperclip MCP server(s) at ${stagedAssets.stagedMcpConfigPath} for native Grok discovery.`,
+        );
+      } else if (runtimeMcpServers.length > 0) {
+        notes.push(
+          `${runtimeMcpServers.length} Paperclip MCP server(s) could not be staged; this run has no connected tools.`,
+        );
+      }
+      if (disableWebSearch) notes.push("Web search is disabled for this run (--disable-web-search).");
       return notes;
     })();
 
