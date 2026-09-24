@@ -2,6 +2,7 @@ import { connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
+import { redactSensitiveText } from "../redaction.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -2792,6 +2793,15 @@ function sanitizeHttpFailure(error: unknown): {
   status: ToolConnectionHealthStatus;
   message: string;
   code: string;
+  /**
+   * CH-4: the provider's own response body (or, for a binding_missing failure,
+   * the config paths it was missing), scrubbed and truncated. `message` alone
+   * used to collapse every remote failure to `HTTP 400` with no way to tell
+   * what the provider actually objected to (brief incident 3: Business
+   * Central's missing-ConfigurationName error had to be read out of its own
+   * admin UI instead of Paperclip's).
+   */
+  detail?: string;
 } {
   if (error instanceof ComposioApiError) {
     return {
@@ -2804,83 +2814,19 @@ function sanitizeHttpFailure(error: unknown): {
     };
   }
   if (error instanceof HttpError) {
-    const code = asRecord(error.details).code;
-    if (code === "tool_connection_transport_unsupported") {
-      return { status: "error", message: error.message, code };
-    }
-    if (code === "composio_connected_account_inactive") {
-      return { status: "degraded", message: error.message, code };
-    }
-    if (typeof code === "string" && code.startsWith("remote_http_")) {
-      return { status: "error", message: error.message, code };
-    }
-    if (isOAuthEndpointRejection(error)) {
-      return { status: "error", message: error.message, code: String(code) };
-    }
-    if (code === "oauth_challenge") {
-      return {
-        status: "error",
-        message: "This app needs you to sign in.",
-        code: "oauth_challenge",
-      };
-    }
-    if (code === "oauth_refresh_missing") {
-      return {
-        status: "failed",
-        message: "OAuth credentials have expired and need to be reconnected.",
-        code: "oauth_refresh_missing",
-      };
-    }
-    if (code === "oauth_reauthorization_required") {
-      return {
-        status: "error",
-        message: "OAuth authorization expired. Reconnect this app to continue.",
-        code: "oauth_reauthorization_required",
-      };
-    }
-    if (typeof code === "string" && code.startsWith("vercel_connect_")) {
-      return {
-        status:
-          code === "vercel_connect_unavailable" ||
-          code === "vercel_connect_auth_failed" ||
-          code === "vercel_connect_installation_required"
-            ? "degraded"
-            : "error",
-        message: error.message,
-        code,
-      };
-    }
-    if (
-      code === "oauth_refresh_in_progress" ||
-      code === "oauth_refresh_superseded" ||
-      code === "oauth_refresh_outcome_unknown"
-    ) {
-      return {
-        status: "error",
-        message: error.message,
-        code,
-      };
-    }
-    if (
-      code === "binding_missing" ||
-      code === "secret_deleted" ||
-      code === "secret_inactive" ||
-      code === "version_missing"
-    ) {
-      return {
-        status: "missing_secret",
-        message: "A configured credential secret could not be resolved.",
-        code: String(code),
-      };
-    }
-    if (error.status === 404 && /secret/i.test(error.message)) {
-      return {
-        status: "missing_secret",
-        message: "A configured credential secret could not be resolved.",
-        code: "secret_missing",
-      };
-    }
-    return { status: "error", message: error.message, code: "paperclip_error" };
+    const detailsRecord = asRecord(error.details);
+    const rawDetail =
+      typeof detailsRecord.detail === "string"
+        ? detailsRecord.detail
+        : Array.isArray(detailsRecord.configPaths) &&
+            detailsRecord.configPaths.every((path) => typeof path === "string")
+          ? `Missing secret binding for: ${detailsRecord.configPaths.join(", ")}`
+          : undefined;
+    const detail = rawDetail
+      ? redactSensitiveText(rawDetail).slice(0, 512)
+      : undefined;
+    const classified = classifyHttpFailure(error, detailsRecord);
+    return detail ? { ...classified, detail } : classified;
   }
   if (error instanceof Error) {
     return {
@@ -2894,6 +2840,99 @@ function sanitizeHttpFailure(error: unknown): {
     message: "Connection check failed.",
     code: "runtime_error",
   };
+}
+
+function classifyHttpFailure(
+  error: HttpError,
+  detailsRecord: Record<string, unknown>,
+): { status: ToolConnectionHealthStatus; message: string; code: string } {
+  const code = detailsRecord.code;
+  if (code === "tool_connection_transport_unsupported") {
+    return { status: "error", message: error.message, code };
+  }
+  if (code === "composio_connected_account_inactive") {
+    return { status: "degraded", message: error.message, code };
+  }
+  if (typeof code === "string" && code.startsWith("remote_http_")) {
+    return { status: "error", message: error.message, code };
+  }
+  if (isOAuthEndpointRejection(error)) {
+    return { status: "error", message: error.message, code: String(code) };
+  }
+  if (code === "oauth_challenge") {
+    return {
+      status: "error",
+      message: "This app needs you to sign in.",
+      code: "oauth_challenge",
+    };
+  }
+  if (code === "oauth_refresh_missing") {
+    return {
+      status: "failed",
+      message: "OAuth credentials have expired and need to be reconnected.",
+      code: "oauth_refresh_missing",
+    };
+  }
+  if (code === "oauth_reauthorization_required") {
+    return {
+      status: "error",
+      message: "OAuth authorization expired. Reconnect this app to continue.",
+      code: "oauth_reauthorization_required",
+    };
+  }
+  if (typeof code === "string" && code.startsWith("vercel_connect_")) {
+    return {
+      status:
+        code === "vercel_connect_unavailable" ||
+        code === "vercel_connect_auth_failed" ||
+        code === "vercel_connect_installation_required"
+          ? "degraded"
+          : "error",
+      message: error.message,
+      code,
+    };
+  }
+  if (
+    code === "oauth_refresh_in_progress" ||
+    code === "oauth_refresh_superseded" ||
+    code === "oauth_refresh_outcome_unknown"
+  ) {
+    return {
+      status: "error",
+      message: error.message,
+      code,
+    };
+  }
+  if (
+    code === "binding_missing" ||
+    code === "secret_deleted" ||
+    code === "secret_inactive" ||
+    code === "version_missing"
+  ) {
+    return {
+      status: "missing_secret",
+      message: "A configured credential secret could not be resolved.",
+      code: String(code),
+    };
+  }
+  if (error.status === 404 && /secret/i.test(error.message)) {
+    return {
+      status: "missing_secret",
+      message: "A configured credential secret could not be resolved.",
+      code: "secret_missing",
+    };
+  }
+  return { status: "error", message: error.message, code: "paperclip_error" };
+}
+
+/** CH-4: fold the scrubbed provider detail into the text health_message/last_error store. */
+function healthMessageWithDetail(failure: {
+  message: string;
+  detail?: string;
+}): string {
+  return failure.detail
+    ? `${failure.message} (${failure.detail})`
+    : failure.message;
 }
 
 function remoteEndpoint(config: Record<string, unknown>): string {
@@ -5403,6 +5442,37 @@ export function toolAccessService(
       await assertCatalogEntry(companyId, input.catalogEntryId);
   }
 
+  /**
+   * CH-3: a connection revived after removal keeps its id, and `removeConnection`
+   * revokes (never deletes) its grant rows -- so a *revoked* grant proves this
+   * connection was actually removed before, not merely mid-setup. Checking for
+   * any grant regardless of status is too broad: a setup attempt that fails
+   * partway through (a real, tested retry path) can leave an active grant
+   * behind on a connection that was never active and is not "not new" in any
+   * sense that should suppress its recommended defaults. Callers must run this
+   * before writing the current callback's own grant, or that write would make
+   * every connection look pre-existing.
+   */
+  async function connectionHasPriorGrant(
+    connection: Pick<
+      typeof toolConnections.$inferSelect,
+      "id" | "companyId"
+    >,
+  ): Promise<boolean> {
+    const [revokedGrant] = await db
+      .select({ id: connectionGrants.id })
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.status, "revoked"),
+        ),
+      )
+      .limit(1);
+    return Boolean(revokedGrant);
+  }
+
   async function getConnectionRow(idOrUid: string, companyId?: string) {
     const identifier =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -5758,8 +5828,8 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     grantSecretRefs: ToolCredentialSecretRef[] = [],
     dbClient: ToolAccessMutationDb = db,
-  ) {
-    await dbClient
+  ): Promise<number> {
+    const removed = await dbClient
       .delete(companySecretBindings)
       .where(
         and(
@@ -5767,7 +5837,8 @@ export function toolAccessService(
           eq(companySecretBindings.targetType, "tool_connection"),
           eq(companySecretBindings.targetId, connection.id),
         ),
-      );
+      )
+      .returning({ id: companySecretBindings.id });
     // A metadata edit or pause/resume must retain declarations for every
     // active personal/dedicated grant, not just connection-owned credentials.
     const activeGrants = await dbClient
@@ -5889,7 +5960,7 @@ export function toolAccessService(
     const companyBindings = bindings.filter(
       (ref) => secretById.get(ref.secretId)?.scope !== "user",
     );
-    if (companyBindings.length === 0) return;
+    if (companyBindings.length === 0) return removed.length;
     await dbClient.insert(companySecretBindings).values(
       companyBindings.map((ref) => ({
         companyId: connection.companyId,
@@ -5902,6 +5973,98 @@ export function toolAccessService(
         projectionClass: ref.projectionClass,
         projectionAllowlistKey: ref.projectionAllowlistKey,
       })),
+    );
+    return removed.length;
+  }
+
+  /**
+   * CH-2: the JSONB credential refs on a connection and the active grants
+   * pointing at it are the source of truth `syncCredentialBindings` derives
+   * `company_secret_bindings` from. Anything that writes those refs without
+   * going through that function leaves the two out of sync, surfacing only as
+   * `binding_missing` at call time. This walks the same derivation and reports
+   * any secret a binding row is missing for, so health checks catch drift
+   * before a provider call does.
+   */
+  async function assertCredentialBindingsConsistent(
+    connectionId: string,
+  ): Promise<void> {
+    const connection = await getConnectionRow(connectionId);
+    const activeGrants = await db
+      .select({ refs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.status, "active"),
+        ),
+      );
+    const candidateRefs = [
+      ...connection.credentialRefs.map((ref) => ({
+        secretId: ref.secretId,
+        configPath: credentialRefConfigPath(ref),
+      })),
+      ...connection.credentialSecretRefs.map((ref) => ({
+        secretId: ref.secretId,
+        configPath: ref.configPath,
+      })),
+      ...activeGrants.flatMap((grant) =>
+        grant.refs.map((ref) => ({
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+        })),
+      ),
+    ];
+    if (candidateRefs.length === 0) return;
+    // A personal grant's secrets are scope "user": syncCredentialBindings
+    // deliberately excludes them from company_secret_bindings (they go
+    // through syncUserSecretDeclarationsForTarget instead), so requiring a
+    // binding row for them here would fail every personal-identity connection.
+    const candidateSecretRows = await db
+      .select({ id: companySecrets.id, scope: companySecrets.scope })
+      .from(companySecrets)
+      .where(
+        and(
+          eq(companySecrets.companyId, connection.companyId),
+          inArray(companySecrets.id, [
+            ...new Set(candidateRefs.map((ref) => ref.secretId)),
+          ]),
+        ),
+      );
+    const userScopedSecretIds = new Set(
+      candidateSecretRows
+        .filter((row) => row.scope === "user")
+        .map((row) => row.id),
+    );
+    const expectedRefs = candidateRefs.filter(
+      (ref) => !userScopedSecretIds.has(ref.secretId),
+    );
+    if (expectedRefs.length === 0) return;
+    const existingBindings = await db
+      .select({ configPath: companySecretBindings.configPath })
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.companyId, connection.companyId),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          eq(companySecretBindings.targetId, connection.id),
+        ),
+      );
+    const boundConfigPaths = new Set(
+      existingBindings.map((row) => row.configPath),
+    );
+    const missingConfigPaths = [
+      ...new Set(
+        expectedRefs
+          .filter((ref) => !boundConfigPaths.has(ref.configPath))
+          .map((ref) => ref.configPath),
+      ),
+    ];
+    if (missingConfigPaths.length === 0) return;
+    throw unprocessable(
+      "A configured credential secret could not be resolved.",
+      { code: "binding_missing", configPaths: missingConfigPaths },
     );
   }
 
@@ -6159,16 +6322,16 @@ export function toolAccessService(
     // provider round-trip rather than after it. They are also not needed to
     // finish the job: the refs on the connection row are what a resumed removal
     // reads to find the secrets it still owes a revocation.
-    const removedSecretBindings = await db
-      .delete(companySecretBindings)
-      .where(
-        and(
-          eq(companySecretBindings.companyId, connection.companyId),
-          eq(companySecretBindings.targetType, "tool_connection"),
-          eq(companySecretBindings.targetId, connection.id),
-        ),
-      )
-      .returning({ id: companySecretBindings.id });
+    //
+    // CH-2: route through the single binding writer instead of a private
+    // delete. Grants were just revoked above, so its own active-grants query
+    // contributes nothing; passing a zeroed-out copy of the connection's own
+    // refs makes this a sync to the empty set rather than a second code path.
+    const removedSecretBindingsCount = await syncCredentialBindings({
+      ...connection,
+      credentialRefs: [],
+      credentialSecretRefs: [],
+    });
 
     const removedInstalls = await db
       .delete(toolConnectionInstalls)
@@ -6453,7 +6616,7 @@ export function toolAccessService(
         secretsRevoked,
         secretsRetainedShared: retained.length,
         credentialRefsCleared,
-        secretBindingsRemoved: removedSecretBindings.length,
+        secretBindingsRemoved: removedSecretBindingsCount,
         grantsRevoked: grantsToRevoke.length,
         installsRemoved: removedInstalls.length,
         appProfile: appProfileOutcome,
@@ -6928,8 +7091,16 @@ export function toolAccessService(
           oauthSupported: Boolean(endpoints),
         });
       }
+      // CH-4: capture the provider's own response body before it is discarded.
+      // `sanitizeHttpFailure` scrubs and truncates it into `detail` so a health
+      // check surfaces what the provider actually objected to instead of a bare
+      // HTTP status (brief incident 3: Business Central's missing
+      // ConfigurationName header had to be read out of its own admin UI).
+      const failureBody = await response.text().catch(() => "");
       throw new HttpError(502, `Remote app returned HTTP ${response.status}`, {
         status: response.status,
+        code: "remote_http_status",
+        ...(failureBody ? { detail: failureBody } : {}),
       });
     }
     const payload = parseMcpHttpResponseBody(
@@ -7541,6 +7712,9 @@ export function toolAccessService(
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
     try {
+      // CH-2: catch credential-ref/binding drift before spending a round trip
+      // on a provider that can only ever fail with an opaque binding_missing.
+      await assertCredentialBindingsConsistent(connection.id);
       const config = asRecord(connection.config);
       const oauth = asRecord(config.oauth);
       if (
@@ -7633,7 +7807,7 @@ export function toolAccessService(
       const updated = await updateConnectionHealth(
         connection,
         failure.status,
-        failure.message,
+        healthMessageWithDetail(failure),
       );
       const runtimeSlot =
         connection.transport === "local_stdio"
@@ -7690,7 +7864,7 @@ export function toolAccessService(
       const updated = await updateConnectionHealth(
         connection,
         failure.status,
-        failure.message,
+        healthMessageWithDetail(failure),
       );
       await audit({
         companyId: connection.companyId,
@@ -12999,19 +13173,76 @@ export function toolAccessService(
       // leaving it empty is what keeps the secret off an organization grant.
       const connectionCredentialSecretRefs =
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
+      // A reconnect that supplies no OAuth material (no `oauthClient`, no
+      // `configValues.oauth`) is adding/replacing something else -- headers,
+      // credentials, config -- not re-establishing OAuth. Rebuilding `authKind`,
+      // `config`, and both ref arrays from scratch in that case silently
+      // destroys the connection's existing OAuth identity (CH-1 / brief
+      // incident 2: a header-only reconnect on the S4Water BC connections
+      // flipped authKind to api_key and dropped the oauth.* secret refs).
+      // Preserve the previous OAuth state and merge refs by configPath/name
+      // instead, so the request's values win per-path but nothing else is lost.
+      const reconnectSuppliesOAuthConfig =
+        Boolean(input.oauthClient) ||
+        Boolean(asRecord(input.configValues).oauth);
+      const preserveOAuthIdentity =
+        Boolean(revivedConnectionPrevious) && !reconnectSuppliesOAuthConfig;
+      const mergeSecretRefsByConfigPath = (
+        fresh: CreateToolConnection["credentialSecretRefs"],
+        previous: CreateToolConnection["credentialSecretRefs"],
+      ): CreateToolConnection["credentialSecretRefs"] => {
+        const freshPaths = new Set(fresh.map((ref) => ref.configPath));
+        const carried = previous.filter(
+          (ref) => !freshPaths.has(ref.configPath),
+        );
+        return [...fresh, ...carried];
+      };
+      const mergeCredentialRefsByName = (
+        fresh: McpConnectionCredentialRef[],
+        previous: McpConnectionCredentialRef[],
+      ): McpConnectionCredentialRef[] => {
+        const freshNames = new Set(fresh.map((ref) => ref.name));
+        const carried = previous.filter((ref) => !freshNames.has(ref.name));
+        return [...fresh, ...carried];
+      };
+      const reconnectAuthKind = preserveOAuthIdentity
+        ? revivedConnectionPrevious!.authKind
+        : genericAuthKind;
+      const reconnectConfig = preserveOAuthIdentity
+        ? {
+            ...config,
+            oauth:
+              asRecord(revivedConnectionPrevious!.config).oauth ??
+              config.oauth,
+          }
+        : config;
+      const reconnectCredentialSecretRefs = preserveOAuthIdentity
+        ? mergeSecretRefsByConfigPath(
+            connectionCredentialSecretRefs,
+            (revivedConnectionPrevious!.credentialSecretRefs ??
+              []) as CreateToolConnection["credentialSecretRefs"],
+          )
+        : connectionCredentialSecretRefs;
+      const reconnectCredentialRefs = preserveOAuthIdentity
+        ? mergeCredentialRefsByName(
+            credentialRefs,
+            (revivedConnectionPrevious!.credentialRefs ??
+              []) as McpConnectionCredentialRef[],
+          )
+        : credentialRefs;
       if (revivedConnectionPrevious) {
         [connectionRow] = await db
           .update(toolConnections)
           .set({
             name,
-            authKind: genericAuthKind,
+            authKind: reconnectAuthKind,
             transport,
             status: "draft",
             enabled: false,
-            config,
-            transportConfig: config,
-            credentialRefs,
-            credentialSecretRefs: connectionCredentialSecretRefs,
+            config: reconnectConfig,
+            transportConfig: reconnectConfig,
+            credentialRefs: reconnectCredentialRefs,
+            credentialSecretRefs: reconnectCredentialSecretRefs,
             credentialSource,
             externalCredential,
             credentialPolicy,
@@ -14952,6 +15183,17 @@ export function toolAccessService(
     activateQuarantined?: boolean;
     actor?: ActorInfo;
     interactionId?: string | null;
+    /**
+     * CH-3: `installs.length === 0` is not proof a connection is new — removing
+     * one revokes its grants and deletes its installs, so a connection revived
+     * afterward reaches this function with the same empty installs a brand-new
+     * one has. The caller must say which one this is from state it read before
+     * writing this callback's own grant (brief incident 4: a reconnect that
+     * had gone through a remove landed on every agent instead of the one it
+     * was scoped to). Only a genuinely new connection gets the open default;
+     * a reconnect leaves installs alone, even when that means empty.
+     */
+    isNewConnection: boolean;
   }) {
     const linkedInteraction = input.interactionId
       ? await db
@@ -14997,6 +15239,12 @@ export function toolAccessService(
         : suggestedAgentIds.length > 0
           ? { agentIds: suggestedAgentIds }
           : "all_agents";
+    // This drives finishGalleryAppConnection's action-policy binding below,
+    // which is independent of CH-3 (a connection's actions defaulting to
+    // company-wide is not the same question as which agents can see the
+    // connection at all) -- it stays keyed on installs.length alone. Only the
+    // agent-install seed further down is additionally gated on
+    // isNewConnection.
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0
@@ -15035,7 +15283,7 @@ export function toolAccessService(
       },
       input.actor,
     );
-    if (!deferTaskAccess && installs.length === 0) {
+    if (!deferTaskAccess && input.isNewConnection && installs.length === 0) {
       const installTargets =
         access === "all_agents"
           ? [
@@ -15086,6 +15334,10 @@ export function toolAccessService(
       stateRow.connectionId,
       stateRow.companyId,
     );
+    // CH-3: read before this callback writes its own grant below, so a
+    // connection revived after removal (whose revoked grant row survives)
+    // is never mistaken for genuinely new.
+    const isNewConnection = !(await connectionHasPriorGrant(connection));
     // The connection lifecycle, not the incidental presence of its app profile,
     // distinguishes setup from reauthorization. New connections and connections
     // revived after removal are drafts until this callback completes. A profile
@@ -15500,6 +15752,7 @@ export function toolAccessService(
           catalog: refresh.catalog,
           suggestedDefaults,
           activateQuarantined: true,
+          isNewConnection,
           actor: input.actor,
         })
       : null;
@@ -15560,6 +15813,8 @@ export function toolAccessService(
       stateRow.connectionId,
       stateRow.companyId,
     );
+    // CH-3: read before this callback writes its own grant below.
+    const isNewConnection = !(await connectionHasPriorGrant(connection));
     const credential = vercelCredentialFor(connection);
     if (
       credential.principalMode !== "user" ||
@@ -15728,6 +15983,7 @@ export function toolAccessService(
       connection,
       catalog: refresh.catalog,
       suggestedDefaults,
+      isNewConnection,
       actor: input.actor,
     });
     const [application] = await db
@@ -15790,6 +16046,9 @@ export function toolAccessService(
       stateRow.connectionId,
       stateRow.companyId,
     );
+    // CH-3: read before this callback writes its own grant further down, in
+    // either the personal or the organization branch.
+    const isNewConnection = !(await connectionHasPriorGrant(connection));
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
         ? connection.config.sourceTemplateKey
@@ -16092,6 +16351,7 @@ export function toolAccessService(
         connection,
         catalog: refresh.catalog,
         suggestedDefaults,
+        isNewConnection,
         actor: input.actor,
       });
       return {
@@ -16305,6 +16565,7 @@ export function toolAccessService(
       connection,
       catalog: refresh.catalog,
       suggestedDefaults,
+      isNewConnection,
       actor: input.actor,
     });
     return {
@@ -18018,6 +18279,10 @@ export function toolAccessService(
         })
         .returning();
       if (!grant) throw new Error("Failed to create connection installation");
+      // CH-2: this grant's refs must reach company_secret_bindings through the
+      // one writer that also derives from the connection's own refs and every
+      // other active grant, not a bespoke insert that can drift from it.
+      await syncCredentialBindings(connection);
       await db.insert(toolAccessAuditEvents).values({
         companyId: connection.companyId,
         connectionId: connection.id,
