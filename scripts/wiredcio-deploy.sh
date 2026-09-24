@@ -6,13 +6,14 @@
 # enforces this). It intentionally does not accept arguments: the deploy key
 # has no other capability, so the command it runs must be self-contained.
 #
-# docker-compose.managed.yml and .env.prod are VM-local, hand-authored files
-# that are NOT tracked in git (see doc/RELEASING-WIREDCIO.md for why). This
-# script never writes to either -- it only reads them, exactly as the manual
-# runbook always has.
+# docker-compose.managed.yml (in docker/) and .env.prod (one level up, at the
+# repo root) are VM-local, hand-authored files that are NOT tracked in git
+# (see doc/RELEASING-WIREDCIO.md for why). This script never writes to
+# either -- it only reads them, exactly as the manual runbook always has.
 set -euo pipefail
 
 cd /opt/paperclip
+COMPOSE_FILE=docker/docker-compose.managed.yml
 
 echo "==> Fetching wiredcio/deploy"
 # Use whatever remote this checkout's branch actually tracks rather than
@@ -33,10 +34,10 @@ fi
 echo "==> Deploying ${before_sha} -> ${after_sha}"
 
 echo "==> Building server image"
-docker compose --env-file .env.prod -f docker-compose.managed.yml build server
+docker compose --env-file .env.prod -f "$COMPOSE_FILE" build server
 
 echo "==> Restarting server"
-docker compose --env-file .env.prod -f docker-compose.managed.yml up -d server
+docker compose --env-file .env.prod -f "$COMPOSE_FILE" up -d server
 
 echo "==> Waiting for health check"
 health_url="http://localhost:${PORT:-3100}/api/health"
@@ -55,6 +56,6 @@ done
 echo "==> FAILED: server did not report healthy within 60s after deploying ${after_sha}" >&2
 echo "==> Rolling back to ${before_sha}" >&2
 git reset --hard "$before_sha"
-docker compose --env-file .env.prod -f docker-compose.managed.yml build server
-docker compose --env-file .env.prod -f docker-compose.managed.yml up -d server
+docker compose --env-file .env.prod -f "$COMPOSE_FILE" build server
+docker compose --env-file .env.prod -f "$COMPOSE_FILE" up -d server
 exit 1
