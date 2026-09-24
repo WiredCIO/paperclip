@@ -15,9 +15,14 @@ set -euo pipefail
 cd /opt/paperclip
 
 echo "==> Fetching wiredcio/deploy"
-git fetch origin wiredcio/deploy
+# Use whatever remote this checkout's branch actually tracks rather than
+# assuming a remote name -- this checkout names the WiredCIO fork "fork" and
+# "origin" points at upstream paperclipai/paperclip, which is the opposite of
+# what a fresh clone would usually be named.
+upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{u})"
+git fetch "${upstream%%/*}"
 before_sha="$(git rev-parse HEAD)"
-git reset --hard origin/wiredcio/deploy
+git reset --hard "$upstream"
 after_sha="$(git rev-parse HEAD)"
 
 if [ "$before_sha" = "$after_sha" ]; then
