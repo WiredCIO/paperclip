@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # WiredCIO production deploy script for vm-paperclip.
 #
-# This is the SOLE command the CI deploy SSH key is authorized to run (see
-# doc/RELEASING-WIREDCIO.md for the forced-command authorized_keys entry that
-# enforces this). It intentionally does not accept arguments: the deploy key
-# has no other capability, so the command it runs must be self-contained.
+# Runs directly on the self-hosted GitHub Actions runner installed on this
+# VM (see doc/RELEASING-WIREDCIO.md). It intentionally does not accept
+# arguments beyond its own re-exec bookkeeping.
 #
 # docker-compose.managed.yml (in docker/) and .env.prod (one level up, at the
 # repo root) are VM-local, hand-authored files that are NOT tracked in git
@@ -15,23 +14,35 @@ set -euo pipefail
 cd /opt/paperclip
 COMPOSE_FILE=docker/docker-compose.managed.yml
 
-echo "==> Fetching wiredcio/deploy"
-# Use whatever remote this checkout's branch actually tracks rather than
-# assuming a remote name -- this checkout names the WiredCIO fork "fork" and
-# "origin" points at upstream paperclipai/paperclip, which is the opposite of
-# what a fresh clone would usually be named.
-upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{u})"
-git fetch "${upstream%%/*}"
-before_sha="$(git rev-parse HEAD)"
-git reset --hard "$upstream"
-after_sha="$(git rev-parse HEAD)"
+if [ "${WIREDCIO_DEPLOY_REEXECED:-}" != "1" ]; then
+  echo "==> Fetching wiredcio/deploy"
+  # Use whatever remote this checkout's branch actually tracks rather than
+  # assuming a remote name -- this checkout names the WiredCIO fork "fork"
+  # and "origin" points at upstream paperclipai/paperclip, which is the
+  # opposite of what a fresh clone would usually be named.
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name @{u})"
+  git fetch "${upstream%%/*}"
+  before_sha="$(git rev-parse HEAD)"
+  git reset --hard "$upstream"
+  after_sha="$(git rev-parse HEAD)"
 
-if [ "$before_sha" = "$after_sha" ]; then
-  echo "==> Already at ${after_sha}, nothing to deploy"
-  exit 0
+  if [ "$before_sha" = "$after_sha" ]; then
+    echo "==> Already at ${after_sha}, nothing to deploy"
+    exit 0
+  fi
+
+  echo "==> Deploying ${before_sha} -> ${after_sha}"
+  # The git reset above just rewrote this very file on disk. bash already
+  # read the whole script into memory before running it, so without this
+  # re-exec every deploy would keep running last run's script -- permanently
+  # one commit behind its own fixes, which is exactly what happened across
+  # the #53/#54 rollout (a fix would only take effect on the *next* push).
+  # Hand off to a fresh process that reads the file fresh off disk.
+  exec env WIREDCIO_DEPLOY_REEXECED=1 WIREDCIO_DEPLOY_BEFORE_SHA="$before_sha" "$0"
 fi
 
-echo "==> Deploying ${before_sha} -> ${after_sha}"
+before_sha="${WIREDCIO_DEPLOY_BEFORE_SHA:?}"
+after_sha="$(git rev-parse HEAD)"
 
 echo "==> Building server image"
 docker compose --env-file .env.prod -f "$COMPOSE_FILE" build server
