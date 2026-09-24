@@ -37,7 +37,27 @@ const secretRefSchema = z.object({
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
+/**
+ * CH-6: which origin a run on this environment uses to reach Paperclip's own
+ * MCP endpoints. Omitted means local -> loopback, remote -> public_https.
+ * See `paperclip-reachability.ts`.
+ */
+const paperclipReachabilitySchema = z.object({
+  mode: z.enum(["loopback", "public_https", "bridge"]),
+  publicUrl: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((value) => (value && value.length > 0 ? value.replace(/\/+$/, "") : null))
+    .refine(
+      (value) => value === null || /^https:\/\//i.test(value),
+      "paperclipReachability.publicUrl must be an https:// URL: a sandbox reaches it over the public internet, and plain HTTP would send the per-run bearer token in clear text.",
+    ),
+}).strict();
+
 const sshEnvironmentConfigSchema = z.object({
+  paperclipReachability: paperclipReachabilitySchema.optional(),
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
@@ -69,6 +89,7 @@ const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
 const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
 
 const fakeSandboxEnvironmentConfigSchema = z.object({
+  paperclipReachability: paperclipReachabilitySchema.optional(),
   provider: z.literal("fake").default("fake"),
   image: z
     .string()
@@ -96,6 +117,7 @@ const pluginSandboxProviderKeySchema = z.string()
   );
 
 const pluginSandboxEnvironmentConfigSchema = z.object({
+  paperclipReachability: paperclipReachabilitySchema.optional(),
   provider: pluginSandboxProviderKeySchema,
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
