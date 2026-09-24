@@ -4,9 +4,19 @@ name: WiredCIO Deploy
 # wiredcio/deploy. There is deliberately no approval gate here: merging to
 # this branch IS the deploy trigger. See doc/RELEASING-WIREDCIO.md for the
 # safety model this relies on instead (a branch ruleset requiring `ci /
-# verify` and `review` to pass before a PR can merge, plus a deploy SSH key
-# that is forced-command-restricted to scripts/wiredcio-deploy.sh and nothing
-# else on the VM).
+# verify` to pass before a PR can merge).
+#
+# This job runs on a self-hosted runner installed directly on vm-paperclip
+# (label: wiredcio-deploy), not a GitHub-hosted runner. That's not
+# incidental: vm-paperclip's NSG only allows SSH from a handful of known
+# static IPs, and GitHub-hosted runners come from a pool of ~7,000+
+# constantly-rotating CIDR ranges that can never be fully allowlisted. A
+# self-hosted runner polls GitHub over an outbound connection, so no inbound
+# access to the VM is needed at all -- the NSG stays exactly as narrow as it
+# was before this pipeline existed. The tradeoff, and the reason this
+# runner's installation was deliberately not automated, is that anything
+# able to schedule a job against the `wiredcio-deploy` label can execute
+# code on this VM.
 #
 # Gated to the WiredCIO fork only, mirroring how upstream's own workflows
 # (release.yml, docker.yml) gate to paperclipai/paperclip.
@@ -26,28 +36,8 @@ concurrency:
 jobs:
   deploy:
     if: github.repository == 'WiredCIO/paperclip'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, wiredcio-deploy]
     timeout-minutes: 10
     steps:
-      - name: Deploy to vm-paperclip
-        env:
-          DEPLOY_HOST: ${{ vars.WIREDCIO_DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.WIREDCIO_DEPLOY_USER }}
-          DEPLOY_KEY: ${{ secrets.WIREDCIO_DEPLOY_SSH_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${DEPLOY_HOST:-}" ] || [ -z "${DEPLOY_USER:-}" ] || [ -z "${DEPLOY_KEY:-}" ]; then
-            echo "::error::WIREDCIO_DEPLOY_HOST / WIREDCIO_DEPLOY_USER repo variables or the WIREDCIO_DEPLOY_SSH_KEY secret are not set" >&2
-            exit 1
-          fi
-          install -m 600 /dev/null /tmp/wiredcio_deploy_key
-          printf '%s\n' "$DEPLOY_KEY" > /tmp/wiredcio_deploy_key
-          mkdir -p ~/.ssh
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          # The remote authorized_keys entry forces this connection to run
-          # scripts/wiredcio-deploy.sh regardless of what command is passed
-          # here, so this is the only thing the key can ever do.
-          ssh -i /tmp/wiredcio_deploy_key -o StrictHostKeyChecking=yes "${DEPLOY_USER}@${DEPLOY_HOST}" deploy
-      - name: Clean up deploy key
-        if: always()
-        run: rm -f /tmp/wiredcio_deploy_key
+      - name: Deploy
+        run: /opt/paperclip/scripts/wiredcio-deploy.sh
