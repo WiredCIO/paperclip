@@ -131,3 +131,18 @@ export const sessionCodec: AdapterSessionCodec = {
     );
   },
 };
+
+export {
+  parseClaudeOauthCredential,
+  hasRenewableClaudeOauthValue,
+  serializeClaudeOauthCredential,
+  decideClaudeAuthMerge,
+  CLAUDE_USE_SOURCE,
+  CLAUDE_KEEP_DESTINATION,
+  CLAUDE_UNREADABLE_EXPIRY,
+  CLAUDE_IMPLAUSIBLE_EXPIRY,
+  CLAUDE_MAX_PLAUSIBLE_EXPIRY_MS,
+  type ClaudeOauthCredential,
+  type ClaudeOauthValue,
+  type ClaudeAuthMergeDecision,
+} from "./claude-auth-credential.js";

@@ -15,6 +15,12 @@ import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import {
+  decideClaudeAuthMerge,
+  hasRenewableClaudeOauthValue,
+  parseClaudeOauthCredential,
+  CLAUDE_USE_SOURCE,
+} from "@paperclipai/adapter-claude-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -367,7 +373,8 @@ export async function prepareManagedAiRuntime(
                     : await decideGrokAuthMerge(authFile, destination, {
                         errorLabel: "AI account refresh",
                       });
-                if (decision !== 10) return;
+                // 10 across all three predicates: install the refreshed source.
+                if (decision !== CLAUDE_USE_SOURCE) return;
                 const ref = grant.credentialSecretRefs.find(
                   (r) => r.configPath === "ai.credential",
                 )!;
