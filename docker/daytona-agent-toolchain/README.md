@@ -138,9 +138,22 @@ far the largest component, and a restore of a wide package graph is the most
 likely way to exhaust the remainder at run time. Raising the cap is a
 support@daytona.io conversation, not a config change.
 
-Memory is separately constrained by the plugin's schema, which accepts only
-1, 2, 4 or 8 GiB. **8 is confirmed working on this plan** — disk is the only
-resource the account caps below what the schema allows.
+Memory is constrained twice over. The plugin's schema accepts only 1, 2, 4 or
+8 GiB, and the Daytona organization caps **total concurrent memory at 10 GiB**
+across every running sandbox:
+
+```
+Total memory limit exceeded. Maximum allowed: 10GiB.
+To increase concurrency limits, upgrade your organization's Tier
+```
+
+**Use 4, not 8.** A single 8 GiB sandbox starts fine, so 8 looks valid until the
+second sandbox is needed — and then nothing can run beside it. Two 4 GiB
+sandboxes fit the cap; 8 plus anything does not. Capturing a custom image while
+an agent is running needs two at once, as does running two Daytona agents. Even
+a single orphan blocks the budget: a released lease can leave a sandbox
+`Started` until the 15 minute auto-stop fires, which is exactly how the first
+capture attempt here failed.
 
 ### Confirmed working environment
 
@@ -150,7 +163,7 @@ lease released cleanly):
 | Setting | Value |
 | --- | --- |
 | `cpu` | 4 |
-| `memory` | 8 |
+| `memory` | 4 (8 starts, but exhausts the 10 GiB org cap) |
 | `disk` | 10 (the cap) |
 | `target` | `us` |
 | `apiKey` | the `Daytona` company secret, by reference |
