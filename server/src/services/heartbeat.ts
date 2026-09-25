@@ -9,6 +9,10 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import {
+  readAgentRuntimeLimits,
+  resolveAgentRuntimeLimits,
+} from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -23858,6 +23862,22 @@ export function heartbeatService(
                   }
                 : {}),
             };
+            // CH-17: one resolution of this run's bounds, layering the agent's
+            // typed `limits` over any legacy `adapterConfig.maxTurns`, then the
+            // built-in defaults. Adapters read `ctx.limits` and map it onto
+            // their own flags, instead of each reading `adapterConfig.maxTurns`
+            // where both unset and 0 meant uncapped.
+            //
+            // The company tier the issue describes (`companies.settings
+            // .runtimeDefaults`) is not wired: `companies` has no `settings`
+            // column yet, and adding one is a migration. `resolveAgentRuntimeLimits`
+            // already takes `company`, so that tier is a one-line change here
+            // once the column lands.
+            const resolvedRunLimits = resolveAgentRuntimeLimits({
+              agent: readAgentRuntimeLimits(agent.runtimeConfig),
+              company: null,
+              adapterConfig: agent.adapterConfig,
+            });
             const runtimeTools = createAdapterRuntimeToolAccess({
               agentId: agent.id,
               companyId: agent.companyId,
@@ -23921,6 +23941,10 @@ export function heartbeatService(
                     executionContinuation: executionContinuation ?? null,
                     runtimeCommandSpec:
                       adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+                    // CH-17: resolved once here so every adapter enforces the
+                    // same bounds, rather than each reading its own
+                    // `adapterConfig.maxTurns` where unset meant uncapped.
+                    limits: resolvedRunLimits,
                     executionTarget,
                     executionTransport: remoteExecution
                       ? {

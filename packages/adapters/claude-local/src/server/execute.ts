@@ -318,7 +318,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   );
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
-    asNumber(config.timeoutSec, 0),
+    // CH-17: fall back to the host-resolved run timeout rather than 0, which
+    // meant no timeout at all.
+    asNumber(config.timeoutSec, ctx.limits?.runTimeoutSec ?? 0),
   );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
@@ -435,7 +437,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
-  const maxTurns = asNumber(config.maxTurnsPerRun, 0);
+  // CH-17: the host-resolved cap is authoritative when present; a null cap
+  // means uncapped was asked for explicitly and maps to 0, omitting the flag.
+  const maxTurns = ctx.limits
+    ? (ctx.limits.maxTurnsPerRun ?? 0)
+    : asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);

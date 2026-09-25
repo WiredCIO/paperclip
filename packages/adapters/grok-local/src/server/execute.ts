@@ -265,7 +265,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // execution for tool ..."). --always-approve alone is the unattended policy.
   const permissionMode = asString(config.permissionMode, "").trim();
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
-  const maxTurns = asNumber(config.maxTurns, 0);
+  // CH-17: `ctx.limits` is authoritative when present — the host already
+  // layered this agent's typed limits over any legacy `adapterConfig.maxTurns`.
+  // A null cap means uncapped was asked for explicitly, and maps to 0, which
+  // omits the flag. Without limits (an adapter invoked outside the heartbeat)
+  // the old config read stands.
+  const maxTurns = ctx.limits
+    ? (ctx.limits.maxTurnsPerRun ?? 0)
+    : asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
   // Grok has no MCP-free way to check a vendor's current behaviour, so a run
   // with search disabled has only its priors to work from. Opt-out, not
@@ -302,7 +309,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     skillEntries: grokSkillEntries,
     desiredSkillNames: desiredGrokSkillNames,
     mcpServers: runtimeMcpServers,
-    mcpToolTimeoutSec: asNumber(config.mcpToolTimeoutSec, DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC),
+    // CH-17: the host-resolved tool timeout, with the adapter's own key still
+    // winning when set explicitly.
+    mcpToolTimeoutSec: asNumber(
+      config.mcpToolTimeoutSec,
+      ctx.limits?.mcpToolTimeoutSec ?? DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC,
+    ),
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
@@ -381,7 +393,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
-      asNumber(config.timeoutSec, 0),
+      // CH-17: fall back to the host-resolved run timeout instead of 0, which
+      // meant "no timeout at all".
+      asNumber(config.timeoutSec, ctx.limits?.runTimeoutSec ?? 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({

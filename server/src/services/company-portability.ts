@@ -814,7 +814,13 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
   claude_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
-    { path: ["maxTurnsPerRun"], value: 1000 },
+    // CH-17: the `maxTurnsPerRun: 1000` seed is gone. It was the only turn cap
+    // any adapter had, it was effectively no cap at all, and a run doing 26-30
+    // iterations under it replayed context every turn — the shape of the 7.9M
+    // input tokens in 89 minutes that tripped the org spend cap. A seeded agent
+    // now falls through to the typed default of 40
+    // (`DEFAULT_AGENT_RUNTIME_LIMITS`), and an agent that genuinely needs more
+    // sets `runtimeConfig.limits.maxTurnsPerRun` or `unlimited: true`.
   ],
   openclaw_gateway: [
     { path: ["timeoutSec"], value: 120 },
