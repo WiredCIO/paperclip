@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  renderAgentsToolsSection,
+  stageRuntimeMcp,
+} from "@paperclipai/adapter-utils/runtime-mcp-staging";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -80,6 +84,7 @@ import {
   prepareClaudeConfigSeed,
   resolveManagedClaudeRuntimeStateDir,
   resolveSharedClaudeConfigDir,
+  buildPaperclipClaudeMcpServerEntries,
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
 import {
@@ -553,13 +558,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Warning: skill "${entry.key}" is enabled for this agent but its files are unavailable and it was not mounted${entry.missingDetail ? `: ${entry.missingDetail}` : "."}\n`,
     );
   }
+  // CH-22: resolved before the bundle so the generated Tools section can join
+  // `combinedInstructionsContents`. It must ride the bundle rather than the
+  // `--append-system-prompt-file` flag: that flag is skipped on a resumed
+  // session, so a section attached to it would never reach a resumed run.
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  // `PAPERCLIP_RUNTIME_TOOLS_GUIDANCE` is an environment variable nothing
+  // surfaces to a model, so an agent had no way to learn its tools were already
+  // configured. Deterministic text, so it participates in the bundle cache key
+  // and only busts it when the server set really changes.
+  const runtimeToolsSection = renderAgentsToolsSection(runtimeMcpServers);
+  if (runtimeToolsSection) {
+    combinedInstructionsContents = combinedInstructionsContents
+      ? `${combinedInstructionsContents}
+
+${runtimeToolsSection.trim()}`
+      : runtimeToolsSection.trim();
+  }
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
     skills: mountableSkillEntries,
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
-  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
   const runtimeMcpIdentity = JSON.stringify(
     runtimeMcpServers.map(({ name, url, connectionId }) => ({ name, url, connectionId })),
   );
@@ -568,11 +589,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent.companyId,
     agent.id,
   );
-  const localMcpConfigPath = await writePaperclipClaudeMcpConfig({
-    stateDir: claudeRuntimeStateDir,
-    runId,
-    servers: runtimeMcpServers,
-  });
+  // CH-22: a local run now stages its MCP config inside the workspace, under
+  // `.paperclip-runtime/claude/`, instead of a private state directory nobody
+  // thinks to look in. A remote run already lands there in the sandbox via the
+  // `mcp-config` asset, so this makes the two lanes agree and gives anyone
+  // debugging a run a file to read.
+  //
+  // No git exclude: `.paperclip-runtime/` is the path the workspace sync
+  // preserves, and marking it ignored is exactly what stopped the grok config
+  // reaching a sandbox (#66). The directory is removed on teardown instead.
+  const stagedRuntimeMcp = executionTargetIsRemote
+    ? null
+    : await stageRuntimeMcp({
+        cwd,
+        runId,
+        servers: runtimeMcpServers,
+        relativePath: path.join(".paperclip-runtime", "claude", "mcp-config.json"),
+        gitExcludeEntry: null,
+        body: {
+          format: "mcp_json",
+          entries: (servers) => buildPaperclipClaudeMcpServerEntries(servers),
+        },
+        onLog,
+      });
+  const localMcpConfigPath = stagedRuntimeMcp?.configPath
+    ?? (await writePaperclipClaudeMcpConfig({
+      stateDir: claudeRuntimeStateDir,
+      runId,
+      servers: runtimeMcpServers,
+    }));
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
@@ -1368,6 +1413,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
+    // CH-22: remove the workspace-staged MCP config. It carries a per-run
+    // bearer token and belongs to this run only.
+    if (stagedRuntimeMcp) await stagedRuntimeMcp.cleanup();
     if (paperclipBridge) {
       await paperclipBridge.stop();
     }
