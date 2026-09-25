@@ -113,6 +113,34 @@ resource request to pass silently when a snapshot is configured, and
 environment with: *"Daytona resource settings require image-backed sandbox
 creation."*
 
+## Size budget: 10 GiB per sandbox
+
+The Daytona account this fork uses **caps disk at 10 GiB per sandbox**. A probe
+requesting more fails with:
+
+```
+Disk request 20GB exceeds maximum allowed per sandbox (10GB).
+Need higher resource limits per-sandbox? Contact us at support@daytona.io
+```
+
+So the whole working set has to fit in 10 GiB: this image, the workspace clone,
+the NuGet cache and any `obj/bin` output. For reference the previous D365 image
+(`ghcr.io/wiredcio/agent-runtime-connectability`) is 3.79 GB and ran on disk 10.
+
+Measure before snapshotting:
+
+```bash
+docker image inspect --format '{{.Size}}' ghcr.io/wiredcio/paperclip-agent-toolchain:grok1.0.40-dotnet10.0.401-pac2.12.2
+```
+
+If it grows much past ~4 GB, the .NET SDK is the place to look first — it is by
+far the largest component, and a restore of a wide package graph is the most
+likely way to exhaust the remainder at run time. Raising the cap is a
+support@daytona.io conversation, not a config change.
+
+Memory is separately constrained: the plugin's schema only accepts 1, 2, 4 or
+8 GiB, and the plan may cap that too — 4 is confirmed working, 8 is untested.
+
 ## Bump procedure
 
 1. Change the version build arg in the `Dockerfile`, and for .NET fetch the new
