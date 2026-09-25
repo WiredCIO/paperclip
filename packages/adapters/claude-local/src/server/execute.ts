@@ -104,6 +104,8 @@ const executeClaudeAcp = createClaudeAcpExecutor();
 
 interface ClaudeExecutionInput {
   runId: string;
+  /** CH-17: host-resolved run limits; `buildClaudeRuntimeConfig` has no `ctx`. */
+  limits?: AdapterExecutionContext["limits"];
   agent: AdapterExecutionContext["agent"];
   config: Record<string, unknown>;
   context: Record<string, unknown>;
@@ -169,7 +171,7 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
-  const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken } = input;
+  const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken, limits } = input;
   const onLog = input.onLog ?? (async () => {});
 
   const command = asString(config.command, "claude");
@@ -320,7 +322,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTarget,
     // CH-17: fall back to the host-resolved run timeout rather than 0, which
     // meant no timeout at all.
-    asNumber(config.timeoutSec, ctx.limits?.runTimeoutSec ?? 0),
+    asNumber(config.timeoutSec, limits?.runTimeoutSec ?? 0),
   );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
@@ -471,6 +473,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimeCommandSpec: ctx.runtimeCommandSpec,
     executionTarget,
     authToken,
+    limits: ctx.limits,
     onLog,
   });
   const {
