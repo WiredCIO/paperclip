@@ -234,6 +234,65 @@ export function findStaleRuntimeMcpEntries(input: {
 }
 
 /**
+ * The JSON counterpart of {@link findStaleRuntimeMcpEntries}. A `.mcp.json`
+ * entry is stale on the same terms: it is ours, it points at this deployment,
+ * and its bearer is not from this run.
+ */
+export function findStaleJsonMcpEntries(input: {
+  source: string;
+  origins: readonly string[];
+  currentTokens: readonly string[];
+}): string[] {
+  const origins = input.origins.filter((origin) => origin.trim().length > 0);
+  if (origins.length === 0) return [];
+  const current = new Set(input.currentTokens.filter((token) => token.trim().length > 0));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.source);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const servers = (parsed as Record<string, unknown>).mcpServers;
+  if (servers === null || typeof servers !== "object" || Array.isArray(servers)) return [];
+  const stale: string[] = [];
+  for (const [key, value] of Object.entries(servers as Record<string, unknown>)) {
+    if (!isPaperclipKey(key)) continue;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const url = typeof entry.url === "string" ? entry.url : "";
+    if (!origins.some((origin) => url.startsWith(origin))) continue;
+    const headers =
+      entry.headers && typeof entry.headers === "object" && !Array.isArray(entry.headers)
+        ? (entry.headers as Record<string, unknown>)
+        : {};
+    const authorization = Object.entries(headers).find(
+      ([name]) => name.toLowerCase() === "authorization",
+    )?.[1];
+    const bearer =
+      typeof authorization === "string" ? /^Bearer\s+(.+)$/.exec(authorization)?.[1] : undefined;
+    if (!bearer) continue;
+    if (current.has(bearer.trim())) continue;
+    stale.push(key);
+  }
+  return stale;
+}
+
+/** Removes named `paperclip-*` servers from a JSON document. */
+export function removeJsonServerKeys(source: string, keys: readonly string[]): string {
+  const doomed = new Set(keys);
+  const parsed = JSON.parse(source) as Record<string, unknown>;
+  const servers = (parsed.mcpServers ?? {}) as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(servers)) {
+    if (doomed.has(key)) continue;
+    kept[key] = value;
+  }
+  return `${JSON.stringify({ ...parsed, mcpServers: kept }, null, 2)}
+`;
+}
+
+/**
  * Removes named `paperclip-*` server tables from a TOML document, leaving
  * everything else intact.
  */
@@ -262,18 +321,28 @@ export async function sweepStaleRuntimeMcpTokens(input: {
   for (const file of input.files) {
     const source = await fs.readFile(file, "utf8").catch(() => null);
     if (!source) continue;
-    const stale = findStaleRuntimeMcpEntries({
-      source,
-      origins: input.origins,
-      currentTokens: input.currentTokens,
-    });
+    const isJson = file.toLowerCase().endsWith(".json");
+    const stale = isJson
+      ? findStaleJsonMcpEntries({
+          source,
+          origins: input.origins,
+          currentTokens: input.currentTokens,
+        })
+      : findStaleRuntimeMcpEntries({
+          source,
+          origins: input.origins,
+          currentTokens: input.currentTokens,
+        });
     if (stale.length === 0) continue;
     const managed =
       typeof input.managedRoot === "string" &&
       input.managedRoot.length > 0 &&
       !path.relative(input.managedRoot, file).startsWith("..");
     if (managed) {
-      await fs.writeFile(file, removeTomlServerKeys(source, stale), { mode: 0o600 });
+      const next = isJson
+        ? removeJsonServerKeys(source, stale)
+        : removeTomlServerKeys(source, stale);
+      await fs.writeFile(file, next, { mode: 0o600 });
     }
     for (const serverKey of stale) findings.push({ path: file, serverKey, removed: managed });
   }
@@ -326,4 +395,158 @@ export function withAgentsToolsSection(
   );
   if (section.length === 0) return `${stripped.replace(/\s+$/, "")}\n`;
   return `${stripped.replace(/\s+$/, "")}\n${section}`;
+}
+
+// --------------------------------------------------------------------------
+// Staging orchestration
+// --------------------------------------------------------------------------
+
+/**
+ * Appends an ignore entry to the clone's local git exclude, so a run that
+ * stages a bearer token into the working tree cannot commit it with a broad
+ * `git add`. `info/exclude` is local to the clone and never itself committed.
+ *
+ * Resolves the git directory rather than assuming `<cwd>/.git` is one. Under a
+ * worktree strategy `.git` is a *file* containing `gitdir: <path>`, and the
+ * previous implementation threw ENOTDIR there and silently returned false —
+ * leaving the token neither excluded nor protected.
+ */
+export async function ensureRuntimeMcpGitExcluded(
+  cwd: string,
+  entry: string,
+): Promise<boolean> {
+  const gitPath = path.join(cwd, ".git");
+  let gitDir: string;
+  try {
+    const stats = await fs.stat(gitPath);
+    if (stats.isDirectory()) {
+      gitDir = gitPath;
+    } else {
+      const pointer = await fs.readFile(gitPath, "utf8");
+      const match = /^gitdir:\s*(.+)$/m.exec(pointer);
+      if (!match) return false;
+      const target = match[1]!.trim();
+      gitDir = path.isAbsolute(target) ? target : path.resolve(cwd, target);
+    }
+  } catch {
+    return false;
+  }
+
+  const excludePath = path.join(gitDir, "info", "exclude");
+  try {
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    const current = await fs.readFile(excludePath, "utf8").catch(() => "");
+    if (current.split(/\r?\n/).some((line) => line.trim() === entry)) return false;
+    const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
+    await fs.appendFile(excludePath, `${separator}${entry}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface StagedRuntimeMcp {
+  /** Absolute path written, or null when there was nothing to stage. */
+  configPath: string | null;
+  stagedServerCount: number;
+  /** True when the run merged into a file it did not create. */
+  mergedIntoExisting: boolean;
+  /** Restores or removes everything this call created. */
+  cleanup: () => Promise<void>;
+}
+
+type RuntimeMcpBody =
+  | { format: "grok_toml"; render: (servers: AdapterRuntimeMcpServer[]) => string }
+  | {
+      format: "mcp_json";
+      entries: (servers: AdapterRuntimeMcpServer[]) => Record<string, unknown>;
+    };
+
+/**
+ * Writes Paperclip's MCP servers into a runner's config file, merging with
+ * whatever is already there and undoing itself afterwards.
+ *
+ * This is the orchestration every local adapter needs and each was reinventing:
+ * merge rather than clobber, `0600` because the file carries a bearer token,
+ * a git exclude when the file lands in the working tree, and a teardown that
+ * restores a pre-existing file instead of deleting someone else's content.
+ */
+export async function stageRuntimeMcp(input: {
+  cwd: string;
+  runId: string;
+  servers: AdapterRuntimeMcpServer[];
+  /** Config path relative to `cwd`. */
+  relativePath: string;
+  body: RuntimeMcpBody;
+  /**
+   * Ignore entry for the clone's git exclude. Omit for a path already outside
+   * version control's interest, such as anything under `.paperclip-runtime/`,
+   * where excluding would also drop the file from the remote workspace sync.
+   */
+  gitExcludeEntry?: string | null;
+  onLog?: (stream: "stdout" | "stderr", line: string) => Promise<void> | void;
+}): Promise<StagedRuntimeMcp> {
+  const noop: StagedRuntimeMcp = {
+    configPath: null,
+    stagedServerCount: 0,
+    mergedIntoExisting: false,
+    cleanup: async () => {},
+  };
+  if (input.servers.length === 0) return noop;
+
+  const configPath = path.join(input.cwd, input.relativePath);
+  const configDir = path.dirname(configPath);
+  const createdDir = await fs
+    .access(configDir)
+    .then(() => false)
+    .catch(() => true);
+  const previous = await fs.readFile(configPath, "utf8").catch(() => null);
+
+  let next: string;
+  if (input.body.format === "grok_toml") {
+    next = mergeGrokTomlMcpServers(previous ?? "", input.body.render(input.servers));
+  } else {
+    try {
+      next = mergeJsonMcpServers(previous, input.body.entries(input.servers));
+    } catch (error) {
+      // An unparseable config is left exactly as found. Rewriting it would
+      // destroy content this run does not own, and the run is better off
+      // without its tools than having silently replaced a file.
+      await input.onLog?.(
+        "stderr",
+        `[paperclip] ${configPath} is not valid JSON; leaving it unchanged and staging no MCP servers. ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+      return noop;
+    }
+  }
+
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(configPath, next, { mode: 0o600 });
+  if (input.gitExcludeEntry) {
+    await ensureRuntimeMcpGitExcluded(input.cwd, input.gitExcludeEntry);
+  }
+  if (previous !== null) {
+    await input.onLog?.(
+      "stdout",
+      `[paperclip] Merged ${input.servers.length} Paperclip MCP server(s) into the existing ${configPath}; its own entries were kept.\n`,
+    );
+  }
+
+  return {
+    configPath,
+    stagedServerCount: input.servers.length,
+    mergedIntoExisting: previous !== null,
+    cleanup: async () => {
+      if (previous !== null) {
+        await fs.writeFile(configPath, previous, { mode: 0o600 }).catch(() => undefined);
+        return;
+      }
+      await fs.rm(configPath, { force: true }).catch(() => undefined);
+      if (createdDir) {
+        await fs.rm(configDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    },
+  };
 }

@@ -13,6 +13,10 @@ import {
   renderAgentsToolsSection,
   splitTomlBlocks,
   sweepStaleRuntimeMcpTokens,
+  ensureRuntimeMcpGitExcluded,
+  stageRuntimeMcp,
+  findStaleJsonMcpEntries,
+  removeJsonServerKeys,
   toPaperclipServerKey,
   withAgentsToolsSection,
 } from "./runtime-mcp-staging.js";
@@ -278,5 +282,165 @@ describe("Agents.md Tools section", () => {
     expect(updated).toContain("Keep me.");
     expect(updated).not.toContain("- Stale");
     expect(updated).toContain("- Dataverse (prod)");
+  });
+});
+
+describe("ensureRuntimeMcpGitExcluded", () => {
+  it("appends to a normal clone's exclude file, once", async () => {
+    const cwd = await tempDir();
+    await fs.mkdir(path.join(cwd, ".git", "info"), { recursive: true });
+    await fs.writeFile(path.join(cwd, ".git", "info", "exclude"), "# existing\n");
+
+    expect(await ensureRuntimeMcpGitExcluded(cwd, ".grok/")).toBe(true);
+    expect(await ensureRuntimeMcpGitExcluded(cwd, ".grok/")).toBe(false);
+    const exclude = await fs.readFile(path.join(cwd, ".git", "info", "exclude"), "utf8");
+    expect(exclude).toContain("# existing");
+    expect(exclude.split(/\r?\n/).filter((l) => l.trim() === ".grok/")).toHaveLength(1);
+  });
+
+  it("follows a worktree's .git file instead of throwing ENOTDIR", async () => {
+    // The previous implementation assumed <cwd>/.git was a directory, so under
+    // the git_worktree strategy it failed silently and the token stayed
+    // committable.
+    const root = await tempDir();
+    const realGitDir = path.join(root, "repo.git", "worktrees", "wt");
+    await fs.mkdir(path.join(realGitDir, "info"), { recursive: true });
+    const cwd = path.join(root, "wt");
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.writeFile(path.join(cwd, ".git"), `gitdir: ${realGitDir}\n`);
+
+    expect(await ensureRuntimeMcpGitExcluded(cwd, ".grok/")).toBe(true);
+    expect(await fs.readFile(path.join(realGitDir, "info", "exclude"), "utf8")).toContain(".grok/");
+  });
+
+  it("resolves a relative gitdir pointer", async () => {
+    const root = await tempDir();
+    const cwd = path.join(root, "wt");
+    await fs.mkdir(path.join(root, "gd", "info"), { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.writeFile(path.join(cwd, ".git"), "gitdir: ../gd\n");
+
+    expect(await ensureRuntimeMcpGitExcluded(cwd, ".grok/")).toBe(true);
+    expect(await fs.readFile(path.join(root, "gd", "info", "exclude"), "utf8")).toContain(".grok/");
+  });
+
+  it("returns false outside a repository rather than failing the run", async () => {
+    expect(await ensureRuntimeMcpGitExcluded(await tempDir(), ".grok/")).toBe(false);
+  });
+});
+
+describe("stageRuntimeMcp", () => {
+  const servers = [
+    { name: "Dataverse", url: "https://bullpen.example/mcp/gateways/gw1", token: "t1", connectionId: "c1" },
+  ];
+  const tomlBody = {
+    format: "grok_toml" as const,
+    render: () => '[mcp_servers.paperclip-dataverse]\nurl = "https://bullpen.example/mcp/gateways/gw1"\n',
+  };
+
+  it("creates the config and removes it, with the directory, on cleanup", async () => {
+    const cwd = await tempDir();
+    const staged = await stageRuntimeMcp({
+      cwd, runId: "r1", servers, relativePath: ".grok/config.toml", body: tomlBody,
+    });
+    expect(staged.mergedIntoExisting).toBe(false);
+    expect(await fs.readFile(staged.configPath!, "utf8")).toContain("paperclip-dataverse");
+
+    await staged.cleanup();
+    await expect(fs.access(path.join(cwd, ".grok"))).rejects.toThrow();
+  });
+
+  it("restores a file it merged into rather than deleting it", async () => {
+    const cwd = await tempDir();
+    await fs.mkdir(path.join(cwd, ".grok"), { recursive: true });
+    await fs.writeFile(path.join(cwd, ".grok", "config.toml"), FOREIGN_TOML);
+
+    const staged = await stageRuntimeMcp({
+      cwd, runId: "r1", servers, relativePath: ".grok/config.toml", body: tomlBody,
+    });
+    expect(staged.mergedIntoExisting).toBe(true);
+    expect(await fs.readFile(staged.configPath!, "utf8")).toContain("[mcp_servers.my-own-thing]");
+
+    await staged.cleanup();
+    expect(await fs.readFile(path.join(cwd, ".grok", "config.toml"), "utf8")).toBe(FOREIGN_TOML);
+  });
+
+  it("stages nothing when there are no servers", async () => {
+    const staged = await stageRuntimeMcp({
+      cwd: await tempDir(), runId: "r1", servers: [], relativePath: ".grok/config.toml", body: tomlBody,
+    });
+    expect(staged.configPath).toBeNull();
+    expect(staged.stagedServerCount).toBe(0);
+  });
+
+  it("writes a JSON config and keeps foreign entries", async () => {
+    const cwd = await tempDir();
+    await fs.writeFile(
+      path.join(cwd, ".mcp.json"),
+      JSON.stringify({ mcpServers: { mine: { url: "https://internal.example" } } }),
+    );
+    const staged = await stageRuntimeMcp({
+      cwd, runId: "r1", servers, relativePath: ".mcp.json",
+      body: { format: "mcp_json", entries: () => ({ "paperclip-dataverse": { url: "u" } }) },
+    });
+    const written = JSON.parse(await fs.readFile(staged.configPath!, "utf8"));
+    expect(Object.keys(written.mcpServers).sort()).toEqual(["mine", "paperclip-dataverse"]);
+  });
+
+  it("leaves an unparseable JSON config untouched and stages nothing", async () => {
+    const cwd = await tempDir();
+    await fs.writeFile(path.join(cwd, ".mcp.json"), "{not json");
+    const logs: string[] = [];
+    const staged = await stageRuntimeMcp({
+      cwd, runId: "r1", servers, relativePath: ".mcp.json",
+      body: { format: "mcp_json", entries: () => ({ "paperclip-a": {} }) },
+      onLog: (_s, line) => void logs.push(line),
+    });
+    expect(staged.configPath).toBeNull();
+    expect(await fs.readFile(path.join(cwd, ".mcp.json"), "utf8")).toBe("{not json");
+    expect(logs.join()).toMatch(/not valid JSON/);
+  });
+
+  it("adds the git exclude only when asked", async () => {
+    const cwd = await tempDir();
+    await fs.mkdir(path.join(cwd, ".git", "info"), { recursive: true });
+    await fs.writeFile(path.join(cwd, ".git", "info", "exclude"), "");
+    await stageRuntimeMcp({
+      cwd, runId: "r1", servers, relativePath: ".paperclip-runtime/grok/config.toml", body: tomlBody,
+    });
+    expect(await fs.readFile(path.join(cwd, ".git", "info", "exclude"), "utf8")).toBe("");
+  });
+});
+
+describe("findStaleJsonMcpEntries", () => {
+  const origins = ["https://bullpen.example"];
+  const doc = (token: string) =>
+    JSON.stringify({
+      mcpServers: {
+        mine: { url: "https://bullpen.example/x", headers: { Authorization: "Bearer foreign" } },
+        "paperclip-dv": {
+          url: "https://bullpen.example/mcp/gateways/gw1",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    });
+
+  it("flags only our entry, and only when the bearer is not this run's", () => {
+    expect(findStaleJsonMcpEntries({ source: doc("old"), origins, currentTokens: ["live"] })).toEqual([
+      "paperclip-dv",
+    ]);
+    expect(findStaleJsonMcpEntries({ source: doc("live"), origins, currentTokens: ["live"] })).toEqual([]);
+  });
+
+  it("ignores another deployment and unparseable input", () => {
+    expect(
+      findStaleJsonMcpEntries({ source: doc("old"), origins: ["https://other.example"], currentTokens: [] }),
+    ).toEqual([]);
+    expect(findStaleJsonMcpEntries({ source: "{bad", origins, currentTokens: [] })).toEqual([]);
+  });
+
+  it("removes only the named keys", () => {
+    const next = JSON.parse(removeJsonServerKeys(doc("old"), ["paperclip-dv"]));
+    expect(Object.keys(next.mcpServers)).toEqual(["mine"]);
   });
 });
