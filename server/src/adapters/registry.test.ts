@@ -59,7 +59,11 @@ describe("built-in runtime connection tool delivery", () => {
     ["cursor_cloud", "invocation_context"],
     ["cursor", "environment"],
     ["gemini_local", "environment"],
-    ["grok_local", "environment"],
+    // CH-6: grok_local moved to native_mcp. Grok Build discovers MCP servers
+    // from a project `.grok/config.toml`, which the adapter writes per run, so
+    // it can carry the connections server like Claude and Codex. Under
+    // "environment" that server was never added to the run's MCP set at all.
+    ["grok_local", "native_mcp"],
     ["hermes_gateway", "invocation_context"],
     ["hermes_local", "environment"],
     ["kimi_local", "environment"],

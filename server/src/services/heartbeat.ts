@@ -4746,13 +4746,25 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     },
   ];
 }
+/**
+ * CH-5: an adapter that never reads `ctx.runtimeMcp` silently gets no
+ * Paperclip tools — the `grok_local` bug fixed in 2ac6c290b, and the default
+ * failure mode for any new adapter. `wasConsumed()` lets the caller tell,
+ * after the adapter has run, whether it ever asked for the servers it was
+ * handed.
+ */
 function createAdapterRuntimeMcpAccess(
   servers: AdapterRuntimeMcpServer[],
-): AdapterRuntimeMcpAccess | undefined {
+): (AdapterRuntimeMcpAccess & { wasConsumed(): boolean }) | undefined {
   if (servers.length === 0) return undefined;
   const snapshot = servers.map((server) => Object.freeze({ ...server }));
+  let consumed = false;
   return Object.freeze({
-    getServers: () => snapshot.map((server) => ({ ...server })),
+    getServers: () => {
+      consumed = true;
+      return snapshot.map((server) => ({ ...server }));
+    },
+    wasConsumed: () => consumed,
   });
 }
 
@@ -23978,6 +23990,22 @@ export function heartbeatService(
               );
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
+            // CH-5: the adapter ran to completion without ever calling
+            // ctx.runtimeMcp.getServers(), so every Paperclip-managed MCP
+            // server built for this run was silently dropped.
+            if (runtimeMcpServers.length > 0 && !runtimeMcp?.wasConsumed()) {
+              await appendRunEvent(run, {
+                eventType: "runtime_mcp_not_delivered",
+                level: "warn",
+                message:
+                  "This adapter did not read the Paperclip MCP servers prepared for it, so its run had no Paperclip tools.",
+                payload: {
+                  adapter: adapter.type,
+                  serverCount: runtimeMcpServers.length,
+                  serverNames: runtimeMcpServers.map((server) => server.name),
+                },
+              });
+            }
           }
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize

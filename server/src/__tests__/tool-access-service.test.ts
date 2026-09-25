@@ -6338,6 +6338,296 @@ describeEmbeddedPostgres("tool access service", () => {
     ).rejects.toThrow("not found");
   });
 
+  it("creates a company_secret_bindings row when an organization grant is added (CH-2)", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      { name: "bc_actions_search", annotations: { readOnlyHint: true } },
+    ]);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://fixture.example/mcp",
+        name: "BC Fixture (CH-2)",
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    const tenantSecret = await secretService(db).create(company.id, {
+      name: `BC tenant secret ${randomUUID().slice(0, 8)}`,
+      key: `tool_app.${randomUUID()}.headers_tenantId`,
+      provider: "local_encrypted",
+      value: "tenant-org-value",
+    });
+
+    // addConnectionInstallation used to write only connection_grants and never
+    // called syncCredentialBindings, so this grant's secret had no
+    // company_secret_bindings row and failed at invocation with
+    // binding_missing (CH-2).
+    await service.addConnectionInstallation(
+      connected.connectionId,
+      {
+        credentialSecretRefs: [
+          {
+            secretId: tenantSecret.id,
+            versionSelector: "latest",
+            configPath: "headers.TenantId",
+            required: true,
+            label: "Tenant id",
+          },
+        ],
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.companyId, company.id),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          eq(companySecretBindings.targetId, connected.connectionId),
+          eq(companySecretBindings.configPath, "headers.TenantId"),
+        ),
+      );
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({ secretId: tenantSecret.id });
+  });
+
+  it("reports missing_secret with the offending config path instead of a raw provider failure (CH-2)", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      { name: "bc_actions_search", annotations: { readOnlyHint: true } },
+    ]);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://fixture.example/mcp",
+        name: "BC Fixture (CH-2 health)",
+        credentialValues: { "headers.TenantId": "tenant-1" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    // Simulate the exact drift CH-2 guards against: a credential ref on the
+    // connection row with no corresponding company_secret_bindings row (as if
+    // it had been written directly rather than through syncCredentialBindings).
+    await db
+      .delete(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.companyId, company.id),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          eq(companySecretBindings.targetId, connected.connectionId),
+        ),
+      );
+
+    await expect(
+      service.checkHealth(connected.connectionId, {
+        actorType: "user",
+        actorId: "board",
+      }),
+    ).rejects.toMatchObject({
+      details: expect.objectContaining({ code: "binding_missing" }),
+    });
+  });
+
+  it("surfaces a redacted provider error body in connection health, not a bare HTTP status (CH-4)", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      { name: "bc_actions_search", annotations: { readOnlyHint: true } },
+    ]);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://fixture.example/mcp",
+        name: "BC Fixture (CH-4)",
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    // Business Central's real failure (brief incident 3): a 400 whose JSON
+    // body named the missing header, discarded down to "HTTP 400" before this
+    // fix. The body also carries a bearer token, which must not survive into
+    // the stored health text even though the rest of the message does.
+    const providerBody = JSON.stringify({
+      error: "invalid_request",
+      error_description:
+        'Missing required header ConfigurationName. Authorization: "Bearer sk-secret-leak-token-12345"',
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 400,
+      headers: { get: () => null },
+      text: async () => providerBody,
+    } as unknown as Response);
+
+    await expect(
+      service.checkHealth(connected.connectionId, {
+        actorType: "user",
+        actorId: "board",
+      }),
+    ).rejects.toThrow();
+
+    const [row] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(row.healthMessage).toContain("ConfigurationName");
+    expect(row.healthMessage).not.toContain("sk-secret-leak-token-12345");
+    expect(row.lastError).not.toContain("sk-secret-leak-token-12345");
+  });
+
+  it("keeps OAuth identity and merges header refs on a header-only reconnect (CH-1)", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      { name: "bc_actions_search", annotations: { readOnlyHint: true } },
+    ]);
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://fixture.example/mcp",
+        name: "BC Fixture",
+        oauthClient: { clientId: "bc-client", clientSecret: "bc-client-secret" },
+        credentialValues: { "headers.TenantId": "tenant-1" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    const [afterConnect] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    const clientSecretRef = afterConnect.credentialSecretRefs.find(
+      (ref) => ref.configPath === "oauth.client_secret",
+    );
+    expect(clientSecretRef).toBeTruthy();
+
+    // Simulate a completed interactive OAuth exchange: Paperclip's OAuth
+    // callback (not connectGalleryApp) is what lands the discovered
+    // issuer/token/authorization URLs and access/refresh token refs. These
+    // need to be real company_secrets rows (not placeholder strings) --
+    // syncCredentialBindings resolves secretId against that table, and a
+    // non-UUID id fails at the database rather than the application layer.
+    const accessTokenSecret = await secretService(db).create(company.id, {
+      name: `BC access token ${randomUUID().slice(0, 8)}`,
+      key: `tool_app.${randomUUID()}.oauth_access_token`,
+      provider: "local_encrypted",
+      value: "bc-access-token",
+    });
+    const refreshTokenSecret = await secretService(db).create(company.id, {
+      name: `BC refresh token ${randomUUID().slice(0, 8)}`,
+      key: `tool_app.${randomUUID()}.oauth_refresh_token`,
+      provider: "local_encrypted",
+      value: "bc-refresh-token",
+    });
+    await db
+      .update(toolConnections)
+      .set({
+        status: "active",
+        authKind: "oauth",
+        config: {
+          ...(afterConnect.config as Record<string, unknown>),
+          oauth: {
+            ...((afterConnect.config as Record<string, unknown>).oauth as
+              | Record<string, unknown>
+              | undefined),
+            issuer: "https://login.example.com/tenant-1/v2.0",
+            authorizationUrl:
+              "https://login.example.com/tenant-1/oauth2/v2.0/authorize",
+            tokenUrl: "https://login.example.com/tenant-1/oauth2/v2.0/token",
+          },
+        },
+        credentialSecretRefs: [
+          clientSecretRef!,
+          {
+            secretId: accessTokenSecret.id,
+            configPath: "oauth.access_token",
+            required: true,
+            label: "OAuth access token",
+            versionSelector: "latest",
+          },
+          {
+            secretId: refreshTokenSecret.id,
+            configPath: "oauth.refresh_token",
+            required: false,
+            label: "OAuth refresh token",
+            versionSelector: "latest",
+          },
+        ],
+        credentialRefs: [
+          {
+            name: "oauth.access_token",
+            secretId: accessTokenSecret.id,
+            version: "latest",
+            placement: "header",
+            key: "Authorization",
+            prefix: "Bearer ",
+          },
+          ...afterConnect.credentialRefs,
+        ],
+      })
+      .where(eq(toolConnections.id, connected.connectionId));
+
+    // A header-only reconnect: no oauthClient, no configValues.oauth.
+    mockToolsList([
+      { name: "bc_actions_search", annotations: { readOnlyHint: true } },
+    ]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://fixture.example/mcp",
+        reconnectConnectionId: connected.connectionId,
+        credentialValues: {
+          "headers.TenantId": "tenant-1-updated",
+          "headers.EnvironmentName": "Production",
+        },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(reconnected.connectionId).toBe(connected.connectionId);
+
+    const [afterReconnect] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+
+    // OAuth identity survives -- this is the CH-1 regression: it used to flip
+    // to "api_key" and drop config.oauth entirely.
+    expect(afterReconnect.authKind).toBe("oauth");
+    expect(afterReconnect.config).toMatchObject({
+      oauth: expect.objectContaining({
+        issuer: "https://login.example.com/tenant-1/v2.0",
+        authorizationUrl:
+          "https://login.example.com/tenant-1/oauth2/v2.0/authorize",
+        tokenUrl: "https://login.example.com/tenant-1/oauth2/v2.0/token",
+      }),
+    });
+    expect(afterReconnect.credentialSecretRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ configPath: "oauth.client_secret" }),
+        expect.objectContaining({ configPath: "oauth.access_token" }),
+        expect.objectContaining({ configPath: "oauth.refresh_token" }),
+      ]),
+    );
+
+    // The request's header ref replaces the old TenantId ref by configPath
+    // (request wins per path), and the newly-added EnvironmentName header is
+    // present too -- nothing else was removed.
+    const tenantRefs = afterReconnect.credentialSecretRefs.filter(
+      (ref) => ref.configPath === "headers.TenantId",
+    );
+    expect(tenantRefs).toHaveLength(1);
+    expect(afterReconnect.credentialSecretRefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ configPath: "headers.EnvironmentName" }),
+      ]),
+    );
+  });
+
   it("refuses a personal identity when no named user is making the request", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -8696,6 +8986,122 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toEqual([]);
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("does not widen a reconnected connection's installs to company-wide after a remove (CH-3)", async () => {
+    const company = await createCompany(db);
+    const userId = `drive-ch3-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const connector = fakeGoogleWorkspaceConnector(
+      company.id,
+      userId,
+      "drive.write",
+    );
+    const service = createTestToolAccessService(db, {
+      paperclipCloudConnector: connector,
+    });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = {
+      ...previousOwnershipAvailability,
+      platform_shared: true,
+    };
+    mockToolsList([
+      { name: "search_files", annotations: { readOnlyHint: true } },
+    ]);
+
+    try {
+      const first = await service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "google-drive",
+          connectionMethodKey: "paperclip-write",
+          grantKind: "user",
+          name: "Drive CH-3 install scope",
+        },
+        actor,
+      );
+      const firstStart = await service.startOAuth(
+        company.id,
+        first.connectionId,
+        {
+          redirectUri:
+            "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+          actor,
+        },
+      );
+      await service.completePaperclipCloudConnectorCallback({
+        state: new URL(firstStart.authorizationUrl).searchParams.get("state")!,
+        claimId: "drive-ch3-first-claim",
+        actor,
+      });
+
+      // A brand-new connection is seeded company-wide by design; narrow it to
+      // one agent, matching the S4Water incident's starting state, and clear
+      // the seeded default so only the explicit agent install remains.
+      await db
+        .delete(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, first.connectionId));
+      await allowConnectionForAgent(
+        db,
+        company.id,
+        agent.id,
+        first.connectionId,
+      );
+
+      // Removing the connection revokes its grant and deletes its installs --
+      // the same state a broken/expired connection passes through before an
+      // operator reconnects it.
+      await service.archiveConnection(first.connectionId, company.id, actor);
+      await expect(
+        db
+          .select()
+          .from(toolConnectionInstalls)
+          .where(eq(toolConnectionInstalls.connectionId, first.connectionId)),
+      ).resolves.toEqual([]);
+
+      const revived = await service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "google-drive",
+          connectionMethodKey: "paperclip-write",
+          grantKind: "user",
+          name: "Drive CH-3 install scope",
+        },
+        actor,
+      );
+      expect(revived.connectionId).toBe(first.connectionId);
+      const revivedStart = await service.startOAuth(
+        company.id,
+        revived.connectionId,
+        {
+          redirectUri:
+            "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+          actor,
+        },
+      );
+      await service.completePaperclipCloudConnectorCallback({
+        state: new URL(revivedStart.authorizationUrl).searchParams.get(
+          "state",
+        )!,
+        claimId: "drive-ch3-second-claim",
+        actor,
+      });
+
+      // CH-3 regression: this used to see installs.length === 0 (removal
+      // deleted them) and treat that as "new," seeding a company-wide install
+      // even though the connection had a prior (now-revoked) grant. It must
+      // come back with no installs at all rather than a widened company one.
+      const installsAfterReconnect = await db
+        .select()
+        .from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, first.connectionId));
+      expect(installsAfterReconnect).toEqual([]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -17206,6 +17612,10 @@ describeEmbeddedPostgres("tool access service", () => {
       })
       .where(eq(toolConnections.id, connection.id));
 
+    // CH-2: a credential ref with no company_secret_bindings row is now
+    // caught by assertCredentialBindingsConsistent before any provider round
+    // trip, reporting the more specific binding_missing rather than reaching
+    // this deep into a resolution attempt for the still-generic secret_missing.
     await expect(
       service.checkHealth(connection.id, {
         actorType: "user",
@@ -17213,7 +17623,7 @@ describeEmbeddedPostgres("tool access service", () => {
       }),
     ).rejects.toMatchObject({
       status: 422,
-      details: expect.objectContaining({ code: "secret_missing" }),
+      details: expect.objectContaining({ code: "binding_missing" }),
     });
     const [updatedConnection] = await db
       .select()
@@ -17226,12 +17636,13 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(updatedConnection).toMatchObject({
       healthStatus: "missing_secret",
-      healthMessage: "A configured credential secret could not be resolved.",
+      healthMessage:
+        "A configured credential secret could not be resolved. (Missing secret binding for: credentials.authorization)",
     });
     expect(audit).toMatchObject({
       action: "tool_connection.health_check",
       outcome: "failure",
-      reasonCode: "secret_missing",
+      reasonCode: "binding_missing",
       details: { status: "missing_secret", transport: "mcp_remote" },
     });
     expect(JSON.stringify(audit)).not.toContain("Bearer ");

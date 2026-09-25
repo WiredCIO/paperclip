@@ -28,7 +28,8 @@ Core fields:
 - model (string, optional): Grok model id. Defaults to grok-build.
 - permissionMode (string, optional): Grok permission mode passed via \`--permission-mode\`. Unset by default: Grok >= 1.0 enforces \`dontAsk\` as deny-by-default and it overrides \`--always-approve\`, so unattended runs rely on \`--always-approve\` alone unless you explicitly need a mode
 - reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
-- maxTurns (number, optional): maximum agent turns for the run
+- maxTurns (number, optional): maximum agent turns for the run. Unset means uncapped — set it together with timeoutSec for unattended agents
+- disableWebSearch (boolean, optional): passes \`--disable-web-search\`. Defaults to false; only enable it for a deliberately offline workspace
 - command (string, optional): defaults to "grok"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
@@ -41,5 +42,6 @@ Notes:
 - Runs use \`grok --single\` with \`--output-format streaming-json\`.
 - Sessions resume with \`--resume <sessionId>\` when the saved session cwd matches the current cwd.
 - Paperclip stages desired runtime skills into \`.claude/skills\` inside the execution workspace so Grok discovers them as project skills.
+- Paperclip-managed MCP servers (connected tools and project tools) are written per run to \`.grok/config.toml\` in the execution workspace and removed when the run ends. A workspace that already ships its own \`.grok/config.toml\` is never overwritten — the run then has no Paperclip tools, and the run log says so.
 - Use \`grok models\` to inspect authentication and available models on the host.
 `;
