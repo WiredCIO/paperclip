@@ -89,7 +89,6 @@ export { getConfigSchema } from "./config-schema.js";
 export {
   renderGrokMcpConfigToml,
   writeGrokProjectMcpConfig,
-  toGrokServerKey,
   toTomlBasicString,
   GROK_PROJECT_CONFIG_DIRNAME,
   GROK_PROJECT_CONFIG_FILENAME,
