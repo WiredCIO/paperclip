@@ -558,6 +558,42 @@ describe("managed AI connections", () => {
     expect((await request(app).get(url).set("x-test-user", "bob")).body).toEqual(own.body);
     expect((await request(app).get(url.replace(companyId, otherCompanyId))).status).toBe(403);
   });
+  it("reports canShareConnections from the same predicate the create guard enforces", async () => {
+    // The UI offers the "Company shared" ownership choice from this flag. If it
+    // ever disagreed with the create guard, a viewer would be shown a control
+    // that always 403s on submit, so both directions are asserted here.
+    const appFor = (membershipRole: string) => {
+      const a = express();
+      a.use((req, _res, next) => {
+        req.actor = {
+          type: "board", source: "session", userId: "alice", companyIds: [companyId],
+          memberships: [{ companyId, membershipRole, status: "active" }],
+        };
+        next();
+      });
+      a.use("/api", aiConnectionRoutes(db));
+      a.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        res.status(error.status ?? 500).json({ error: error.message });
+      });
+      return a;
+    };
+    const listUrl = `/api/companies/${companyId}/ai-connections`;
+    const createUrl = listUrl;
+    const sharedBody = {
+      provider: "anthropic", method: "api_key", ownership: "shared",
+      name: "Capability probe", apiKey: "fixture", agentIds: [], allAgents: false,
+    };
+
+    const memberList = await request(appFor("member")).get(listUrl);
+    expect(memberList.status).toBe(200);
+    expect(memberList.body.canShareConnections).toBe(false);
+    // ...and the guard agrees: the control would have been useless.
+    expect((await request(appFor("member")).post(createUrl).send(sharedBody)).status).toBe(403);
+
+    const adminList = await request(appFor("admin")).get(listUrl);
+    expect(adminList.status).toBe(200);
+    expect(adminList.body.canShareConnections).toBe(true);
+  });
   it("permits new-agent shared installation only for a connection configurator, without bypassing audience", async () => {
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Restricted shared", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-restricted");
     const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
