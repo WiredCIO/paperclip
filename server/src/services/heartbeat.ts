@@ -19521,7 +19521,23 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
+        // One run whose queued-comment-interrupt identity can't be resolved
+        // (a stale or malformed agentWakeupRequests row) must not abort the
+        // whole batch -- this loop runs during startup recovery, and an
+        // uncaught throw here previously crashed server boot entirely,
+        // repeatedly, since the same poison-pill row is claimed again on
+        // every restart. Skip it; the periodic reconciler and the orphan
+        // reaper are the backstop for a run that never gets past this.
+        let claimed: Awaited<ReturnType<typeof claimQueuedRun>>;
+        try {
+          claimed = await claimQueuedRun(queuedRun, companyAgents);
+        } catch (err) {
+          logger.error(
+            { err, runId: queuedRun.id, agentId },
+            "failed to claim queued run; leaving it queued for the next reconciliation pass",
+          );
+          continue;
+        }
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
