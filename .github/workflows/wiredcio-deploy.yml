@@ -37,7 +37,7 @@ jobs:
   deploy:
     if: github.repository == 'WiredCIO/paperclip'
     runs-on: [self-hosted, wiredcio-deploy]
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Deploy
         run: /opt/paperclip/scripts/wiredcio-deploy.sh
