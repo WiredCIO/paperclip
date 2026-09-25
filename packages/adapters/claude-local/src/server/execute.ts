@@ -619,6 +619,59 @@ ${runtimeToolsSection.trim()}`
       servers: runtimeMcpServers,
     }));
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
+  // CH-22: what this run was actually given, written where someone debugging it
+  // will look. Skills and instructions are NOT copied here: they live in a
+  // content-addressed prompt bundle that is symlinked, reused across runs, and
+  // whose key gates session resume. Copying them per workspace would lose the
+  // cache, and a workspace that already has its own `.claude/skills/<name>`
+  // would silently shadow Paperclip's — the skip-on-collision failure this epic
+  // removed for MCP. Naming the bundle answers the question without moving it.
+  // Contains no tokens.
+  const runManifestPath = executionTargetIsRemote
+    ? null
+    : path.join(cwd, ".paperclip-runtime", "claude", "run-manifest.json");
+  if (runManifestPath) {
+    await fs
+      .mkdir(path.dirname(runManifestPath), { recursive: true })
+      .then(() =>
+        fs.writeFile(
+          runManifestPath,
+          `${JSON.stringify(
+            {
+              runId,
+              generatedAt: new Date().toISOString(),
+              promptBundle: {
+                key: promptBundle.bundleKey,
+                addDir: promptBundle.addDir,
+                instructionsFile: promptBundle.instructionsFilePath,
+              },
+              skills: mountableSkillEntries.map((entry) => ({
+                key: entry.key,
+                runtimeName: entry.runtimeName,
+                source: entry.source,
+              })),
+              mcp: {
+                configPath: localMcpConfigPath,
+                servers: runtimeMcpServers.map((server) => server.name),
+              },
+            },
+            null,
+            2,
+          )}
+`,
+        ),
+      )
+      .catch(async (error) => {
+        // A manifest is a debugging aid; never fail a run over one.
+        await onLog(
+          "stderr",
+          `[paperclip] Could not write ${runManifestPath}: ${
+            error instanceof Error ? error.message : String(error)
+          }
+`,
+        );
+      });
+  }
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
@@ -1416,6 +1469,7 @@ ${runtimeToolsSection.trim()}`
     // CH-22: remove the workspace-staged MCP config. It carries a per-run
     // bearer token and belongs to this run only.
     if (stagedRuntimeMcp) await stagedRuntimeMcp.cleanup();
+    if (runManifestPath) await fs.rm(runManifestPath, { force: true }).catch(() => undefined);
     if (paperclipBridge) {
       await paperclipBridge.stop();
     }
