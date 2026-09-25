@@ -138,8 +138,27 @@ far the largest component, and a restore of a wide package graph is the most
 likely way to exhaust the remainder at run time. Raising the cap is a
 support@daytona.io conversation, not a config change.
 
-Memory is separately constrained: the plugin's schema only accepts 1, 2, 4 or
-8 GiB, and the plan may cap that too — 4 is confirmed working, 8 is untested.
+Memory is separately constrained by the plugin's schema, which accepts only
+1, 2, 4 or 8 GiB. **8 is confirmed working on this plan** — disk is the only
+resource the account caps below what the schema allows.
+
+### Confirmed working environment
+
+Provisioned and started a sandbox on 2026-09-25 (`daytonaio/sandbox:0.8.0`,
+lease released cleanly):
+
+| Setting | Value |
+| --- | --- |
+| `cpu` | 4 |
+| `memory` | 8 |
+| `disk` | 10 (the cap) |
+| `target` | `us` |
+| `apiKey` | the `Daytona` company secret, by reference |
+
+Keep `target: us`. A probe that requests too much disk fails with **"Region not
+found"**, which reads like a bad `target` and is not — the same `us` value is in
+both the successful 2026-09-25 lease and the earlier 2026-09-16 one. Check the
+disk request before touching the region.
 
 ## Bump procedure
 
