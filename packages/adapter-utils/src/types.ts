@@ -5,7 +5,11 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
+import type {
+  ExecutionContinuationEnvelope,
+  NativeFinalizationResult,
+  ResolvedAgentRuntimeLimits,
+} from "@paperclipai/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -210,6 +214,14 @@ export interface AdapterExecutionContext {
   config: Record<string, unknown>;
   context: Record<string, unknown>;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
+  /**
+   * CH-17: the run limits, already resolved from the agent's `runtimeConfig`,
+   * its company defaults and any legacy `adapterConfig.maxTurns`. An adapter
+   * maps these onto its own flags rather than reading `adapterConfig.maxTurns`
+   * itself, which is how agents ended up uncapped. `maxTurnsPerRun: null` means
+   * uncapped and was asked for explicitly.
+   */
+  limits?: ResolvedAgentRuntimeLimits | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
    * Legacy remote transport view. Prefer `executionTarget`, which is the
