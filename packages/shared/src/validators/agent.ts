@@ -61,7 +61,11 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
-  aiConnection: aiConnectionBindingSchema.optional(),
+  // CH-18: `null` is accepted so a PATCH can delete the key. Without it the
+  // schema rejected `aiConnection: null` as "expected object", and clearing a
+  // managed connection — to fall back to an agent's own CLAUDE_CONFIG_DIR seat
+  // — could only be done with a SQL update.
+  aiConnection: aiConnectionBindingSchema.optional().nullable(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
@@ -142,6 +146,9 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    // CH-18: runtimeConfig deep-merges by default and an explicit null deletes
+    // a key. This is the escape hatch back to wholesale replacement.
+    replaceRuntimeConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
   });
