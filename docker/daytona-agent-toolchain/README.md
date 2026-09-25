@@ -147,7 +147,8 @@ Total memory limit exceeded. Maximum allowed: 10GiB.
 To increase concurrency limits, upgrade your organization's Tier
 ```
 
-**Use 4, not 8.** A single 8 GiB sandbox starts fine, so 8 looks valid until the
+**On the current tier, use 4 rather than 8** — this is a plan limit, not a
+property of the image, and raising the tier lifts it. A single 8 GiB sandbox starts fine, so 8 looks valid until the
 second sandbox is needed — and then nothing can run beside it. Two 4 GiB
 sandboxes fit the cap; 8 plus anything does not. Capturing a custom image while
 an agent is running needs two at once, as does running two Daytona agents. Even
