@@ -18,7 +18,7 @@ import { secretService } from "../services/secrets.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
-import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
+import { aiConnectionRoutes, assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
 import { validateAiApiKey } from "../routes/ai-connections.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -578,21 +578,35 @@ describe("managed AI connections", () => {
       return a;
     };
     const listUrl = `/api/companies/${companyId}/ai-connections`;
-    const createUrl = listUrl;
-    const sharedBody = {
-      provider: "anthropic", method: "api_key", ownership: "shared",
-      name: "Capability probe", apiKey: "fixture", agentIds: [], allAgents: false,
-    };
 
     const memberList = await request(appFor("member")).get(listUrl);
     expect(memberList.status).toBe(200);
     expect(memberList.body.canShareConnections).toBe(false);
-    // ...and the guard agrees: the control would have been useless.
-    expect((await request(appFor("member")).post(createUrl).send(sharedBody)).status).toBe(403);
 
     const adminList = await request(appFor("admin")).get(listUrl);
     expect(adminList.status).toBe(200);
     expect(adminList.body.canShareConnections).toBe(true);
+
+    // The other direction is asserted against the guard itself rather than
+    // over HTTP. Driving the create route here reaches `hasPermission` for a
+    // user this fixture never seeds, which throws a 500 before the guard is
+    // consulted — so the request would be rejected for the wrong reason and
+    // the test would pass while proving nothing.
+    const actorFor = (membershipRole: string) => ({
+      actor: {
+        type: "board", source: "session", userId: "alice", companyIds: [companyId],
+        memberships: [{ companyId, membershipRole, status: "active" }],
+      },
+    }) as express.Request;
+    const sharedIntent = {
+      ownership: "shared" as const, allAgents: false, agentIds: [], connectionId: undefined,
+    };
+    await expect(
+      assertAiConnectionCreateAccess(db, actorFor("member"), companyId, sharedIntent),
+    ).rejects.toThrow(/connection manager/i);
+    await expect(
+      assertAiConnectionCreateAccess(db, actorFor("admin"), companyId, sharedIntent),
+    ).resolves.toBe("alice");
   });
   it("permits new-agent shared installation only for a connection configurator, without bypassing audience", async () => {
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Restricted shared", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-restricted");
