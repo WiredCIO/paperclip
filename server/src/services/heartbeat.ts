@@ -17,6 +17,11 @@ import { executionBlockerPredicate, getExecutionBlocker } from "./execution-bloc
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import {
+  normalizePaperclipOrigin,
+  readPaperclipReachability,
+  resolvePaperclipOrigin,
+} from "./paperclip-reachability.js";
+import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "./legacy-execution-recovery.js";
@@ -4453,6 +4458,12 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
+  /**
+   * CH-6: origin the *run* can reach, resolved from the execution target and
+   * the environment's `paperclipReachability`. Omitted keeps the host origin,
+   * which is correct for local targets and for every existing caller.
+   */
+  mcpOrigin?: string | null;
   expectedAssignmentDigest?: string | null;
   onUnavailableAssignedConnections?: (
     connections: Array<{ id: string; name: string }>,
@@ -4744,7 +4755,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: "paperclip-assigned",
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${input.mcpOrigin ?? paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
@@ -4777,6 +4788,8 @@ function createAdapterRuntimeToolAccess(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string | null;
+  /** CH-6: run-reachable origin; see `buildPaperclipRuntimeMcpServers`. */
+  mcpOrigin?: string | null;
 }): AdapterRuntimeToolAccess | undefined {
   if (!input.responsibleUserId) return undefined;
   const minted = createRuntimeToolsToken({
@@ -4790,7 +4803,9 @@ function createAdapterRuntimeToolAccess(input: {
   // tests invoke heartbeat execution without booting an HTTP server, however;
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
-  const baseUrl = configuredPaperclipApiBaseUrl();
+  // CH-6: a remote run needs an origin it can actually reach; the host's
+  // PAPERCLIP_API_URL is only right for local targets.
+  const baseUrl = normalizePaperclipOrigin(input.mcpOrigin) ?? configuredPaperclipApiBaseUrl();
   if (!baseUrl) return undefined;
   return Object.freeze({
     version: 1,
@@ -23878,11 +23893,35 @@ export function heartbeatService(
               company: null,
               adapterConfig: agent.adapterConfig,
             });
+            // CH-6: resolve the origin this run can reach before any MCP URL
+            // is built. A remote target cannot reach the host's loopback
+            // PAPERCLIP_API_URL, which is the whole Daytona failure.
+            const resolvedPaperclipOrigin = resolvePaperclipOrigin({
+              isRemoteTarget: executionTarget?.kind === "remote",
+              reachability: readPaperclipReachability(selectedEnvironment?.config),
+              loopbackOrigin: configuredPaperclipApiBaseUrl(),
+              publicOrigin: process.env.PAPERCLIP_PUBLIC_URL ?? null,
+            });
+            if (!resolvedPaperclipOrigin.origin && resolvedPaperclipOrigin.unresolvedReason) {
+              logger.warn(
+                {
+                  companyId: agent.companyId,
+                  agentId: agent.id,
+                  runId: run.id,
+                  mode: resolvedPaperclipOrigin.mode,
+                  reason: resolvedPaperclipOrigin.unresolvedReason,
+                  environmentId: selectedEnvironment?.id ?? null,
+                },
+                "paperclip MCP origin could not be resolved for this run; runtime tools will be unavailable",
+              );
+            }
+            const mcpOrigin = resolvedPaperclipOrigin.origin;
             const runtimeTools = createAdapterRuntimeToolAccess({
               agentId: agent.id,
               companyId: agent.companyId,
               runId: run.id,
               responsibleUserId: run.responsibleUserId,
+              mcpOrigin,
             });
             if (!runtimeTools) {
               logger.warn(
@@ -23898,6 +23937,7 @@ export function heartbeatService(
               db,
               agent,
               runId: run.id,
+              mcpOrigin,
             });
             const runtimeToolDelivery =
               adapter.runtimeToolDelivery ?? "invocation_context";
@@ -23910,7 +23950,7 @@ export function heartbeatService(
               });
             }
             if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
-              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${mcpOrigin ?? paperclipApiBaseUrl()}/api/mcp/project-tools`,
                 token: authToken, connectionId: "paperclip-project-tools" });
             }
             const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
