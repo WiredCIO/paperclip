@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -54,8 +55,13 @@ import {
   ensureGrokProjectConfigGitExcluded,
   GROK_PROJECT_CONFIG_DIRNAME,
   GROK_PROJECT_CONFIG_FILENAME,
-  writeGrokProjectMcpConfig,
+  renderGrokMcpConfigToml,
 } from "./mcp-config.js";
+import {
+  mergeGrokTomlMcpServers,
+  sweepStaleRuntimeMcpTokens,
+  withAgentsToolsSection,
+} from "@paperclipai/adapter-utils/runtime-mcp-staging";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -99,10 +105,20 @@ function renderApiAccessNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-type StageCleanup = {
-  kind: "file" | "dir";
-  path: string;
-};
+type StageCleanup =
+  | { kind: "file" | "dir"; path: string }
+  // CH-19: a config this run merged into rather than created is put back as it
+  // was, instead of being deleted along with the workspace owner's content.
+  | { kind: "restore"; path: string; contents: string };
+
+/** The scheme and authority of an MCP server url, for the stale-token scan. */
+function mcpServerOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 
 type StagedGrokAssets = {
   cleanup: () => Promise<void>;
@@ -125,6 +141,15 @@ async function stageGrokProjectAssets(input: {
   desiredSkillNames: string[];
   mcpServers: AdapterRuntimeMcpServer[];
   mcpToolTimeoutSec: number;
+  /** Managed GROK_HOME, swept for stale `paperclip-*` entries (CH-19). */
+  grokHomeDir?: string | null;
+  /**
+   * Remote targets do not get the workspace copy. A file under `<cwd>/.grok/`
+   * is git-excluded to keep the bearer token uncommittable, and the workspace
+   * archive drops every git-ignored path, so it would never reach the sandbox.
+   * The remote lane ships the same config through the `home` asset instead.
+   */
+  skipWorkspaceMcpConfig?: boolean;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<StagedGrokAssets> {
   const cleanup: StageCleanup[] = [];
@@ -166,29 +191,75 @@ async function stageGrokProjectAssets(input: {
   // Grok reads project MCP servers from `<cwd>/.grok/config.toml`. Paperclip
   // mints the runtime tool token per run, so the file is written for the run
   // and removed with the rest of the staged assets.
-  if (input.mcpServers.length > 0) {
-    const mcpConfigTarget = path.join(input.cwd, GROK_PROJECT_CONFIG_DIRNAME, GROK_PROJECT_CONFIG_FILENAME);
-    if (await pathExists(mcpConfigTarget)) {
-      // A repo-owned project config wins for same-named servers and merging
-      // TOML here would silently rewrite what the repository ships. Leave it
-      // alone and say so: the run continues without Paperclip's tools rather
-      // than continuing while appearing to have them.
+  if (input.mcpServers.length > 0 && !input.skipWorkspaceMcpConfig) {
+    // CH-19: merge, do not skip. This used to leave a pre-existing
+    // `.grok/config.toml` untouched and run with zero tools, because
+    // overwriting a repository's own file was the worse of two bad options.
+    // Every key Paperclip writes carries the `paperclip-` prefix, so its own
+    // entries can be replaced while every foreign one is preserved byte for
+    // byte, comments and ordering included.
+    const configDir = path.join(input.cwd, GROK_PROJECT_CONFIG_DIRNAME);
+    const mcpConfigTarget = path.join(configDir, GROK_PROJECT_CONFIG_FILENAME);
+    const createdDir = !(await pathExists(configDir));
+    const previousContents = await fs.readFile(mcpConfigTarget, "utf8").catch(() => null);
+
+    const rendered = renderGrokMcpConfigToml(input.mcpServers, {
+      runId: input.runId,
+      toolTimeoutSec: input.mcpToolTimeoutSec,
+    });
+    const merged =
+      previousContents === null ? rendered : mergeGrokTomlMcpServers(previousContents, rendered);
+
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(mcpConfigTarget, merged, { mode: 0o600 });
+    await ensureGrokProjectConfigGitExcluded(input.cwd);
+
+    if (createdDir) ensureCleanupDir(configDir);
+    if (previousContents === null) {
+      ensureCleanupFile(mcpConfigTarget);
+    } else {
+      // A file this run did not create is restored, not deleted: the workspace
+      // must end the run exactly as it was found.
+      cleanup.push({ kind: "restore", path: mcpConfigTarget, contents: previousContents });
       await input.onLog(
         "stdout",
-        `[paperclip] Grok workspace already contains ${mcpConfigTarget}; leaving it unchanged. ${input.mcpServers.length} Paperclip MCP server(s) are NOT available to this run.\n`,
+        `[paperclip] Merged ${input.mcpServers.length} Paperclip MCP server(s) into the existing ${mcpConfigTarget}; its own entries were kept.\n`,
       );
-    } else {
-      const written = await writeGrokProjectMcpConfig({
-        cwd: input.cwd,
-        servers: input.mcpServers,
-        runId: input.runId,
-        toolTimeoutSec: input.mcpToolTimeoutSec,
+    }
+    stagedMcpConfigPath = mcpConfigTarget;
+    stagedMcpServerCount = input.mcpServers.length;
+
+    // CH-19: a `paperclip-*` entry left in the managed Grok home by a hand-add
+    // or an earlier run carries a dead token. It makes tools look configured
+    // and then fail at call time, which is exactly how this presented.
+    if (input.grokHomeDir) {
+      const findings = await sweepStaleRuntimeMcpTokens({
+        files: [path.join(input.grokHomeDir, GROK_PROJECT_CONFIG_FILENAME)],
+        origins: input.mcpServers
+          .map((server) => mcpServerOrigin(server.url))
+          .filter((origin): origin is string => origin !== null),
+        currentTokens: input.mcpServers.map((server) => server.token),
+        managedRoot: input.grokHomeDir,
       });
-      await ensureGrokProjectConfigGitExcluded(input.cwd);
-      if (written.createdDir) ensureCleanupDir(written.configDir);
-      ensureCleanupFile(written.configPath);
-      stagedMcpConfigPath = written.configPath;
-      stagedMcpServerCount = input.mcpServers.length;
+      for (const finding of findings) {
+        await input.onLog(
+          "stdout",
+          `[paperclip] runtime_mcp_stale_token: ${finding.serverKey} in ${finding.path} carried a token from another run and was ${finding.removed ? "removed" : "left in place"}.\n`,
+        );
+      }
+    }
+  }
+
+  // CH-19: `PAPERCLIP_RUNTIME_TOOLS_GUIDANCE` is an environment variable nothing
+  // surfaces to a model, so an agent had no way to learn its tools were already
+  // wired. The instructions file is the one place it reliably reads.
+  if (stagedInstructionsPath && input.mcpServers.length > 0) {
+    const current = await fs.readFile(stagedInstructionsPath, "utf8").catch(() => null);
+    if (current !== null) {
+      await fs.writeFile(
+        stagedInstructionsPath,
+        withAgentsToolsSection(current, input.mcpServers),
+      );
     }
   }
 
@@ -229,6 +300,12 @@ async function stageGrokProjectAssets(input: {
     stagedMcpServerCount,
     cleanup: async () => {
       for (const entry of [...cleanup].reverse()) {
+        if (entry.kind === "restore") {
+          await fs
+            .writeFile(entry.path, entry.contents, { mode: 0o600 })
+            .catch(() => undefined);
+          continue;
+        }
         if (entry.kind === "file") {
           await fs.rm(entry.path, { force: true }).catch(() => undefined);
           continue;
@@ -315,6 +392,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       config.mcpToolTimeoutSec,
       ctx.limits?.mcpToolTimeoutSec ?? DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC,
     ),
+    grokHomeDir: resolveManagedGrokHomeDir(process.env, agent.companyId),
+    skipWorkspaceMcpConfig: executionTargetIsRemote,
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
@@ -421,6 +500,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // run authenticates from the environment variable and needs no home.
       if (isGrokSubscriptionMode) {
         stagedGrokHomeDir = await stageGrokHomeForSync(hostGrokHome, { runId });
+      } else if (runtimeMcpServers.length > 0) {
+        // An API-key run needs no credential home, but it still needs somewhere
+        // to put the MCP config that the sandbox can actually read. A bare temp
+        // dir ships as the `home` asset with no credential in it.
+        stagedGrokHomeDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), `paperclip-grok-home-mcp-${runId}-`),
+        );
+      }
+      // The per-run staged home is the one place a remote Grok run can be given
+      // MCP servers: it travels as an asset rather than inside the git-archived
+      // workspace, so the git-ignore that protects the token in a local run
+      // cannot silently drop it. Writing here is safe in a way writing to the
+      // shared company home is not — this directory belongs to one run.
+      if (stagedGrokHomeDir && runtimeMcpServers.length > 0) {
+        await fs.writeFile(
+          path.join(stagedGrokHomeDir, GROK_PROJECT_CONFIG_FILENAME),
+          renderGrokMcpConfigToml(runtimeMcpServers, {
+            runId,
+            toolTimeoutSec: asNumber(
+              config.mcpToolTimeoutSec,
+              ctx.limits?.mcpToolTimeoutSec ?? DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC,
+            ),
+          }),
+          { mode: 0o600 },
+        );
+        await onLog(
+          "stdout",
+          `[paperclip] Staged ${runtimeMcpServers.length} Paperclip MCP server(s) into the remote Grok home asset.
+`,
+        );
       }
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
@@ -447,7 +556,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // value read from `env.GROK_HOME`. A copy-out failure never
                 // fails the run: `copyBackGrokAuth` logs the errno code and
                 // rethrows, and this callback swallows that rejection.
-                restore: async ({ assetDir, readFile }) =>
+                restore: !isGrokSubscriptionMode ? undefined : async ({ assetDir, readFile }) =>
                   void (await copyBackGrokAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostHomeDir: hostGrokHome,
@@ -477,7 +586,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Set GROK_HOME after the refresh above, so the refresh cannot overwrite
       // it. The fixed fallback path mirrors `prepareAdapterExecutionTargetRuntime`'s
       // own `home` asset layout, in case `assetDirs.home` is absent.
-      if (isGrokSubscriptionMode) {
+      if (stagedGrokHomeDir) {
         env.GROK_HOME =
           preparedExecutionTargetRuntime.assetDirs.home ??
           path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "grok", "home");

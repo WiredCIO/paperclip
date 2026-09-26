@@ -10,7 +10,6 @@ import {
   GROK_PROJECT_CONFIG_DIRNAME,
   GROK_PROJECT_CONFIG_FILENAME,
   renderGrokMcpConfigToml,
-  toGrokServerKey,
   toTomlBasicString,
   writeGrokProjectMcpConfig,
 } from "./mcp-config.js";
@@ -40,18 +39,6 @@ function server(overrides: Partial<AdapterRuntimeMcpServer> = {}): AdapterRuntim
   };
 }
 
-describe("toGrokServerKey", () => {
-  it("turns a Paperclip server name into a TOML bare key", () => {
-    expect(toGrokServerKey("Paperclip connections")).toBe("paperclip_connections");
-    expect(toGrokServerKey("Business Central (prod)")).toBe("business_central_prod");
-  });
-
-  it("never returns an empty key", () => {
-    expect(toGrokServerKey("   ")).toBe("mcp_server");
-    expect(toGrokServerKey("///")).toBe("mcp_server");
-  });
-});
-
 describe("toTomlBasicString", () => {
   it("escapes the structural characters rather than trusting the value", () => {
     expect(toTomlBasicString('a"b\\c')).toBe('"a\\"b\\\\c"');
@@ -64,7 +51,7 @@ describe("renderGrokMcpConfigToml", () => {
   it("renders a header table after the parent table's scalar keys", () => {
     const toml = renderGrokMcpConfigToml([server()], { runId: "run-1" });
     const urlLine = toml.indexOf("url = ");
-    const headerTable = toml.indexOf("[mcp_servers.paperclip_connections.headers]");
+    const headerTable = toml.indexOf("[mcp_servers.paperclip-connections.headers]");
     expect(urlLine).toBeGreaterThan(-1);
     expect(headerTable).toBeGreaterThan(urlLine);
     expect(toml).toContain('Authorization = "Bearer token-abc"');
@@ -88,8 +75,8 @@ describe("renderGrokMcpConfigToml", () => {
       ],
       { runId: "run-1" },
     );
-    expect(toml).toContain("[mcp_servers.business_central]");
-    expect(toml).toContain("[mcp_servers.business_central_bbbbbbbb]");
+    expect(toml).toContain("[mcp_servers.paperclip-business-central]");
+    expect(toml).toContain("[mcp_servers.paperclip-business-central-bbbbbbbb]");
   });
 
   it("bounds every tool call rather than leaving Grok's 6000s default in place", () => {
@@ -112,7 +99,7 @@ describe("renderGrokMcpConfigToml", () => {
   it("keeps tool_timeout_sec above the headers sub-table, so it stays a parent key", () => {
     const toml = renderGrokMcpConfigToml([server()], { runId: "run-1" });
     expect(toml.indexOf("tool_timeout_sec")).toBeLessThan(
-      toml.indexOf("[mcp_servers.paperclip_connections.headers]"),
+      toml.indexOf("[mcp_servers.paperclip-connections.headers]"),
     );
   });
 
@@ -133,7 +120,7 @@ describe("writeGrokProjectMcpConfig", () => {
       path.join(cwd, GROK_PROJECT_CONFIG_DIRNAME, GROK_PROJECT_CONFIG_FILENAME),
     );
     const contents = await fs.readFile(written.configPath, "utf8");
-    expect(contents).toContain("[mcp_servers.paperclip_connections]");
+    expect(contents).toContain("[mcp_servers.paperclip-connections]");
     expect(contents).toContain("run-1");
   });
 

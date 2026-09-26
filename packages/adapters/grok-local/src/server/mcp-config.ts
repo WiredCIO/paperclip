@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
+import { toPaperclipServerKey } from "@paperclipai/adapter-utils/runtime-mcp-staging";
 
 /**
  * Grok discovers project-scoped MCP servers from `<cwd>/.grok/config.toml`,
@@ -43,22 +44,6 @@ export function toTomlBasicString(value: string): string {
   return `"${out}"`;
 }
 
-/**
- * Normalizes a Paperclip server name into a TOML bare key. Paperclip names
- * carry spaces ("Paperclip connections"), which a bare key cannot hold, and a
- * bare key keeps the generated file readable without relying on quoted-key
- * handling.
- */
-export function toGrokServerKey(name: string): string {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/_{2,}/g, "_")
-    .replace(/^[_-]+|[_-]+$/g, "");
-  return slug.length > 0 ? slug : "mcp_server";
-}
-
 /** Renders the `[mcp_servers]` project config for one run. */
 export function renderGrokMcpConfigToml(
   servers: AdapterRuntimeMcpServer[],
@@ -78,15 +63,10 @@ export function renderGrokMcpConfigToml(
   ];
   const usedKeys = new Set<string>();
   for (const server of servers) {
-    const base = toGrokServerKey(server.name);
-    let key = base;
-    if (usedKeys.has(key)) key = `${base}_${server.connectionId.slice(0, 8)}`;
-    let suffix = 2;
-    while (usedKeys.has(key)) {
-      key = `${base}_${server.connectionId.slice(0, 8)}_${suffix}`;
-      suffix += 1;
-    }
-    usedKeys.add(key);
+    // CH-19: every key Paperclip writes carries the shared `paperclip-` prefix,
+    // so a later run can tell its own entries from a human's and merge rather
+    // than skip. See `runtime-mcp-staging.ts`.
+    const key = toPaperclipServerKey(server, usedKeys);
 
     lines.push("");
     lines.push(`[mcp_servers.${key}]`);
