@@ -12,6 +12,7 @@ import { AiConnectionPicker } from "./AiConnectionPicker";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { Button } from "@/components/ui/button";
+import { RadioCardGroup } from "@/components/ui/radio-card";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +63,10 @@ export function AiConnectionField({
   const [adopting, setAdopting] = useState(false);
   const [pendingAdoption, setPendingAdoption] = useState<AiConnectionBinding>();
   const [connecting, setConnecting] = useState(false);
+  // Ownership is chosen per sign-in rather than remembered: a manager creating
+  // a company credential once should not silently make their next personal
+  // login shared too.
+  const [ownership, setOwnership] = useState<"personal" | "shared">("personal");
   const changeBinding = (next: AiConnectionBinding) => {
     if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
@@ -72,6 +77,10 @@ export function AiConnectionField({
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
     enabled: Boolean(provider),
   });
+  // Server-decided, never inferred here: `tools:manage_connections` is not in
+  // any payload the client already holds, and the create route rejects a
+  // shared ownership without it.
+  const canShareConnections = accounts.data?.canShareConnections ?? false;
   const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" ? "api_key" : "subscription");
@@ -151,17 +160,50 @@ export function AiConnectionField({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={connecting} onOpenChange={setConnecting}>
+      <Dialog
+        open={connecting}
+        onOpenChange={(open) => {
+          if (!open) setOwnership("personal");
+          setConnecting(open);
+        }}
+      >
         <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>Connect account</DialogTitle>
           </DialogHeader>
+          {canShareConnections && (
+            <section className="space-y-2" aria-label="Who owns this account">
+              <h3 className="text-sm font-semibold">Who owns this account?</h3>
+              <RadioCardGroup
+                ariaLabel="Who owns this account"
+                className="sm:grid-cols-2"
+                value={ownership}
+                onValueChange={(value) =>
+                  setOwnership(value === "shared" ? "shared" : "personal")
+                }
+                options={[
+                  {
+                    value: "personal",
+                    title: "Personal",
+                    description:
+                      "Yours. Runs use your seat, and it leaves with you.",
+                  },
+                  {
+                    value: "shared",
+                    title: "Company shared",
+                    description:
+                      "The organization owns it and it outlives your account.",
+                  },
+                ]}
+              />
+            </section>
+          )}
           <AiConnectionCredentialStep
             companyId={companyId}
             provider={provider}
             initialMethod={method}
             name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
-            ownership="personal"
+            ownership={ownership}
             agentIds={agentId ? [agentId] : []}
             allAgents={false}
             environmentId={environmentId}
