@@ -84,16 +84,20 @@ revocation all-or-nothing.
 
 ### Network
 
-The machine running the server must reach the Paperclip instance. On a
-deployment bound to a tailnet (`PAPERCLIP_DEPLOYMENT_EXPOSURE=private`), **the
-teammate's device has to be on the tailnet** — that is the real gating step, and
-it is worth doing before issuing keys.
+The machine running the server must reach the Paperclip instance over HTTPS. The
+WiredCIO deployment is **public** (`deploymentExposure: public`) at
+`https://bullpen.wiredcio.com`, so set:
 
-It also means claude.ai's hosted connectors cannot be used: they call out from
-Anthropic's infrastructure and have no route to a private tailnet address. This
-server runs locally over stdio beside Claude Code, which is why it works.
-Exposing Paperclip publicly to change that would trade away the reason it is
-private.
+```
+PAPERCLIP_API_URL=https://bullpen.wiredcio.com
+```
+
+No VPN or tailnet membership is required. The tailnet exists so Paperclip can
+reach the on-premise AI server outbound; it is not the access boundary for
+people, and nothing here should assume it is.
+
+Access control is the board API key plus the user's role and permissions, which
+is what `deploymentMode: authenticated` means.
 
 ### Artifacts
 
@@ -108,10 +112,27 @@ self-contained build. The workspace dependencies are **bundled in**: they are
 `workspace:*` links whose local versions do not exist on the registry, so a
 plain publish would hand every installer a resolution failure.
 
+**Install the workspace first.** The bundle resolves `@paperclipai/mcp-server`
+and `@paperclipai/shared` through their `workspace:*` links, so on a fresh clone
+— or right after merging this package for the first time — `prepack` fails with
+`Could not resolve "@paperclipai/mcp-server"` until pnpm has created them:
+
 ```sh
+pnpm install --filter "@wiredcio/paperclip-mcp..."
 cd packages/wiredcio-mcp
-npm publish --access public
+pnpm publish --access public --no-git-checks
 ```
+
+**Publish with pnpm, not npm.** `publishConfig.main`, `.types`, `.exports` and
+`.bin` are a pnpm extension. npm ignores them — it warns
+`Unknown publishConfig config` and ships a package whose `exports` still points
+at `./src/index.ts`, which is not in the tarball, and whose `bin` it strips
+outright (`script name dist/stdio.js was invalid and removed`). The result
+installs cleanly and then does nothing. `pnpm publish` resolves all four against
+`dist`.
+
+(An unrelated `postinstall: Failed` from the `cloudflare` sandbox-provider
+plugin is pre-existing in this repo and does not affect this package.)
 
 Requires the `wiredcio` npm scope and an authenticated publish token.
 `publishFromCi` is `false` in `scripts/release-package-manifest.json` — the fork's
