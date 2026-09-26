@@ -45,6 +45,7 @@ import {
   startSandboxCallbackBridgeWorker,
   syncRemoteTextFileWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
+  isPaperclipMcpBridgePath,
 } from "./sandbox-callback-bridge.js";
 import {
   createHttp2BridgeServer,
@@ -4316,7 +4317,20 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       if (value.trim().length === 0) continue;
       headers.set(key, value);
     }
-    headers.set("authorization", `Bearer ${hostApiToken}`);
+    // CH-7: a Paperclip MCP call must reach the gateway with the *run's*
+    // gateway bearer, not the host token. That token is minted per run and
+    // carries the tool-profile digest, so substituting the host token would
+    // both over-grant and fail the digest check. Every other route keeps the
+    // substitution, so the real agent token never leaves the host and a
+    // sandbox cannot present a bearer of its own to the regular API.
+    if (isPaperclipMcpBridgePath(request.path)) {
+      // No fallback to the host token when the sandbox sent nothing: an
+      // unauthenticated MCP call should be answered 401 by the gateway rather
+      // than silently upgraded to host authority.
+      if (!headers.has("authorization")) headers.delete("authorization");
+    } else {
+      headers.set("authorization", `Bearer ${hostApiToken}`);
+    }
     headers.set("x-paperclip-run-id", input.runId);
     // Abort the forward when the caller aborts the request (its per-iteration
     // timeout or watchdog fired, or the broker's forward budget ended), or after
