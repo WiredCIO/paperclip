@@ -7,6 +7,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterRuntimeMcpServer,
 } from "@paperclipai/adapter-utils";
+import { toPaperclipServerKey } from "@paperclipai/adapter-utils/runtime-mcp-staging";
 import {
   adapterExecutionTargetUsesManagedHome,
   maybeRunSandboxInstallCommand,
@@ -154,6 +155,27 @@ export function resolveManagedClaudeRuntimeStateDir(
   return path.join(instanceRoot, "companies", companyId, "agents", agentId, "claude-runtime");
 }
 
+/**
+ * CH-22: the `mcpServers` map, separated from the file write so the shared
+ * staging helper can produce the same entries when it owns the file. Keys carry
+ * the Paperclip prefix, which is what lets a merge tell its own entries from a
+ * workspace's own.
+ */
+export function buildPaperclipClaudeMcpServerEntries(
+  servers: AdapterRuntimeMcpServer[],
+): Record<string, unknown> {
+  const usedNames = new Set<string>();
+  const mcpServers: Record<string, unknown> = {};
+  for (const server of servers) {
+    mcpServers[toPaperclipServerKey(server, usedNames)] = {
+      type: "http",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  return mcpServers;
+}
+
 export async function writePaperclipClaudeMcpConfig(input: {
   stateDir: string;
   runId: string;
@@ -161,23 +183,7 @@ export async function writePaperclipClaudeMcpConfig(input: {
 }): Promise<string> {
   const configDir = path.join(input.stateDir, "runs", input.runId, "mcp");
   const configPath = path.join(configDir, "mcp-config.json");
-  const usedNames = new Set<string>();
-  const mcpServers: Record<string, unknown> = {};
-  for (const server of input.servers) {
-    let name = server.name;
-    if (usedNames.has(name)) name = `${name}-${server.connectionId.slice(0, 8)}`;
-    let suffix = 2;
-    while (usedNames.has(name)) {
-      name = `${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`;
-      suffix += 1;
-    }
-    usedNames.add(name);
-    mcpServers[name] = {
-      type: "http",
-      url: server.url,
-      headers: { Authorization: `Bearer ${server.token}` },
-    };
-  }
+  const mcpServers = buildPaperclipClaudeMcpServerEntries(input.servers);
   await fs.mkdir(configDir, { recursive: true });
   await fs.writeFile(configPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
   return configPath;

@@ -52,13 +52,13 @@ import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import {
   DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC,
-  ensureGrokProjectConfigGitExcluded,
   GROK_PROJECT_CONFIG_DIRNAME,
+  GROK_GIT_EXCLUDE_ENTRY,
   GROK_PROJECT_CONFIG_FILENAME,
   renderGrokMcpConfigToml,
 } from "./mcp-config.js";
 import {
-  mergeGrokTomlMcpServers,
+  stageRuntimeMcp,
   sweepStaleRuntimeMcpTokens,
   withAgentsToolsSection,
 } from "@paperclipai/adapter-utils/runtime-mcp-staging";
@@ -107,9 +107,9 @@ function renderApiAccessNote(env: Record<string, string>): string {
 
 type StageCleanup =
   | { kind: "file" | "dir"; path: string }
-  // CH-19: a config this run merged into rather than created is put back as it
-  // was, instead of being deleted along with the workspace owner's content.
-  | { kind: "restore"; path: string; contents: string };
+  // CH-19: teardown owned by the shared staging helper, which restores a file
+  // it merged into rather than deleting the workspace owner's content.
+  | { kind: "callback"; run: () => Promise<void> };
 
 /** The scheme and authority of an MCP server url, for the stale-token scan. */
 function mcpServerOrigin(url: string): string | null {
@@ -192,42 +192,28 @@ async function stageGrokProjectAssets(input: {
   // mints the runtime tool token per run, so the file is written for the run
   // and removed with the rest of the staged assets.
   if (input.mcpServers.length > 0 && !input.skipWorkspaceMcpConfig) {
-    // CH-19: merge, do not skip. This used to leave a pre-existing
-    // `.grok/config.toml` untouched and run with zero tools, because
-    // overwriting a repository's own file was the worse of two bad options.
-    // Every key Paperclip writes carries the `paperclip-` prefix, so its own
-    // entries can be replaced while every foreign one is preserved byte for
-    // byte, comments and ordering included.
-    const configDir = path.join(input.cwd, GROK_PROJECT_CONFIG_DIRNAME);
-    const mcpConfigTarget = path.join(configDir, GROK_PROJECT_CONFIG_FILENAME);
-    const createdDir = !(await pathExists(configDir));
-    const previousContents = await fs.readFile(mcpConfigTarget, "utf8").catch(() => null);
-
-    const rendered = renderGrokMcpConfigToml(input.mcpServers, {
+    // CH-19: the shared orchestrator owns the merge, the 0600 write, the git
+    // exclude and the restore-or-remove teardown. Grok supplies only the TOML
+    // body, so the same policy applies to every adapter that stages a config.
+    const staged = await stageRuntimeMcp({
+      cwd: input.cwd,
       runId: input.runId,
-      toolTimeoutSec: input.mcpToolTimeoutSec,
+      servers: input.mcpServers,
+      relativePath: path.join(GROK_PROJECT_CONFIG_DIRNAME, GROK_PROJECT_CONFIG_FILENAME),
+      gitExcludeEntry: GROK_GIT_EXCLUDE_ENTRY,
+      body: {
+        format: "grok_toml",
+        render: (servers) =>
+          renderGrokMcpConfigToml(servers, {
+            runId: input.runId,
+            toolTimeoutSec: input.mcpToolTimeoutSec,
+          }),
+      },
+      onLog: input.onLog,
     });
-    const merged =
-      previousContents === null ? rendered : mergeGrokTomlMcpServers(previousContents, rendered);
-
-    await fs.mkdir(configDir, { recursive: true });
-    await fs.writeFile(mcpConfigTarget, merged, { mode: 0o600 });
-    await ensureGrokProjectConfigGitExcluded(input.cwd);
-
-    if (createdDir) ensureCleanupDir(configDir);
-    if (previousContents === null) {
-      ensureCleanupFile(mcpConfigTarget);
-    } else {
-      // A file this run did not create is restored, not deleted: the workspace
-      // must end the run exactly as it was found.
-      cleanup.push({ kind: "restore", path: mcpConfigTarget, contents: previousContents });
-      await input.onLog(
-        "stdout",
-        `[paperclip] Merged ${input.mcpServers.length} Paperclip MCP server(s) into the existing ${mcpConfigTarget}; its own entries were kept.\n`,
-      );
-    }
-    stagedMcpConfigPath = mcpConfigTarget;
-    stagedMcpServerCount = input.mcpServers.length;
+    stagedMcpConfigPath = staged.configPath;
+    stagedMcpServerCount = staged.stagedServerCount;
+    cleanup.push({ kind: "callback", run: staged.cleanup });
 
     // CH-19: a `paperclip-*` entry left in the managed Grok home by a hand-add
     // or an earlier run carries a dead token. It makes tools look configured
@@ -244,7 +230,8 @@ async function stageGrokProjectAssets(input: {
       for (const finding of findings) {
         await input.onLog(
           "stdout",
-          `[paperclip] runtime_mcp_stale_token: ${finding.serverKey} in ${finding.path} carried a token from another run and was ${finding.removed ? "removed" : "left in place"}.\n`,
+          `[paperclip] runtime_mcp_stale_token: ${finding.serverKey} in ${finding.path} carried a token from another run and was ${finding.removed ? "removed" : "left in place"}.
+`,
         );
       }
     }
@@ -300,10 +287,8 @@ async function stageGrokProjectAssets(input: {
     stagedMcpServerCount,
     cleanup: async () => {
       for (const entry of [...cleanup].reverse()) {
-        if (entry.kind === "restore") {
-          await fs
-            .writeFile(entry.path, entry.contents, { mode: 0o600 })
-            .catch(() => undefined);
+        if (entry.kind === "callback") {
+          await entry.run().catch(() => undefined);
           continue;
         }
         if (entry.kind === "file") {
