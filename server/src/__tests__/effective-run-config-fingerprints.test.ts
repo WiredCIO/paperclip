@@ -300,4 +300,60 @@ describe("effective run config fingerprints", () => {
       workspaceStrategy: { type: "git_worktree" },
     });
   });
+
+  it("does not reset on a per-run identity-home env value materialized fresh for an ephemeral sandbox", () => {
+    // Mirrors grok_local's GROK_HOME (and the equivalent CLAUDE_CONFIG_DIR /
+    // CODEX_HOME for other local adapters): the *configured* directory is
+    // stable, but a sandbox-backed run can materialize it at a fresh,
+    // sandbox-scoped path every time the sandbox is (re)provisioned. That
+    // path is host state, not adapter configuration, and must not defeat
+    // session resume — the same principle already applied to `cwd` for the
+    // session category.
+    const first = createEffectiveRunConfigFingerprints({
+      session: {
+        adapterConfig: {
+          command: "grok",
+          env: {
+            GROK_HOME: "/home/daytona/sandbox-abc123/grok-home",
+            CLAUDE_CONFIG_DIR: "/home/daytona/sandbox-abc123/claude-home",
+            CODEX_HOME: "/home/daytona/sandbox-abc123/codex-home",
+            NORMAL_VALUE: "first",
+          },
+        },
+      },
+    });
+    const second = createEffectiveRunConfigFingerprints({
+      session: {
+        adapterConfig: {
+          command: "grok",
+          env: {
+            GROK_HOME: "/home/daytona/sandbox-xyz789/grok-home",
+            CLAUDE_CONFIG_DIR: "/home/daytona/sandbox-xyz789/claude-home",
+            CODEX_HOME: "/home/daytona/sandbox-xyz789/codex-home",
+            NORMAL_VALUE: "first",
+          },
+        },
+      },
+    });
+
+    expect(second.sessionFingerprint.fingerprint).toBe(first.sessionFingerprint.fingerprint);
+    expect(first.sessionFingerprint.canonicalJson).not.toContain("sandbox-abc123");
+    expect(first.sessionFingerprint.canonicalJson).not.toContain("/home/daytona");
+
+    // A genuine change to a normal, non-path env value still resets.
+    const realChange = createEffectiveRunConfigFingerprints({
+      session: {
+        adapterConfig: {
+          command: "grok",
+          env: {
+            GROK_HOME: "/home/daytona/sandbox-xyz789/grok-home",
+            CLAUDE_CONFIG_DIR: "/home/daytona/sandbox-xyz789/claude-home",
+            CODEX_HOME: "/home/daytona/sandbox-xyz789/codex-home",
+            NORMAL_VALUE: "second",
+          },
+        },
+      },
+    });
+    expect(realChange.sessionFingerprint.fingerprint).not.toBe(second.sessionFingerprint.fingerprint);
+  });
 });
