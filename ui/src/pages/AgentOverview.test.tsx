@@ -75,4 +75,282 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("Run Activity");
     expect(markup).not.toContain("Tasks by Status");
   });
+
+  it("shows Claude usage windows for a seat-backed agent's latest completed run", () => {
+    const agent = {
+      id: "agent-2",
+      companyId: "company-1",
+      name: "AppDev",
+      urlKey: "appdev",
+      role: "engineer",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-1",
+      agentId: "agent-2",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: {
+        rateLimit: {
+          status: "allowed_warning",
+          isUsingOverage: false,
+          unifiedWindows: {
+            five_hour: { utilization: 0.48, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+            seven_day: { utilization: 0.17, resetsAt: Math.floor(Date.now() / 1000) + 86400 },
+          },
+        },
+      },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="appdev"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Claude usage");
+    expect(markup).toContain("5-hour");
+    expect(markup).toContain("Weekly");
+    expect(markup).toContain("48%");
+    expect(markup).toContain("17%");
+    expect(markup).not.toContain("Near limit");
+  });
+
+  it("flags a window at or above 80% utilization as near limit", () => {
+    const agent = {
+      id: "agent-3",
+      companyId: "company-1",
+      name: "ConnectAbility",
+      urlKey: "connectability",
+      role: "engineer",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-2",
+      agentId: "agent-3",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: {
+        rateLimit: {
+          status: "allowed_warning",
+          unifiedWindows: {
+            five_hour: { utilization: 0.82, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+          },
+        },
+      },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="connectability"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Near limit");
+    expect(markup).toContain("82%");
+  });
+
+  it("shows nothing for an agent bound to an ANTHROPIC_API_KEY even with a stale rateLimit value", () => {
+    const agent = {
+      id: "agent-4",
+      companyId: "company-1",
+      name: "CEO",
+      urlKey: "ceo",
+      role: "ceo",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-configured" } } },
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-3",
+      agentId: "agent-4",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: {
+        rateLimit: {
+          status: "allowed",
+          unifiedWindows: {
+            five_hour: { utilization: 0.05, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+          },
+        },
+      },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="ceo"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).not.toContain("Claude usage");
+  });
+
+  it("shows nothing for an agent routed through Bedrock even with a stale rateLimit value", () => {
+    const agent = {
+      id: "agent-5",
+      companyId: "company-1",
+      name: "Bedrock Coder",
+      urlKey: "bedrock-coder",
+      role: "engineer",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } },
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-4",
+      agentId: "agent-5",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: {
+        rateLimit: {
+          status: "allowed",
+          unifiedWindows: {
+            five_hour: { utilization: 0.05, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+          },
+        },
+      },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="bedrock-coder"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).not.toContain("Claude usage");
+  });
+
+  it("shows a distinct 'no usage recorded yet' state for a seat-backed agent with no completed runs", () => {
+    const agent = {
+      id: "agent-6",
+      companyId: "company-1",
+      name: "Sales Engineer",
+      urlKey: "salesengineer",
+      role: "sales",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="salesengineer"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Claude usage");
+    expect(markup).toContain("No usage recorded yet");
+    expect(markup).not.toContain("0%");
+  });
+
+  it("shows the same 'no usage recorded yet' state when completed runs exist but none carried a rateLimit", () => {
+    const agent = {
+      id: "agent-7",
+      companyId: "company-1",
+      name: "Sales Engineer",
+      urlKey: "salesengineer-2",
+      role: "sales",
+      title: null,
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      chainOfCommand: [],
+      access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] },
+    } as unknown as AgentDetail;
+    const run = {
+      id: "run-5",
+      agentId: "agent-7",
+      status: "succeeded",
+      createdAt: new Date("2026-09-18T00:00:00Z"),
+      usageJson: { inputTokens: 100, outputTokens: 50 },
+    } as unknown as HeartbeatRun;
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <AgentOverview
+          agent={agent}
+          runs={[run]}
+          assignedIssues={[]}
+          directReportCount={0}
+          skillNames={[]}
+          agentRouteId="salesengineer-2"
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Claude usage");
+    expect(markup).toContain("No usage recorded yet");
+  });
 });

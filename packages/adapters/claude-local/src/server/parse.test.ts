@@ -567,3 +567,63 @@ describe("parseClaudeStreamJson usage extraction", () => {
     expect(parsed.usageBasis).toBe("per_run");
   });
 });
+
+describe("parseClaudeStreamJson rate_limit_event extraction", () => {
+  const resultEvent = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "sess-1",
+      result: "done",
+      total_cost_usd: 1.25,
+      usage: { input_tokens: 10, output_tokens: 1_800, cache_read_input_tokens: 20 },
+      ...extra,
+    });
+
+  const rateLimitEvent = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed",
+        rateLimitType: "five_hour",
+        resetsAt: 1789764600,
+        overageStatus: "rejected",
+        overageDisabledReason: "org_level_disabled_until",
+        isUsingOverage: false,
+        unifiedWindows: {
+          five_hour: { utilization: 0.01, resetsAt: 1789764600 },
+          seven_day: { utilization: 0.1, resetsAt: 1790103600 },
+        },
+        ...extra,
+      },
+    });
+
+  it("keeps the last rate_limit_event when more than one is emitted in a run", () => {
+    const lines = [
+      rateLimitEvent({ status: "allowed" }),
+      rateLimitEvent({
+        status: "allowed_warning",
+        unifiedWindows: {
+          five_hour: { utilization: 0.48, resetsAt: 1789764600 },
+          seven_day: { utilization: 0.17, resetsAt: 1790103600 },
+        },
+      }),
+      resultEvent({}),
+    ];
+    const parsed = parseClaudeStreamJson(`${lines.join("\n")}\n`);
+    expect(parsed.rateLimit?.status).toBe("allowed_warning");
+    expect(parsed.rateLimit?.unifiedWindows?.five_hour?.utilization).toBe(0.48);
+    expect(parsed.rateLimit?.unifiedWindows?.seven_day?.utilization).toBe(0.17);
+  });
+
+  it("returns null when no rate_limit_event is present", () => {
+    const parsed = parseClaudeStreamJson(`${resultEvent({})}\n`);
+    expect(parsed.rateLimit).toBeNull();
+  });
+
+  it("carries rate_limit_info through even when the run has no terminal result", () => {
+    const parsed = parseClaudeStreamJson(`${rateLimitEvent({})}\n`);
+    expect(parsed.rateLimit?.status).toBe("allowed");
+    expect(parsed.resultJson).toBeNull();
+  });
+});

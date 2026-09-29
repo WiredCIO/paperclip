@@ -122,7 +122,7 @@ import {
   runRequestedProviderTrace,
 } from "../components/ProviderTraceStatusBadge";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
-import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
+import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue, type RateLimitInfo } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 import {
   isStarred,
@@ -383,6 +383,93 @@ function runMetrics(run: HeartbeatRun) {
     provider,
     model,
   };
+}
+
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
+
+function mostRecentCompletedRun(runs: HeartbeatRun[]): HeartbeatRun | null {
+  return runs.find((run) => TERMINAL_RUN_STATUSES.has(run.status)) ?? null;
+}
+
+function runRateLimit(run: HeartbeatRun | null): RateLimitInfo | null {
+  const usage = (run?.usageJson ?? null) as Record<string, unknown> | null;
+  const rateLimit = usage?.rateLimit;
+  if (typeof rateLimit !== "object" || rateLimit === null || Array.isArray(rateLimit)) return null;
+  return rateLimit as RateLimitInfo;
+}
+
+/** True when `value` is a plain object, so callers can read env bindings off it. */
+function isEnvBindingRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function envBindingNonEmptyString(binding: unknown): boolean {
+  if (typeof binding === "string") return binding.trim().length > 0;
+  if (!isEnvBindingRecord(binding)) return false;
+  if (binding.type === "plain") {
+    return typeof binding.value === "string" && binding.value.trim().length > 0;
+  }
+  return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+}
+
+function envBindingIsTruthyFlag(binding: unknown): boolean {
+  const raw = typeof binding === "string"
+    ? binding
+    : isEnvBindingRecord(binding) && binding.type === "plain" && typeof binding.value === "string"
+      ? binding.value
+      : null;
+  if (raw == null) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "1" || normalized === "true";
+}
+
+// Non-seat auth env keys that carry credentials or route through a
+// cloud provider instead of an Anthropic subscription seat — none of these
+// have Claude's five-hour/weekly usage windows.
+const CLAUDE_NON_SEAT_TOKEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+const CLAUDE_NON_SEAT_PROVIDER_FLAG_ENV_KEYS = [
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/**
+ * True when the agent's adapter configuration binds a non-seat Claude auth
+ * method (an API key/auth token, or a cloud-provider passthrough). None of
+ * these have Claude's five-hour/weekly usage windows, so an agent bound this
+ * way must never show the Claude rate-limit widget, even if a stale value
+ * lingers in usage_json from an earlier seat-backed run.
+ */
+function agentUsesNonSeatClaudeAuth(agent: AgentDetailRecord): boolean {
+  const env = agent.adapterConfig?.env;
+  if (!isEnvBindingRecord(env)) return false;
+  return (
+    CLAUDE_NON_SEAT_TOKEN_ENV_KEYS.some((key) => envBindingNonEmptyString(env[key])) ||
+    CLAUDE_NON_SEAT_PROVIDER_FLAG_ENV_KEYS.some((key) => envBindingIsTruthyFlag(env[key]))
+  );
+}
+
+/**
+ * True for a claude_local agent on a Claude subscription seat — the only
+ * agents with five-hour/weekly usage windows at all. This is independent of
+ * whether any run has reported a window yet: a freshly hired seat-backed
+ * agent with zero completed runs is still seat-backed, just without data.
+ */
+function agentIsClaudeSeatBacked(agent: AgentDetailRecord): boolean {
+  return agent.adapterType === "claude_local" && !agentUsesNonSeatClaudeAuth(agent);
+}
+
+/** Formats a unix-seconds reset time as "resets in Nh" / "resets in Nd". */
+function formatRateLimitReset(resetsAtUnixSeconds: number | null | undefined): string | null {
+  if (typeof resetsAtUnixSeconds !== "number" || !Number.isFinite(resetsAtUnixSeconds)) return null;
+  const diffMs = resetsAtUnixSeconds * 1000 - Date.now();
+  if (diffMs <= 0) return "resets now";
+  const diffMin = Math.round(diffMs / 60_000);
+  if (diffMin < 60) return `resets in ${diffMin}m`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 48) return `resets in ${diffHr}h`;
+  const diffDay = Math.round(diffHr / 24);
+  return `resets in ${diffDay}d`;
 }
 
 export type RunLogChunk = {
@@ -1699,6 +1786,76 @@ function LatestRunCard({
   );
 }
 
+/* ---- Claude rate limit ---- */
+
+const RATE_LIMIT_WARNING_THRESHOLD = 0.8;
+
+function ClaudeRateLimitWindow({ label, window }: { label: string; window: { utilization: number | null; resetsAt: number | null } | null | undefined }) {
+  if (!window || window.utilization == null) return null;
+  const pct = Math.round(Math.min(1, Math.max(0, window.utilization)) * 100);
+  const nearLimit = window.utilization >= RATE_LIMIT_WARNING_THRESHOLD;
+  const fillColor = nearLimit ? "bg-destructive" : pct >= 70 ? "bg-(--status-task-todo)" : "bg-(--status-task-done)";
+  const resetLabel = formatRateLimitReset(window.resetsAt);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {nearLimit && <Badge variant="destructive">Near limit</Badge>}
+          <span className="text-xs font-medium tabular-nums">{pct}%</span>
+        </div>
+      </div>
+      <div className="relative h-2 w-full border border-border overflow-hidden">
+        <div
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${label}: ${pct}%`}
+          className={cn("absolute inset-y-0 left-0", fillColor)}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {resetLabel && <p className="text-xs text-muted-foreground">{resetLabel}</p>}
+    </div>
+  );
+}
+
+/**
+ * The agent's position in Claude's own five-hour and weekly usage windows,
+ * as last reported by the CLI's rate_limit_event on its most recent
+ * completed run. Seat-backed agents only — see agentIsClaudeSeatBacked.
+ *
+ * `rateLimit` is null for a seat-backed agent with no completed run yet (or
+ * whose completed runs never reported a window) — a distinct "no usage
+ * recorded yet" state, not 0% and not hidden. Rendering 0% would read as
+ * "plenty of headroom" when the truth is "unknown"; hiding the card would be
+ * indistinguishable from a non-seat agent or a bug.
+ */
+function ClaudeRateLimitCard({ rateLimit }: { rateLimit: RateLimitInfo | null }) {
+  const fiveHour = rateLimit?.unifiedWindows?.five_hour ?? null;
+  const sevenDay = rateLimit?.unifiedWindows?.seven_day ?? null;
+  if (rateLimit && !fiveHour && !sevenDay) return null;
+  return (
+    <section className="rounded-lg border border-border p-4" aria-labelledby="agent-rate-limit-heading">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 id="agent-rate-limit-heading" className="text-sm font-medium">Claude usage</h3>
+        {rateLimit?.isUsingOverage === false && rateLimit.overageDisabledReason && (
+          <span className="text-xs text-muted-foreground">Overage disabled</span>
+        )}
+      </div>
+      {rateLimit ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ClaudeRateLimitWindow label="5-hour" window={fiveHour} />
+          <ClaudeRateLimitWindow label="Weekly" window={sevenDay} />
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">No usage recorded yet.</p>
+      )}
+    </section>
+  );
+}
+
 /* ---- Agent Overview ---- */
 
 export function AgentOverview({
@@ -1730,10 +1887,14 @@ export function AgentOverview({
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
   const lastRun = runs[0] ?? null;
+  const seatBacked = agentIsClaudeSeatBacked(agent);
+  const rateLimit = seatBacked ? runRateLimit(mostRecentCompletedRun(runs)) : null;
 
   return (
     <div className="space-y-6">
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
+
+      {seatBacked && <ClaudeRateLimitCard rateLimit={rateLimit} />}
 
       <div className="grid gap-4 md:grid-cols-2">
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">

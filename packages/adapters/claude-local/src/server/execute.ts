@@ -1186,6 +1186,7 @@ ${runtimeToolsSection.trim()}`
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         errorMeta,
+        rateLimit: parsedStream.rateLimit ?? null,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
@@ -1358,6 +1359,7 @@ ${runtimeToolsSection.trim()}`
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd,
+      rateLimit: parsedStream.rateLimit ?? null,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
