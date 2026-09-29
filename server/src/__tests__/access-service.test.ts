@@ -921,6 +921,7 @@ describeEmbeddedPostgres("access service", () => {
     await expect(access.canUser(company.id, admin.principalId, "environments:manage")).resolves.toBe(true);
     await expect(access.canUser(company.id, operator.principalId, "environments:manage")).resolves.toBe(false);
     await expect(access.canUser(company.id, viewer.principalId, "environments:manage")).resolves.toBe(false);
+    await expect(access.canUser(company.id, operator.principalId, "tools:manage_connections")).resolves.toBe(true);
   });
 
   it("backfills pre-upgrade human memberships with missing role grants without replacing custom grants", async () => {
