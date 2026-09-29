@@ -453,6 +453,34 @@ export function createManagedBundledPluginWorkerRecovery(input: {
   };
 }
 
+const CHAT_WEBHOOK_AUTH_BYPASS_PATH = /^\/api\/chat-webhooks(?:\/|$)/i;
+
+export function stripChatWebhookAuthorization(
+  req: ExpressRequest,
+  _res: express.Response,
+  next: express.NextFunction,
+) {
+  if (CHAT_WEBHOOK_AUTH_BYPASS_PATH.test(req.path) && req.headers.authorization) {
+    (req as unknown as { __chatWebhookAuthorization?: string }).__chatWebhookAuthorization =
+      req.headers.authorization;
+    delete req.headers.authorization;
+  }
+  next();
+}
+
+export function restoreChatWebhookAuthorization(
+  req: ExpressRequest,
+  _res: express.Response,
+  next: express.NextFunction,
+) {
+  const held = (req as unknown as { __chatWebhookAuthorization?: string }).__chatWebhookAuthorization;
+  if (held) {
+    req.headers.authorization = held;
+    delete (req as unknown as { __chatWebhookAuthorization?: string }).__chatWebhookAuthorization;
+  }
+  next();
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -557,12 +585,18 @@ export async function createApp(
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
+  // Chat webhooks authenticate with provider-specific credentials (Microsoft
+  // Teams sends a Bot Framework JWT in Authorization). Hide that bearer from
+  // Paperclip's actorMiddleware so it is not mistaken for a board/agent token,
+  // then restore it immediately after so the provider SDK can verify it.
+  app.use(stripChatWebhookAuthorization);
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
     }),
   );
+  app.use(restoreChatWebhookAuthorization);
   // After the actor middleware on purpose: a valid Cloud control assertion
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
