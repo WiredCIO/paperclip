@@ -108,12 +108,49 @@ export interface SandboxCallbackBridgeRouteRule {
   path: RegExp;
 }
 
+/**
+ * CH-7: Paperclip's own MCP endpoints, reached through the bridge when an
+ * environment sets `paperclipReachability.mode = "bridge"` — a sandbox whose
+ * egress is filtered and so cannot use the public origin CH-6 defaults to.
+ *
+ * These routes differ from every other entry in the allowlist in one way that
+ * matters: the caller's `Authorization` header must survive to the gateway.
+ * A gateway bearer is minted per run and encodes the tool-profile digest, so
+ * substituting the host token would both over-grant and fail the digest check.
+ * {@link isPaperclipMcpBridgePath} is the single predicate for that carve-out.
+ *
+ * Admitting these routes grants no authority a compromised CLI does not
+ * already hold: the gateway rejects anything but a live, unrevoked, per-run
+ * gateway bearer, which is exactly what that CLI was handed for the run.
+ */
+export const PAPERCLIP_MCP_BRIDGE_ROUTES: readonly SandboxCallbackBridgeRouteRule[] = [
+  { method: "GET", path: /^\/mcp\/runtime-tools$/ },
+  { method: "POST", path: /^\/mcp\/runtime-tools$/ },
+  { method: "GET", path: /^\/mcp\/gateways\/[^/]+$/ },
+  { method: "POST", path: /^\/mcp\/gateways\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/mcp\/project-tools$/ },
+  { method: "POST", path: /^\/api\/mcp\/project-tools$/ },
+] as const;
+
+/**
+ * True for a path whose Authorization header must be forwarded unchanged.
+ * Matches on the path only: the method is enforced separately by the route
+ * allowlist, and a method mismatch must be a route denial rather than a
+ * silent downgrade to the host token.
+ */
+export function isPaperclipMcpBridgePath(path: string): boolean {
+  return PAPERCLIP_MCP_BRIDGE_ROUTES.some((route) => route.path.test(path));
+}
+
 // Routes the in-sandbox heartbeat skill is documented to call. The server
 // still enforces actor-level permissions on top of this allowlist; the list
 // exists to bound the surface area a compromised CLI could reach via the
 // reverse bridge. Keep this in sync with the Paperclip skill in
 // `skills/paperclip/SKILL.md` and `references/api-reference.md`.
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
+  // CH-7: Paperclip's MCP endpoints, so a filtered-egress sandbox can call its
+  // own tools. Gated by the per-run gateway bearer, not by this list.
+  ...PAPERCLIP_MCP_BRIDGE_ROUTES,
   // Runtime capability authentication is independently checked by the controller.
   { method: "POST", path: /^\/runtime-tools\/github\/credentials$/ },
   // Identity, inbox, agent self-management
@@ -442,8 +479,13 @@ export function authorizeSandboxCallbackBridgeRequestWithRoutes(
 export function sanitizeSandboxCallbackBridgeHeaders(
   headers: Record<string, string>,
   allowlist: readonly string[] = DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST,
+  options: { path?: string } = {},
 ): Record<string, string> {
   const allowed = new Set(allowlist.map((header) => header.toLowerCase()));
+  // CH-7: only a Paperclip MCP path keeps its Authorization header. Everywhere
+  // else it is stripped here and replaced with the host token by the forward,
+  // so a sandbox can never present its own bearer to the regular API.
+  if (options.path && isPaperclipMcpBridgePath(options.path)) allowed.add("authorization");
   return Object.fromEntries(
     Object.entries(headers).filter(([key]) => allowed.has(key.toLowerCase())),
   );
@@ -2028,7 +2070,9 @@ export function createSandboxHttp2BridgeGateway(
         method: request.method,
         path: request.path,
         query: request.query,
-        headers: sanitizeSandboxCallbackBridgeHeaders(request.headers, headerAllowlist),
+        headers: sanitizeSandboxCallbackBridgeHeaders(request.headers, headerAllowlist, {
+          path: request.path,
+        }),
         body: request.body,
       });
     },
