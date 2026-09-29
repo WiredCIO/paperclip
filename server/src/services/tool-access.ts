@@ -13185,8 +13185,16 @@ export function toolAccessService(
       const reconnectSuppliesOAuthConfig =
         Boolean(input.oauthClient) ||
         Boolean(asRecord(input.configValues).oauth);
+      // Only a reconnect on the same method keeps the old OAuth identity.
+      // Switching methods (GitHub managed OAuth -> personal access token) is
+      // a deliberate change of identity; carrying the stale `config.oauth`
+      // across keeps the health check on the managed-grant path, which then
+      // fails with "OAuth authorization expired" even though the new key is
+      // valid.
       const preserveOAuthIdentity =
-        Boolean(revivedConnectionPrevious) && !reconnectSuppliesOAuthConfig;
+        Boolean(revivedConnectionPrevious) &&
+        !reconnectSuppliesOAuthConfig &&
+        retainedMethodKey === method?.key;
       const mergeSecretRefsByConfigPath = (
         fresh: CreateToolConnection["credentialSecretRefs"],
         previous: CreateToolConnection["credentialSecretRefs"],
