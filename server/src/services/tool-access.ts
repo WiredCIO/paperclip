@@ -6674,6 +6674,37 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<typeof connectionGrants.$inferSelect | null> {
+    if (connection.credentialPolicy === "per_agent") {
+      // A dedicated-agent connection only ever runs as its agent (the runtime
+      // resolves it by `subjectAgentId`). The person who clicks Connect or
+      // Check health is not that identity, so their own personal grant --
+      // often a revoked leftover from an earlier OAuth setup -- must not be
+      // substituted for it or block the check with "reauthorization required".
+      const actingAgentId =
+        actor?.actorType === "agent" ? (actor.actorId ?? null) : null;
+      const [agentGrant] = await db
+        .select()
+        .from(connectionGrants)
+        .where(
+          and(
+            eq(connectionGrants.companyId, connection.companyId),
+            eq(connectionGrants.connectionId, connection.id),
+            eq(connectionGrants.kind, "agent"),
+            eq(connectionGrants.status, "active"),
+            ...(actingAgentId
+              ? [eq(connectionGrants.subjectAgentId, actingAgentId)]
+              : []),
+          ),
+        )
+        .orderBy(desc(connectionGrants.updatedAt))
+        .limit(1);
+      if (agentGrant) return agentGrant;
+      throw unprocessable("This agent's dedicated authorization is required", {
+        code: "agent_authorization_required",
+        setupUrl: connectionSetupUrl(connection),
+        reconnectUrl: connectionReconnectUrl(connection),
+      });
+    }
     const actorUserId =
       actor?.actorType === "user" ? (actor.actorId ?? null) : null;
     if (actorUserId) {
@@ -13185,8 +13216,16 @@ export function toolAccessService(
       const reconnectSuppliesOAuthConfig =
         Boolean(input.oauthClient) ||
         Boolean(asRecord(input.configValues).oauth);
+      // Only a reconnect on the same method keeps the old OAuth identity.
+      // Switching methods (GitHub managed OAuth -> personal access token) is
+      // a deliberate change of identity; carrying the stale `config.oauth`
+      // across keeps the health check on the managed-grant path, which then
+      // fails with "OAuth authorization expired" even though the new key is
+      // valid.
       const preserveOAuthIdentity =
-        Boolean(revivedConnectionPrevious) && !reconnectSuppliesOAuthConfig;
+        Boolean(revivedConnectionPrevious) &&
+        !reconnectSuppliesOAuthConfig &&
+        retainedMethodKey === method?.key;
       const mergeSecretRefsByConfigPath = (
         fresh: CreateToolConnection["credentialSecretRefs"],
         previous: CreateToolConnection["credentialSecretRefs"],
@@ -13382,6 +13421,76 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        //
+        // A key-based method (for example a GitHub personal access token) has
+        // its credential now and no callback follows. The runtime resolves a
+        // `per_agent` connection only through this agent's grant, so the key
+        // goes straight onto it, the same way "Just me" commits to the user's
+        // grant above. Without this the key is stored on nothing the runtime
+        // or the health check can read.
+        if (credentialSecretRefs.length > 0) {
+          const [existingGrant] = await db
+            .select()
+            .from(connectionGrants)
+            .where(
+              and(
+                eq(connectionGrants.companyId, companyId),
+                eq(connectionGrants.connectionId, connectionRow.id),
+                eq(connectionGrants.kind, "agent"),
+                eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+              ),
+            )
+            .limit(1);
+          let changedGrant: typeof connectionGrants.$inferSelect | undefined;
+          if (existingGrant) {
+            [changedGrant] = await db
+              .update(connectionGrants)
+              .set({
+                credentialSecretRefs,
+                status: "active",
+                revokedAt: null,
+                revokedByAgentId: null,
+                revokedByUserId: null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(connectionGrants.id, existingGrant.id),
+                  eq(connectionGrants.updatedAt, existingGrant.updatedAt),
+                ),
+              )
+              .returning();
+            if (!changedGrant)
+              throw conflict(
+                "The agent credential changed during setup. Please try again.",
+              );
+          } else {
+            [changedGrant] = await db
+              .insert(connectionGrants)
+              .values({
+                companyId,
+                connectionId: connectionRow.id,
+                kind: "agent",
+                subjectAgentId: dedicatedAgentId,
+                credentialSecretRefs,
+                status: "active",
+                isDefault: false,
+                createdByUserId:
+                  actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+                createdByAgentId:
+                  actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+              })
+              .returning();
+            if (!changedGrant)
+              throw new Error("Failed to create dedicated agent grant");
+          }
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = {
+              previous: existingGrant ?? null,
+              current: changedGrant,
+            };
+          }
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
