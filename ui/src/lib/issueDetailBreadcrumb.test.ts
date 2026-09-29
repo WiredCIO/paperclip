@@ -81,6 +81,7 @@ describe("issueDetailBreadcrumb", () => {
         name: "Paperclip App",
         description: null,
         status: "in_progress",
+        categoryId: null,
         leadAgentId: null,
         targetDate: null,
         color: null,

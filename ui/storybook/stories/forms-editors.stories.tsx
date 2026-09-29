@@ -299,6 +299,7 @@ const storybookProject: Project = {
   name: "Board UI",
   description: "Control-plane interface, Storybook review surfaces, and operator workflows.",
   status: "in_progress",
+  categoryId: null,
   leadAgentId: "agent-codex",
   targetDate: null,
   color: "#0f766e",

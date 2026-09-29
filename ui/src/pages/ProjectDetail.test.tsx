@@ -133,6 +133,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: "Managed Project",
     description: null,
     status: "in_progress",
+    categoryId: null,
     leadAgentId: null,
     targetDate: null,
     color: "#14b8a6",

@@ -79,6 +79,7 @@ function createProject(): Project {
     name: "Workspace project",
     description: null,
     status: "in_progress",
+    categoryId: null,
     leadAgentId: null,
     targetDate: null,
     color: "#22c55e",

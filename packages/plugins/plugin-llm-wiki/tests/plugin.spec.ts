@@ -529,6 +529,7 @@ function existingProject(): Project {
     name: "Existing Wiki Project",
     description: "Existing project selected for wiki operations.",
     status: "in_progress",
+    categoryId: null,
     leadAgentId: null,
     targetDate: null,
     color: "#0f766e",

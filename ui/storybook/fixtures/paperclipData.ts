@@ -623,6 +623,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     name: "Board UI",
     description: "Navigation, command, and operator layout polish.",
     status: "in_progress",
+    categoryId: null,
     leadAgentId: "agent-codex",
     targetDate: "2026-04-30",
     color: "#0f766e",

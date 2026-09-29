@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project, ProjectCategory } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import { Projects } from "./Projects";
@@ -16,6 +16,17 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateProject: vi.fn(),
+}));
+
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
+}));
+
+const mockProjectAccessApi = vi.hoisted(() => ({
+  listCategories: vi.fn(),
+  createCategory: vi.fn(),
+  updateCategory: vi.fn(),
+  deleteCategory: vi.fn(),
 }));
 
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
@@ -47,6 +58,26 @@ vi.mock("../api/resourceMemberships", () => ({
   resourceMembershipsApi: mockResourceMembershipsApi,
 }));
 
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/project-access", () => ({
+  projectAccessApi: mockProjectAccessApi,
+}));
+
+function makeCategory(overrides: Partial<ProjectCategory>): ProjectCategory {
+  return {
+    id: "category-a",
+    companyId: "company-1",
+    name: "Category",
+    sortOrder: 0,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 if (!globalThis.PointerEvent) {
@@ -73,6 +104,7 @@ function makeProject(overrides: Partial<Project>): Project {
     name: "Alpha",
     description: null,
     status: "in_progress",
+    categoryId: null,
     leadAgentId: null,
     targetDate: null,
     color: "#ef4444",
@@ -153,6 +185,16 @@ describe("Projects", () => {
       state: "joined",
       updatedAt: new Date("2026-01-05T00:00:00Z"),
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: null,
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      source: "test",
+      keyId: null,
+    });
+    mockProjectAccessApi.listCategories.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -240,5 +282,79 @@ describe("Projects", () => {
 
     expect(hiddenDescriptionLine).not.toBeNull();
     expect(hiddenDescriptionLine?.className).toContain("min-h-4");
+  });
+
+  it("does not show a manage-categories control for non-admin members, and never fetches categories", async () => {
+    await renderProjects();
+
+    const content = container.textContent ?? "";
+    expect(content).not.toContain("Manage categories");
+    expect(mockProjectAccessApi.listCategories).not.toHaveBeenCalled();
+  });
+
+  it("shows a manage-categories control for company owners/admins", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: null,
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }],
+      source: "test",
+      keyId: null,
+    });
+
+    await renderProjects();
+
+    const content = container.textContent ?? "";
+    expect(content).toContain("Manage categories");
+    expect(mockProjectAccessApi.listCategories).toHaveBeenCalledWith("company-1");
+  });
+
+  it("groups projects by category for admins, with uncategorized projects in their own bucket", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: null,
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [],
+      source: "test",
+      keyId: null,
+    });
+    mockProjectAccessApi.listCategories.mockResolvedValue([
+      makeCategory({ id: "category-ops", name: "Ops", sortOrder: 1 }),
+      makeCategory({ id: "category-eng", name: "Engineering", sortOrder: 0 }),
+    ]);
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({
+        id: "project-c",
+        urlKey: "charlie",
+        name: "Charlie",
+        categoryId: "category-ops",
+      }),
+      makeProject({
+        id: "project-b",
+        urlKey: "bravo",
+        name: "Bravo",
+        categoryId: null,
+      }),
+      makeProject({
+        id: "project-a",
+        urlKey: "alpha",
+        name: "Alpha",
+        description: "First project",
+        categoryId: "category-eng",
+      }),
+    ]);
+
+    await renderProjects();
+
+    const content = container.textContent ?? "";
+    expect(content.indexOf("My Projects")).toBeLessThan(content.indexOf("Engineering"));
+    expect(content.indexOf("Engineering")).toBeLessThan(content.indexOf("Alpha"));
+    expect(content.indexOf("Alpha")).toBeLessThan(content.indexOf("Ops"));
+    expect(content.indexOf("Ops")).toBeLessThan(content.indexOf("Charlie"));
+    expect(content.indexOf("Charlie")).toBeLessThan(content.indexOf("Other Projects"));
+    expect(content.indexOf("Other Projects")).toBeLessThan(content.indexOf("Uncategorized"));
+    expect(content.indexOf("Uncategorized")).toBeLessThan(content.indexOf("Bravo"));
   });
 });
