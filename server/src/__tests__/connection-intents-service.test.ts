@@ -364,7 +364,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
         methods: [
           expect.objectContaining({
             key: "mcp-key",
-            label: "Personal access token (advanced)",
+            label: "Personal access token (tools only)",
             auth: "api_key",
           }),
         ],
@@ -383,7 +383,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(setup.service.methods).toEqual([
       expect.objectContaining({
         key: "mcp-key",
-        label: "Personal access token (advanced)",
+        label: "Personal access token (tools only)",
         auth: "api_key",
       }),
     ]);

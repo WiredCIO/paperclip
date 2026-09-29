@@ -371,6 +371,27 @@ function mockToolsList(tools: unknown[]) {
     );
 }
 
+// GitHub's `/user` answers the personal access token identity lookup; every
+// other request is the MCP catalog refresh.
+function mockGitHubUserAndToolsList(user: unknown, userStatus = 200) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url === "https://api.github.com/user") {
+      return new Response(JSON.stringify(user), {
+        status: userStatus,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: {
+        tools: [{ name: "get_file_contents", annotations: { readOnlyHint: true } }],
+      },
+    });
+  });
+}
+
 const PUBLIC_MCP_FIXTURE_URL = "https://8.8.8.8/api/mcp";
 
 async function withGalleryServerUrl<T>(
@@ -6763,6 +6784,109 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe(
       "Bearer agent-pat",
     );
+  });
+
+  it("records the personal access token owner's account on a revived dedicated grant", async () => {
+    const company = await createCompany(db);
+    const userId = `github-agent-pat-owner-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: userId };
+    mockGitHubUserAndToolsList({ id: 7, login: "WiredCIOAppDev" });
+    const connect = (token: string) =>
+      service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "github",
+          connectionMethodKey: "mcp-key",
+          grantKind: "agent",
+          subjectAgentId: agent.id,
+          name: "GitHub agent identity",
+          credentialValues: { "credentials.authorization": token },
+        },
+        actor,
+      );
+
+    const first = await connect("first-pat");
+    const [firstGrant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.connectionId, first.connectionId),
+          eq(connectionGrants.kind, "agent"),
+        ),
+      );
+    // An earlier GitHub sign-in by the person connecting, which the revived
+    // grant used to keep showing no matter whose token replaced it.
+    await db
+      .update(connectionGrants)
+      .set({
+        providerTenant: {
+          oauth: { strategy: "paperclip_cloud_connector" },
+          github: {
+            userId: "1",
+            login: "WiredCIO",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["9"],
+            installationOwnerLogins: ["WiredCIO"],
+          },
+        },
+      })
+      .where(eq(connectionGrants.id, firstGrant!.id));
+    await service.archiveConnection(first.connectionId, company.id, actor);
+
+    const second = await connect("second-pat");
+    expect(second.connectionId).toBe(first.connectionId);
+    const [revivedGrant] = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.id, firstGrant!.id));
+    expect(revivedGrant?.providerTenant).toEqual({
+      github: expect.objectContaining({
+        userId: "7",
+        login: "WiredCIOAppDev",
+        installationCount: 0,
+        repositoryCount: 0,
+        tokenKind: "personal_access_token",
+      }),
+    });
+  });
+
+  it("rejects a personal access token GitHub refuses before writing a grant", async () => {
+    const company = await createCompany(db);
+    const userId = `github-agent-pat-refused-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const service = createTestToolAccessService(db);
+    mockGitHubUserAndToolsList(null, 401);
+
+    await expect(
+      service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "github",
+          connectionMethodKey: "mcp-key",
+          grantKind: "agent",
+          subjectAgentId: agent.id,
+          name: "GitHub refused PAT",
+          credentialValues: { "credentials.authorization": "revoked-pat" },
+        },
+        { actorType: "user", actorId: userId },
+      ),
+    ).rejects.toMatchObject({
+      details: expect.objectContaining({
+        code: "github_personal_access_token_rejected",
+      }),
+    });
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.companyId, company.id));
+    expect(grants).toEqual([]);
   });
 
   it("refuses a personal identity when no named user is making the request", async () => {

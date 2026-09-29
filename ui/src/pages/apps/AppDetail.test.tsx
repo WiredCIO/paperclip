@@ -1530,6 +1530,29 @@ describe("AppDetail", () => {
     expect(configureHint?.getAttribute("href")).toBe("https://github.com/apps/paperclip-test/installations/new");
   });
 
+  it("says a personal access token powers tools only and offers no GitHub App setup", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        tokenKind: "personal_access_token",
+        installationCount: 0,
+        repositoryCount: 0,
+        repositorySelection: "none",
+        installationIds: [],
+        installationOwnerLogins: [],
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    expect(container.textContent).toContain("@dottabot");
+    expect(container.textContent).toContain("Agents can't use it for git or gh");
+    expect(findButton("Load GitHub configuration")).toBeUndefined();
+    expect([...container.querySelectorAll("a")].some((link) => link.textContent === "Add More Repos on GitHub")).toBe(false);
+    expect(container.textContent).not.toContain("No repositories selected");
+  });
+
   it.each([undefined, "https://github.com/settings/installations"])("loads missing GitHub app configuration instead of linking legacy settings (%s)", async (installationUrl) => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(perUserConnection());

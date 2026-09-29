@@ -240,9 +240,9 @@ const apps = [
         "api_key",
         { serverUrl: "https://api.githubcopilot.com/mcp/" },
         "S3",
-        "Create a fine-grained token limited to the repositories agents should use.",
+        "Create a fine-grained token limited to the repositories agents should use. A token powers GitHub tools only: agents cannot use it for git or gh. For git access, use \"Use this connection as an agent tool\" instead.",
         {
-          label: "Personal access token (advanced)",
+          label: "Personal access token (tools only)",
           purpose: "tool",
           credentialFields: [
             field("authorization", "GitHub token", "github_pat_..."),

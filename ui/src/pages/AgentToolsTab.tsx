@@ -88,7 +88,9 @@ function GitHubIdentitySection({
                   {dedicatedLogin ? `@${dedicatedLogin}` : "Dedicated GitHub account"}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Used only by {agentName}. This dedicated connection takes precedence over the responsible person&apos;s GitHub.
+                  {dedicatedIdentity.grant.providerTenant?.github?.tokenKind === "personal_access_token"
+                    ? <>Personal access token, used only by {agentName}. It powers GitHub tools only; {agentName} can&apos;t use it for git or gh. Connect GitHub with the sign-in option for that.</>
+                    : <>Used only by {agentName}. This dedicated connection takes precedence over the responsible person&apos;s GitHub.</>}
                 </p>
               </>
             ) : (

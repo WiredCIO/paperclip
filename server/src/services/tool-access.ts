@@ -2508,6 +2508,63 @@ export async function loadGitHubTokenRepositories(
   }
 }
 
+/**
+ * Identifies the GitHub account behind a personal access token. A PAT has no
+ * GitHub App installation, so the installation fields are recorded as empty and
+ * `tokenKind` marks the grant as tool-only: git and gh read only a sign-in token.
+ */
+export async function loadGitHubPersonalAccessTokenIdentity(
+  token: string,
+  request: typeof fetch = fetch,
+): Promise<
+  NonNullable<
+    NonNullable<(typeof connectionGrants.$inferSelect)["providerTenant"]>["github"]
+  >
+> {
+  const response = await request("https://api.github.com/user", {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token.replace(/^bearer\s+/i, "").trim()}`,
+      "user-agent": "Paperclip",
+      "x-github-api-version": "2022-11-28",
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw unprocessable(
+      response.status === 401
+        ? "GitHub rejected this personal access token. Check that it is current and was copied in full."
+        : "GitHub could not verify this personal access token",
+      {
+        code:
+          response.status === 401
+            ? "github_personal_access_token_rejected"
+            : "github_access_check_failed",
+      },
+    );
+  }
+  const user = (await response.json()) as unknown;
+  const userId = recordValue(user) ? githubId(user.id) : null;
+  const login = recordValue(user) && typeof user.login === "string" ? user.login : null;
+  if (!userId || !login)
+    throw unprocessable("GitHub returned invalid account metadata", {
+      code: "github_bad_response",
+    });
+  return {
+    userId,
+    login,
+    ...(recordValue(user) && typeof user.avatar_url === "string"
+      ? { avatarUrl: user.avatar_url }
+      : {}),
+    installationCount: 0,
+    repositoryCount: 0,
+    repositorySelection: "none",
+    installationIds: [],
+    installationOwnerLogins: [],
+    tokenKind: "personal_access_token",
+  };
+}
+
 export async function loadGitHubGrantMetadata(
   accessToken: string,
   request: typeof fetch = fetch,
@@ -12994,6 +13051,47 @@ export function toolAccessService(
       previous: typeof connectionGrants.$inferSelect | null;
       current: typeof connectionGrants.$inferSelect;
     } | null = null;
+    // A GitHub personal access token belongs to whichever account created it,
+    // not to the person connecting it or to a revived grant's earlier sign-in.
+    // Read that account from GitHub before any secret is written, so a bad
+    // token fails here and the grant never shows a stale identity.
+    // Only personal and dedicated-agent grants carry an identity that git and
+    // the identity UI read, so an organization token is not looked up.
+    const githubPersonalAccessToken =
+      galleryEntry?.slug === "github" &&
+      method?.auth === "api_key" &&
+      credentialSource !== "vercel_connect" &&
+      (requestedGrantKind === "user" || requestedGrantKind === "agent")
+        ? credentialFieldsFor(galleryEntry, method.key)
+            .map((field) => credentialValues[field.configPath])
+            .find(
+              (value): value is string =>
+                typeof value === "string" && value.trim().length > 0,
+            )
+        : undefined;
+    let personalAccessTokenProviderTenant: {
+      providerTenant?: (typeof connectionGrants.$inferSelect)["providerTenant"];
+    } = {};
+    if (githubPersonalAccessToken) {
+      try {
+        personalAccessTokenProviderTenant = {
+          providerTenant: {
+            github: await loadGitHubPersonalAccessTokenIdentity(
+              githubPersonalAccessToken,
+            ),
+          },
+        };
+      } catch (error) {
+        if (
+          error instanceof HttpError &&
+          asRecord(error.details).code === "github_personal_access_token_rejected"
+        )
+          throw error;
+        // GitHub was unreachable or answered unexpectedly. Record the account
+        // as unknown rather than keep a revived grant's earlier sign-in.
+        personalAccessTokenProviderTenant = { providerTenant: null };
+      }
+    }
 
     try {
       const credentialFields =
@@ -13360,6 +13458,7 @@ export function toolAccessService(
               .update(connectionGrants)
               .set({
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 revokedAt: null,
                 revokedByAgentId: null,
@@ -13386,6 +13485,7 @@ export function toolAccessService(
                 kind: "user",
                 subjectUserId: personalIdentityUserId,
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 isDefault: false,
                 createdByUserId: personalIdentityUserId,
@@ -13447,6 +13547,7 @@ export function toolAccessService(
               .update(connectionGrants)
               .set({
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 revokedAt: null,
                 revokedByAgentId: null,
@@ -13473,6 +13574,7 @@ export function toolAccessService(
                 kind: "agent",
                 subjectAgentId: dedicatedAgentId,
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 isDefault: false,
                 createdByUserId:
