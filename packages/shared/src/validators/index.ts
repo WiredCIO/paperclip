@@ -401,6 +401,17 @@ export {
 } from "./project.js";
 
 export {
+  createProjectCategorySchema,
+  updateProjectCategorySchema,
+  putProjectBindingsSchema,
+  putProjectAccessGrantSchema,
+  type CreateProjectCategory,
+  type UpdateProjectCategory,
+  type PutProjectBindings,
+  type PutProjectAccessGrant,
+} from "./project-access.js";
+
+export {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,

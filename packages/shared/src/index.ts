@@ -458,6 +458,7 @@ export {
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
+  PROJECT_BINDING_TARGET_TYPES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -644,6 +645,7 @@ export {
   type GoalLevel,
   type GoalStatus,
   type ProjectStatus,
+  type ProjectBindingTargetTypeValue,
   type EnvironmentDriver,
   type EnvironmentStatus,
   type EnvironmentLeaseStatus,
@@ -958,6 +960,8 @@ export type {
   ProjectGoalRef,
   ProjectManagedByPlugin,
   ProjectWorkspace,
+  ProjectBindingTargetType,
+  OrgEdgeParticipantType,
   CompanySearchCountType,
   CompanySearchExtractIssueResult,
   CompanySearchExtractKind,
@@ -1913,6 +1917,14 @@ export {
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
   projectExecutionWorkspacePolicySchema,
+  createProjectCategorySchema,
+  updateProjectCategorySchema,
+  putProjectBindingsSchema,
+  putProjectAccessGrantSchema,
+  type CreateProjectCategory,
+  type UpdateProjectCategory,
+  type PutProjectBindings,
+  type PutProjectAccessGrant,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,
@@ -2764,3 +2776,5 @@ export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export * from "./announcements.js";
+
+export * from "./agent-runtime-limits.js";

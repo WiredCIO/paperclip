@@ -57,6 +57,7 @@ const apiPrefixes: Record<string, string> = {
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
+  "project-access.ts": "/api",
   "projects.ts": "/api",
   "project-tools.ts": "/api",
   "resource-memberships.ts": "/api",

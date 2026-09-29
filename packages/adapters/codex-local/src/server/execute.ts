@@ -789,7 +789,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
-      asNumber(config.timeoutSec, 0),
+      // CH-17: fall back to the host-resolved run timeout rather than 0, which
+      // meant no timeout at all. Codex exposes no turn-cap flag of its own, so
+      // `limits.maxTurnsPerRun` is bounded here by wall time.
+      asNumber(config.timeoutSec, ctx.limits?.runTimeoutSec ?? 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
     let effectiveExecutionCwd = targetWorkspaceRealization?.mode === "in_place"
