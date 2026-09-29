@@ -60,8 +60,27 @@ export const createAgentInstructionsBundleSchema = z.object({
   }),
 });
 
+/**
+ * CH-17: the typed run limits. Unset means "use the company default, then the
+ * built-in default" — not "uncapped", which was the old `maxTurns: 0` meaning
+ * and the reason agents ran unbounded. Removing the turn cap takes
+ * `unlimited: true`; `runTimeoutSec` still applies, so no single switch leaves
+ * a run bounded by neither turns nor time.
+ */
+export const agentRuntimeLimitsSchema = z.object({
+  maxTurnsPerRun: z.number().int().positive().optional().nullable(),
+  runTimeoutSec: z.number().int().positive().optional().nullable(),
+  mcpToolTimeoutSec: z.number().int().positive().optional().nullable(),
+  unlimited: z.boolean().optional(),
+}).strict();
+
 export const agentRuntimeConfigSchema = z.object({
-  aiConnection: aiConnectionBindingSchema.optional(),
+  limits: agentRuntimeLimitsSchema.optional().nullable(),
+  // CH-18: `null` is accepted so a PATCH can delete the key. Without it the
+  // schema rejected `aiConnection: null` as "expected object", and clearing a
+  // managed connection — to fall back to an agent's own CLAUDE_CONFIG_DIR seat
+  // — could only be done with a SQL update.
+  aiConnection: aiConnectionBindingSchema.optional().nullable(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
@@ -142,6 +161,9 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    // CH-18: runtimeConfig deep-merges by default and an explicit null deletes
+    // a key. This is the escape hatch back to wholesale replacement.
+    replaceRuntimeConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
   });

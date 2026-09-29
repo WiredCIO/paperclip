@@ -1,0 +1,62 @@
+{
+  "name": "@wiredcio/paperclip-mcp",
+  "version": "0.1.0",
+  "description": "Paperclip MCP server plus routine and work-product tools",
+  "license": "MIT",
+  "homepage": "https://github.com/WiredCIO/paperclip/tree/wiredcio/deploy/packages/wiredcio-mcp",
+  "bugs": {
+    "url": "https://github.com/WiredCIO/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WiredCIO/paperclip",
+    "directory": "packages/wiredcio-mcp"
+  },
+  "type": "module",
+  "bin": {
+    "paperclip-mcp-wiredcio": "./dist/stdio.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "bin": {
+      "paperclip-mcp-wiredcio": "./dist/stdio.js"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepack": "node scripts/bundle.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@paperclipai/mcp-server": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

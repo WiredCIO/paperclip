@@ -36,6 +36,37 @@ export function responsibleUserForAiRequest(req: Request): string | null {
     : getActorInfo(req).actorId;
 }
 
+/**
+ * Reports whether the actor may authorize company-shared AI access.
+ *
+ * Extracted so the create guard and the list capability cannot drift: the UI
+ * decides whether to offer "Company shared" from the same predicate the server
+ * enforces, rather than from a second copy that could disagree and produce a
+ * form that always 403s on submit.
+ */
+export async function isAiConnectionManager(
+  db: Db,
+  req: Request,
+  companyId: string,
+  userId: string,
+): Promise<boolean> {
+  const membership = req.actor.memberships?.find(
+    (m) => m.companyId === companyId && m.status === "active",
+  );
+  return (
+    req.actor.source === "local_implicit" ||
+    req.actor.isInstanceAdmin ||
+    membership?.membershipRole === "owner" ||
+    membership?.membershipRole === "admin" ||
+    (await accessService(db).hasPermission(
+      companyId,
+      "user",
+      userId,
+      "tools:manage_connections",
+    ))
+  );
+}
+
 export async function assertAiConnectionCreateAccess(
   db: Db,
   req: Request,
@@ -76,17 +107,7 @@ export async function assertAiConnectionCreateAccess(
   const membership = req.actor.memberships?.find(
     (m) => m.companyId === companyId && m.status === "active",
   );
-  const manager =
-    req.actor.source === "local_implicit" ||
-    req.actor.isInstanceAdmin ||
-    membership?.membershipRole === "owner" ||
-    membership?.membershipRole === "admin" ||
-    (await accessService(db).hasPermission(
-      companyId,
-      "user",
-      userId,
-      "tools:manage_connections",
-    ));
+  const manager = await isAiConnectionManager(db, req, companyId, userId);
   if (
     !input.connectionId &&
     !manager &&
@@ -216,6 +237,15 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       throw unprocessable("Invalid agent ID");
     res.json({
       currentUserId,
+      // The client cannot infer this: `tools:manage_connections` is not part
+      // of any payload it already holds. Without it the ownership choice would
+      // be offered to everyone and 403 at submit for most of them.
+      canShareConnections: await isAiConnectionManager(
+        db,
+        req,
+        companyId,
+        currentUserId,
+      ),
       connections: await service.list(
         companyId,
         currentUserId,
