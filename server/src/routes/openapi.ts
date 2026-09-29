@@ -89,6 +89,11 @@ import {
   // Goal
   createGoalSchema,
   updateGoalSchema,
+  // Project access
+  createProjectCategorySchema,
+  putProjectAccessGrantSchema,
+  putProjectBindingsSchema,
+  updateProjectCategorySchema,
   // Secret
   createSecretSchema,
   updateSecretSchema,
@@ -4517,6 +4522,101 @@ registry.registerPath({
   summary: "Delete a goal",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Project access ────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/project-categories",
+  tags: ["project-access"],
+  summary: "List project categories in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/project-categories",
+  tags: ["project-access"],
+  summary: "Create a project category",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createProjectCategorySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/project-categories/{id}",
+  tags: ["project-access"],
+  summary: "Update a project category",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(updateProjectCategorySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/project-categories/{id}",
+  tags: ["project-access"],
+  summary: "Delete a project category",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/project-bindings",
+  tags: ["project-access"],
+  summary: "List project bindings in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/project-bindings",
+  tags: ["project-access"],
+  summary: "Replace project bindings in a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(putProjectBindingsSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/members/{userId}/project-access",
+  tags: ["project-access"],
+  summary: "Get a member's project access grant",
+  request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/members/{userId}/project-access",
+  tags: ["project-access"],
+  summary: "Set a member's project access grant",
+  request: {
+    params: z.object({ companyId: z.string(), userId: z.string() }),
+    body: jsonBody(putProjectAccessGrantSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/members/{userId}/project-access",
+  tags: ["project-access"],
+  summary: "Remove a member's project access grant",
+  request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────

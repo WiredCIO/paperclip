@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { decisionTrainingService, logActivity } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoard, assertBoardCompanyOwnerOrAdmin, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
 const exampleIdSchema = z.string().guid();
@@ -135,8 +135,7 @@ export function decisionTrainingRoutes(db: Db) {
 
   router.get("/companies/:companyId/decision-training/export.jsonl", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertBoard(req);
-    assertCompanyAccess(req, companyId);
+    assertBoardCompanyOwnerOrAdmin(req, companyId, "decision training export");
     const rows = await svc.list(companyId);
     const body = rows
       .map(({ example }) => JSON.stringify({

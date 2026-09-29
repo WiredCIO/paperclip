@@ -104,6 +104,7 @@ const projectFields = {
   /** @deprecated Use goalIds instead */
   goalId: z.string().guid().optional().nullable(),
   goalIds: z.array(z.string().guid()).optional(),
+  categoryId: z.string().guid().optional().nullable(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
