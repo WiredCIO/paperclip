@@ -354,6 +354,64 @@ describe("AgentToolsTab", () => {
     expect(text).not.toContain("Connect my GitHub");
   });
 
+  it("says a dedicated personal access token cannot give the agent git access", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Agent GitHub",
+        enabled: true,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+    mockToolsApi.listConnectionGrants.mockResolvedValue({
+      connection: { id: "conn-github", uid: "conn-github" },
+      grants: [{
+        id: "grant-agent",
+        kind: "agent",
+        subjectAgentId: "agent-1",
+        subjectUserId: null,
+        status: "active",
+        providerTenant: {
+          github: {
+            userId: "123",
+            login: "dottabot",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["456"],
+            installationOwnerLogins: ["paperclipai"],
+            tokenKind: "personal_access_token",
+          },
+        },
+      }],
+      currentUserId: "user-1",
+      members: [],
+      capabilities: {},
+    });
+
+    await renderTab();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("@dottabot");
+    expect(text).toContain("can't use it for git or gh");
+    expect(text).not.toContain("takes precedence over the responsible person's GitHub");
+  });
+
   it("starts agent-scoped OAuth for 'Use a dedicated account' instead of the generic connect wizard", async () => {
     mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
       agentId: "agent-1",

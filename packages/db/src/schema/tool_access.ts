@@ -213,6 +213,8 @@ export const connectionGrants = pgTable(
         lastAccessRefreshAt?: string;
         lastWebhookAt?: string;
         webhookHealth?: "pending" | "healthy" | "unhealthy";
+        /** Set when the credential is a personal access token rather than a GitHub App sign-in. Such a token powers the app's tools only; git and gh cannot use it. */
+        tokenKind?: "personal_access_token";
       };
     }>(),
     credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),

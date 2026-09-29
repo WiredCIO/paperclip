@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadGitHubGrantMetadata } from "../services/tool-access.js";
+import {
+  loadGitHubGrantMetadata,
+  loadGitHubPersonalAccessTokenIdentity,
+} from "../services/tool-access.js";
 
 function json(value: unknown, next = false): Response {
   return new Response(JSON.stringify(value), {
@@ -91,5 +94,52 @@ describe("GitHub grant metadata", () => {
     await expect(loadGitHubGrantMetadata("ghu_secret", request)).rejects.toMatchObject({
       details: expect.objectContaining({ code: "github_access_check_failed" }),
     });
+  });
+});
+
+describe("GitHub personal access token identity", () => {
+  it("records the token owner's account, with no installation and a tool-only marker", async () => {
+    const request = vi.fn<typeof fetch>(async () =>
+      json({ id: 7, login: "WiredCIOAppDev", avatar_url: "https://avatars.example/bot" }));
+
+    await expect(loadGitHubPersonalAccessTokenIdentity("github_pat_abc", request)).resolves.toEqual({
+      userId: "7",
+      login: "WiredCIOAppDev",
+      avatarUrl: "https://avatars.example/bot",
+      installationCount: 0,
+      repositoryCount: 0,
+      repositorySelection: "none",
+      installationIds: [],
+      installationOwnerLogins: [],
+      tokenKind: "personal_access_token",
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    const [input, init] = request.mock.calls[0]!;
+    expect(String(input)).toBe("https://api.github.com/user");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer github_pat_abc");
+  });
+
+  it("does not double the Bearer prefix when the pasted value already has one", async () => {
+    const request = vi.fn<typeof fetch>(async () => json({ id: 7, login: "WiredCIOAppDev" }));
+    await loadGitHubPersonalAccessTokenIdentity("Bearer github_pat_abc", request);
+    expect(new Headers(request.mock.calls[0]![1]?.headers).get("authorization")).toBe("Bearer github_pat_abc");
+  });
+
+  it("rejects a token GitHub does not accept with a distinct code", async () => {
+    const request = vi.fn<typeof fetch>(async () => new Response("Bad credentials", { status: 401 }));
+    await expect(loadGitHubPersonalAccessTokenIdentity("github_pat_revoked", request)).rejects.toMatchObject({
+      details: expect.objectContaining({ code: "github_personal_access_token_rejected" }),
+    });
+  });
+
+  it("reports other GitHub failures and malformed accounts separately from a rejected token", async () => {
+    await expect(loadGitHubPersonalAccessTokenIdentity(
+      "github_pat_abc",
+      vi.fn<typeof fetch>(async () => new Response("Unavailable", { status: 503 })),
+    )).rejects.toMatchObject({ details: expect.objectContaining({ code: "github_access_check_failed" }) });
+    await expect(loadGitHubPersonalAccessTokenIdentity(
+      "github_pat_abc",
+      vi.fn<typeof fetch>(async () => json({ jsonrpc: "2.0", result: { tools: [] } })),
+    )).rejects.toMatchObject({ details: expect.objectContaining({ code: "github_bad_response" }) });
   });
 });

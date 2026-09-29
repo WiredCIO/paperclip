@@ -341,14 +341,22 @@ export async function resolveManagedGitHubIdentitySelection(
     inArray(connectionGrants.connectionId, [...eligibleConnectionIds]),
     or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user")),
   ));
+  // A revoked grant must not compete with its live replacement ("more than one
+  // managed GitHub identity"). When every matching grant is revoked, keep them:
+  // a revoked dedicated identity still fails closed instead of silently turning
+  // into the responsible person's GitHub.
+  const preferLive = <T extends { status: string }>(matches: T[]) => {
+    const live = matches.filter((grant) => grant.status !== "revoked");
+    return live.length > 0 ? live : matches;
+  };
   const dedicated = context.agentId
-    ? grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId)
+    ? preferLive(grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId))
     : [];
   // Connections are already restricted above to the owner-selected install
   // targets. Within that consent boundary the server-resolved responsible user
   // is authoritative; standing delegation is only an ownerless-run fallback.
   const personal = context.responsibleUserId
-    ? grants.filter((grant) => grant.kind === "user" && grant.subjectUserId === context.responsibleUserId)
+    ? preferLive(grants.filter((grant) => grant.kind === "user" && grant.subjectUserId === context.responsibleUserId))
     : [];
   const delegated = context.allowStandingDelegation !== false && !context.responsibleUserId && context.agentId
     ? await db.select({ grantId: connectionGrantDelegations.grantId }).from(connectionGrantDelegations).where(and(
@@ -507,6 +515,14 @@ export async function resolveManagedGitHubCredential(
     }
     const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
     const github = grant.providerTenant?.github;
+    const keyOnlyGrant = grant.credentialSecretRefs.length > 0
+      && !grant.credentialSecretRefs.some((ref) => ref.configPath.startsWith("oauth."));
+    if (!accessRef && (github?.tokenKind === "personal_access_token" || keyOnlyGrant)) {
+      return {
+        configured: true, identitySource: selection.identitySource,
+        error: "This GitHub connection uses a personal access token, which only powers GitHub tools. Connect GitHub with the sign-in option to give this agent git and gh access.",
+      };
+    }
     if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
     if (github.installationCount < 1 || github.repositoryCount < 1) {
       return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity no longer has repository access" };

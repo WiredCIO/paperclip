@@ -593,6 +593,57 @@ const support = await getEmbeddedPostgresTestSupport();
         env: {},
       });
     });
+    it("uses a live dedicated grant instead of treating a revoked one for another account as ambiguous", async () => {
+      const input = await seed();
+      // Replacing an agent's GitHub account leaves the old dedicated grant
+      // behind as revoked. It must not compete with its replacement.
+      const previous = await grant(input, "old-robot", true);
+      await grant(input, "robot", true);
+      await db
+        .update(connectionGrants)
+        .set({ status: "revoked" })
+        .where(eq(connectionGrants.id, previous.id));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available",
+        source: "dedicated",
+        login: "robot",
+      });
+    });
+    it("says a personal access token cannot provide git access instead of reporting an incomplete identity", async () => {
+      const input = await seed();
+      const dedicated = await grant(input, "robot", true);
+      await db
+        .update(connectionGrants)
+        .set({
+          credentialSecretRefs: [
+            {
+              secretId: dedicated.secretId,
+              configPath: "credentials.authorization",
+              versionSelector: "latest",
+            },
+          ],
+          providerTenant: {
+            github: {
+              userId: "robot",
+              login: "robot",
+              installationCount: 0,
+              repositoryCount: 0,
+              repositorySelection: "none",
+              installationIds: [],
+              installationOwnerLogins: [],
+              tokenKind: "personal_access_token",
+            },
+          },
+        })
+        .where(eq(connectionGrants.id, dedicated.id));
+      const result = await resolveGitHubOperationCredentials(db, input);
+      expect(result).toMatchObject({
+        status: "unavailable",
+        source: "dedicated",
+        env: {},
+      });
+      expect(result.reason).toContain("personal access token");
+    });
     it("does not resolve the company default person's GitHub", async () => {
       const input = await seed();
       await grant(input, "A");

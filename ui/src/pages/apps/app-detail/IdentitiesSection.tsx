@@ -295,6 +295,24 @@ function GitHubConnectionSummary({
 }) {
   const github = grant.providerTenant?.github;
   if (!github) return null;
+  if (github.tokenKind === "personal_access_token") {
+    return (
+      <div className="divide-y divide-border border-y border-border">
+        <div className="py-3">
+          <div className="text-sm font-medium text-foreground">GitHub account</div>
+          <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+            @{github.login}
+          </a>
+        </div>
+        <div className="py-3">
+          <div className="text-sm font-medium text-foreground">Personal access token</div>
+          <p className="text-sm text-muted-foreground">
+            This token powers this app&apos;s GitHub tools only. Agents can&apos;t use it for git or gh. To give an agent git access, connect GitHub with &ldquo;Use this connection as an agent tool&rdquo; instead.
+          </p>
+        </div>
+      </div>
+    );
+  }
   const configurationUrl = github.appSlug
     ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new`
     : /^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(github.installationUrl ?? "")
