@@ -15,6 +15,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { GithubIcon } from "@/components/icons/github-icon";
 import { InlineBanner } from "@/components/InlineBanner";
+import { useToast } from "@/context/ToastContext";
+import { navigateTopLevel } from "@/lib/browserNavigation";
+import { prepareOAuthNavigation } from "@/lib/oauthHandoff";
 import { EnforcementBanner } from "../components/EnforcementBanner";
 import {
   RiskBadge,
@@ -41,16 +44,22 @@ function GitHubIdentitySection({
   agentName,
   dedicatedIdentity,
   personalIdentity,
+  eligibleConnectionId,
   loading,
   loadError,
   onRetry,
+  onConnectDedicated,
+  connectDedicatedPending,
 }: {
   agentName: string;
   dedicatedIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
   personalIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
+  eligibleConnectionId: string | null;
   loading: boolean;
   loadError: boolean;
   onRetry: () => void;
+  onConnectDedicated: (connectionId: string) => void;
+  connectDedicatedPending: boolean;
 }) {
   const dedicatedLogin = dedicatedIdentity?.grant.providerTenant?.github?.login;
   const personalLogin = personalIdentity?.grant.providerTenant?.github?.login;
@@ -117,9 +126,20 @@ function GitHubIdentitySection({
                     <Link to="/apps/connect?source=github">Connect my GitHub</Link>
                   </Button>
                 )}
-                <Button variant="outline" size="sm" asChild>
-                  <Link to="/apps/connect?source=github">Use a dedicated account</Link>
-                </Button>
+                {eligibleConnectionId ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={connectDedicatedPending}
+                    onClick={() => onConnectDedicated(eligibleConnectionId)}
+                  >
+                    Use a dedicated account
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to="/apps/connect?source=github">Use a dedicated account</Link>
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -334,10 +354,37 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
   const lastSavedInstallRef = useRef<Record<string, boolean>>({});
   const skipNextInstallAutosaveRef = useRef(true);
   const failedInstallDraftRef = useRef<{ connectionId: string; installed: boolean } | null>(null);
+
+  // "Use a dedicated account" must start OAuth scoped to this agent
+  // (`asAgentId`) against the existing eligible GitHub connection — never the
+  // generic connect wizard, which has no agent context and always lands the
+  // grant on whichever human completes consent (kind: "user", not "agent").
+  const startDedicatedGitHubAuth = useMutation({
+    mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId, { asAgentId: agent.id }),
+    onSuccess: async (start) => {
+      try {
+        const target = await prepareOAuthNavigation(start);
+        navigateTopLevel(target.url);
+      } catch (error) {
+        pushToast({
+          title: "Couldn't start sign-in",
+          body: error instanceof Error ? error.message : "Please try again.",
+          tone: "error",
+        });
+      }
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't start sign-in",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
 
   const effective = useQuery({
     queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agent.id),
@@ -579,6 +626,9 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         agentName={agent.name}
         dedicatedIdentity={dedicatedGitHubIdentity}
         personalIdentity={personalGitHubIdentity}
+        eligibleConnectionId={eligibleGitHubConnections[0]?.id ?? null}
+        onConnectDedicated={(connectionId) => startDedicatedGitHubAuth.mutate(connectionId)}
+        connectDedicatedPending={startDedicatedGitHubAuth.isPending}
         loading={connectionsQuery.isLoading || githubGrantQueries.some((query) => query.isLoading)}
         loadError={connectionsQuery.isError || githubGrantQueries.some((query) => query.isError)}
         onRetry={() => {

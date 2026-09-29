@@ -19,6 +19,7 @@ const mockToolsApi = vi.hoisted(() => ({
   listConnectionGrants: vi.fn(),
   listAudit: vi.fn(),
   putConnectionInstalls: vi.fn(),
+  startOAuth: vi.fn(),
 }));
 
 vi.mock("../api/tools", () => ({ toolsApi: mockToolsApi }));
@@ -27,6 +28,16 @@ vi.mock("../api/tools", () => ({ toolsApi: mockToolsApi }));
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...rest }: { to: string; children: unknown }) =>
     createElement("a", { href: to, ...rest }, children as never),
+}));
+
+const pushToastMock = vi.hoisted(() => vi.fn());
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: pushToastMock }),
+}));
+
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: (target: string) => navigateTopLevelMock(target),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -114,6 +125,9 @@ describe("AgentToolsTab", () => {
     mockToolsApi.listCatalog.mockReset();
     mockToolsApi.listConnectionGrants.mockReset();
     mockToolsApi.putConnectionInstalls.mockReset();
+    mockToolsApi.startOAuth.mockReset();
+    pushToastMock.mockReset();
+    navigateTopLevelMock.mockReset();
     mockToolsApi.listConnectionGrants.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
       grants: [],
@@ -338,6 +352,52 @@ describe("AgentToolsTab", () => {
     expect(text).toContain("takes precedence over the responsible person's GitHub");
     expect(container.querySelector('a[href="/apps/conn-github/permissions"]')?.textContent).toBe("Manage GitHub identity");
     expect(text).not.toContain("Connect my GitHub");
+  });
+
+  it("starts agent-scoped OAuth for 'Use a dedicated account' instead of the generic connect wizard", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Agent GitHub",
+        enabled: true,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+    mockToolsApi.startOAuth.mockResolvedValue({ authorizationUrl: "https://github.example.test/authorize" });
+
+    await renderTab();
+
+    // No dedicated or personal grant yet: the button must NOT be a Link to
+    // the generic wizard (that always lands the grant on whoever completes
+    // OAuth, never on the agent).
+    const dedicatedButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Use a dedicated account",
+    );
+    expect(dedicatedButton).toBeTruthy();
+    expect(container.querySelector('a[href="/apps/connect?source=github"]')?.textContent).toBe("Connect my GitHub");
+
+    await act(async () => {
+      dedicatedButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockToolsApi.startOAuth).toHaveBeenCalledWith("conn-github", { asAgentId: "agent-1" });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://github.example.test/authorize");
   });
 
   it("does not display a grant from a disabled or uninstalled GitHub connection", async () => {
