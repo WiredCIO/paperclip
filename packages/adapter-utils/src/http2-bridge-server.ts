@@ -1215,6 +1215,9 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
       const sanitizedHeaders = sanitizeSandboxCallbackBridgeHeaders(
         toOutboundHeaderRecord(headers),
         headerAllowlist,
+        // CH-7: the path decides whether Authorization survives sanitization.
+        // Uses the one canonical parse above, never a second read of `:path`.
+        { path: parsedPath.value.pathname },
       );
 
       let body: Buffer;

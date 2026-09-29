@@ -10,6 +10,7 @@ import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
+import { setPasswordCommand } from "./commands/auth-set-password.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
@@ -274,6 +275,17 @@ auth
   .option("--expires-hours <hours>", "Invite expiration window in hours", (value) => Number(value))
   .option("--base-url <url>", "Public base URL used to print invite link")
   .action(bootstrapCeoInvite);
+
+auth
+  .command("set-password")
+  .description("Set an existing user's password directly (account recovery)")
+  .requiredOption("--email <email>", "Email of the user to reset")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--db-url <url>", "Database connection string override")
+  .option("--password <password>", "Use this password instead of a generated one (leaks into shell history)")
+  .option("--keep-sessions", "Leave existing sessions signed in", false)
+  .action(setPasswordCommand);
 
 registerClientAuthCommands(auth);
 

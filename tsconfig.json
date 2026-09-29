@@ -5,6 +5,7 @@
     { "path": "./packages/adapter-utils" },
     { "path": "./packages/google-sheets-mcp-server" },
     { "path": "./packages/mcp-server" },
+    { "path": "./packages/wiredcio-mcp" },
     { "path": "./packages/shared" },
     { "path": "./packages/db" },
     { "path": "./packages/adapters/claude-local" },
