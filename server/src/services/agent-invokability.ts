@@ -116,7 +116,7 @@ export function evaluateAgentInvokability(
 }
 
 export async function evaluateAgentInvokabilityFromDb(
-  db: Db,
+  db: Pick<Db, "select">,
   agent: AgentOrgRow | null | undefined,
 ): Promise<AgentInvokability> {
   if (!agent) return evaluateAgentInvokability(agent, []);

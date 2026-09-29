@@ -9,6 +9,7 @@ import {
   gte,
   inArray,
   isNull,
+  lte,
   not,
   notInArray,
   or,
@@ -44,6 +45,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
@@ -88,6 +90,7 @@ import {
 } from "../chat-control-recovery-stop.js";
 import {
   TERMINAL_HEARTBEAT_RUN_STATUSES,
+  heartbeatRunIsTerminalOrMissing,
   issueService,
   executeIssuePostCommitActions,
   type IssuePostCommitAction,
@@ -138,6 +141,7 @@ import {
   type RunOutputSilenceSummary,
   type WatchdogDecisionActor,
 } from "../../modules/active-run-watchdog/index.js";
+import { systemNoticePresentation, keyValueRow } from "./notice-format.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -152,7 +156,20 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
 ] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+// A "missing disposition" recovery action is Paperclip's catch-all for "a run
+// died and its cause could not be classified" (see successful-run-handoff.ts).
+// It is not a decision — most of the time it is a transient infra fault (bad
+// model config, a dead provider) that resolves on its own. Floor at 1h so a
+// misconfigured override cannot turn this into an immediate, racy sweep.
+export const STALE_BLOCK_SWEEP_MIN_AGE_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.STALE_BLOCK_SWEEP_MIN_AGE_MS) || 4 * 60 * 60 * 1000,
+);
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// Terminal, non-actionable issueWorkProducts.status values (see
+// issueWorkProductStatusSchema in packages/shared) that must not count as
+// "there is live work here" when the stale-block sweep decides in_review vs todo.
+const STALE_WORK_PRODUCT_STATUSES: string[] = ["closed", "failed", "archived"];
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -901,8 +918,8 @@ export function recoveryService(
   const budgets = budgetService(db);
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
-  async function getAgent(agentId: string) {
-    return db
+  async function getAgent(agentId: string, dbOrTx: Pick<Db, "select"> = db) {
+    return dbOrTx
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -911,8 +928,9 @@ export function recoveryService(
 
   async function isAgentInvokable(
     agent: typeof agents.$inferSelect | null | undefined,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
-    return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+    return (await evaluateAgentInvokabilityFromDb(dbOrTx, agent)).invokable;
   }
 
   async function getLatestIssueRun(
@@ -2784,8 +2802,9 @@ export function recoveryService(
   async function existingUnresolvedBlockerIssues(
     companyId: string,
     issueId: string,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
-    return db
+    return dbOrTx
       .select({ id: issueRelations.issueId, identifier: issues.identifier })
       .from(issueRelations)
       .innerJoin(
@@ -2808,9 +2827,10 @@ export function recoveryService(
   async function existingUnresolvedBlockerIssueIds(
     companyId: string,
     issueId: string,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
-    return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) =>
-      rows.map((row) => row.id),
+    return existingUnresolvedBlockerIssues(companyId, issueId, dbOrTx).then(
+      (rows) => rows.map((row) => row.id),
     );
   }
 
@@ -5683,6 +5703,238 @@ export function recoveryService(
     return { terminalized: true, status: updated.status };
   }
 
+  // Backstop sweeper: returns issues stuck in the "missing disposition" board
+  // catch-all (successful-run-handoff.ts's SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY)
+  // to the queue once the failure that produced it looks resolved. That catch-all
+  // exists for "a run died and its cause could not be classified" — most of the
+  // time it is a transient infra fault, not a decision a human needs to make.
+  // A candidate must clear every guard below before it is touched:
+  //   - its active recovery action is the board-owned `missing_disposition` catch-all,
+  //     aged past STALE_BLOCK_SWEEP_MIN_AGE_MS since that action was last written;
+  //   - it has no unresolved dependency blocker (a genuine block is left alone);
+  //   - it has no explicit `⛔ BLOCKED:` comment (an agent's own declared hold);
+  //   - the run that produced the catch-all has reached a terminal state (or is gone);
+  //   - the assigned agent, if any, is currently invokable.
+  // It restores to `in_review` when a work product already exists (never makes a
+  // builder redo finished work), otherwise `todo`. Idempotent: resolving the
+  // recovery action and leaving `blocked` removes the row from the next sweep's
+  // candidate set either way.
+  async function sweepStaleBlockRecoveryCatchAlls() {
+    const result = {
+      restored: 0,
+      issueIds: [] as string[],
+      skipped: 0,
+    };
+
+    const cutoff = new Date(Date.now() - STALE_BLOCK_SWEEP_MIN_AGE_MS);
+    const candidates = await db
+      .select({ issue: issues, recoveryAction: issueRecoveryActions })
+      .from(issues)
+      .innerJoin(
+        issueRecoveryActions,
+        and(
+          eq(issueRecoveryActions.companyId, issues.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issues.id),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          eq(issueRecoveryActions.ownerType, "board"),
+          eq(issueRecoveryActions.cause, SUCCESSFUL_RUN_MISSING_STATE_REASON),
+          lte(issueRecoveryActions.updatedAt, cutoff),
+        ),
+      );
+
+    for (const { issue, recoveryAction } of candidates) {
+      const ageHours = Math.round(STALE_BLOCK_SWEEP_MIN_AGE_MS / 3_600_000);
+
+      const publications: ActivityPublication[] = [];
+      let relevantRunId: string | null = null;
+      let workProduct: { id: string } | null = null;
+      let targetStatus: "in_review" | "todo" = "todo";
+      const restored = await db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select()
+          .from(issues)
+          .where(
+            and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)),
+          )
+          .for("update");
+        if (!locked || locked.status !== "blocked") return null;
+        const activeAction = await recoveryActionsSvc.getActiveForIssue(
+          issue.companyId,
+          issue.id,
+          tx,
+        );
+        if (!activeAction || activeAction.id !== recoveryAction.id) return null;
+
+        // Re-verify every race-sensitive safety gate against the same locked
+        // transaction as the write below, deriving each from `locked` /
+        // `activeAction` rather than the pre-transaction candidate scan. A
+        // blocker relation, an explicit hold comment, a fresh corrective run
+        // recorded on this same action, or the source run finishing written
+        // after the candidate scan (but before this point) must still stop
+        // the sweep — checking any of them on the plain `db` handle (or
+        // against stale pre-transaction values) before the transaction
+        // opened leaves a window where exactly that write is invisible.
+        const unresolvedBlockerIssueIds = await existingUnresolvedBlockerIssueIds(
+          issue.companyId,
+          issue.id,
+          tx,
+        );
+        if (unresolvedBlockerIssueIds.length > 0) return null;
+
+        const explicitBlockComment = await tx
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.issueId, issue.id),
+              sql`${issueComments.body} like '⛔ BLOCKED:%'`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (explicitBlockComment) return null;
+
+        const evidence = parseObject(activeAction.evidence);
+        relevantRunId =
+          readNonEmptyString(evidence.correctiveRunId) ??
+          readNonEmptyString(evidence.latestRunId) ??
+          readNonEmptyString(evidence.sourceRunId);
+        if (
+          relevantRunId &&
+          !(await heartbeatRunIsTerminalOrMissing(tx, relevantRunId))
+        ) {
+          // The run that produced the catch-all is still in flight. Not stale yet.
+          return null;
+        }
+
+        // Re-derived from the locked row and the freshly re-fetched active
+        // action rather than the pre-transaction `issue`/`recoveryAction`
+        // snapshot, so a concurrent reassignment to a different, unhealthy
+        // agent is caught too — not just the original assignee terminating.
+        const agentId = locked.assigneeAgentId ?? activeAction.previousOwnerAgentId;
+        if (agentId) {
+          const agent = await getAgent(agentId, tx);
+          if (!(await isAgentInvokable(agent, tx))) return null;
+        }
+
+        // Re-derived inside the transaction, against `tx`, so a work product
+        // created or resolved out of a terminal status in the gap between the
+        // candidate scan and the row lock is still reflected in the status
+        // this sweep writes below — not the pre-transaction snapshot.
+        [workProduct] = await tx
+          .select({ id: issueWorkProducts.id })
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, issue.companyId),
+              eq(issueWorkProducts.issueId, issue.id),
+              notInArray(issueWorkProducts.status, STALE_WORK_PRODUCT_STATUSES),
+            ),
+          )
+          .limit(1);
+        targetStatus = workProduct ? "in_review" : "todo";
+
+        const updated = await issuesSvc.update(
+          locked.id,
+          { status: targetStatus, companyGuard: issue.companyId },
+          tx,
+          publications,
+        );
+        if (!updated) return null;
+        await recoveryActionsSvc.resolveActiveForIssue(
+          {
+            companyId: issue.companyId,
+            sourceIssueId: issue.id,
+            actionId: activeAction.id,
+            status: "resolved",
+            outcome: "restored",
+            resolutionNote: `Stale-block sweep returned this issue to ${targetStatus} after the missing-disposition catch-all aged past ${ageHours}h with no genuine blocker or agent-declared hold.`,
+          },
+          tx,
+        );
+        return updated;
+      });
+      for (const publication of publications) publishActivity(publication);
+      if (!restored) {
+        result.skipped += 1;
+        continue;
+      }
+
+      result.restored += 1;
+      result.issueIds.push(restored.id);
+
+      await issuesSvc.addComment(
+        restored.id,
+        `This issue was blocked by an internal recovery catch-all (a run stalled without producing a disposition) for more than ${ageHours} hours, with no unresolved dependency and no explicit hold. The stale-block sweep verified the assigned agent is healthy and returned it to \`${targetStatus}\`${workProduct ? " because a work product already exists" : ""}.`,
+        {},
+        {
+          authorType: "system",
+          presentation: systemNoticePresentation({
+            tone: "info",
+            title: "Runtime-stall block cleared automatically",
+          }),
+          metadata: {
+            version: 1,
+            sourceRunId: relevantRunId ?? null,
+            sections: [
+              {
+                title: "Stale-block sweep",
+                rows: [
+                  keyValueRow("Recovery action", recoveryAction.id),
+                  keyValueRow("Restored status", targetStatus),
+                  keyValueRow("Work product found", workProduct ? "yes" : "no"),
+                ],
+              },
+            ],
+          },
+        },
+      );
+
+      await logActivity(db, {
+        companyId: restored.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.stale_block_swept",
+        entityType: "issue",
+        entityId: restored.id,
+        details: {
+          identifier: restored.identifier,
+          source: "recovery.sweep_stale_block_recovery_catch_alls",
+          previousStatus: "blocked",
+          status: targetStatus,
+          recoveryActionId: recoveryAction.id,
+          recoveryCause: recoveryAction.cause,
+          hadWorkProduct: Boolean(workProduct),
+        },
+      });
+    }
+
+    if (result.restored > 0) {
+      logger.warn(
+        {
+          restored: result.restored,
+          issueIds: result.issueIds,
+          skipped: result.skipped,
+        },
+        "stale-block sweep returned runtime-stalled issues to the queue",
+      );
+    } else {
+      logger.info(
+        { skipped: result.skipped },
+        "stale-block sweep found nothing to restore",
+      );
+    }
+
+    return result;
+  }
+
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
   // or executionRunId points at a heartbeat_runs row that is either missing or
   // in a terminal status. Provides self-heal for stale locks that fell outside
@@ -5863,6 +6115,7 @@ export function recoveryService(
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
+    sweepStaleBlockRecoveryCatchAlls,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,
   };
