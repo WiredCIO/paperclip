@@ -102,6 +102,28 @@ const SESSION_HOST_PATH_KEYS = new Set([
   "workspaceRemoteDir",
   "worktreePath",
 ]);
+// Per-agent-identity home directories that a local CLI adapter reads via env
+// (`GROK_HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, ...). The *configured*
+// directory is stable, but a sandbox-backed run can materialize it at a
+// fresh, sandbox-scoped path every time the sandbox is (re)provisioned (e.g.
+// Daytona). That materialized path is host state, not adapter configuration
+// — the same reasoning `SESSION_HOST_PATH_KEYS` already applies to `cwd` —
+// but env vars follow shell naming conventions, not the camelCase object
+// keys above, so they need their own key set. Hashing them anyway silently
+// defeats session resume on every single run for any adapter that does this.
+const ENV_HOST_PATH_NOISE_KEYS = new Set([
+  "HOME",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "GROK_HOME",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+]);
 
 type SecretManifestIndex = {
   byConfigPath: Map<string, EffectiveRunConfigSecretVersionMetadata>;
@@ -277,6 +299,7 @@ function canonicalizeEnvRecord(
   const canonicalEnv: Record<string, EffectiveRunConfigCanonicalValue> = {};
   for (const key of Object.keys(envValue).sort()) {
     if (GENERATED_RUNTIME_ENV_KEY_RE.test(key)) continue;
+    if (ENV_HOST_PATH_NOISE_KEYS.has(key)) continue;
     const manifestEntry = context.secrets.byConfigPath.get(`env.${key}`) ?? context.secrets.byEnvKey.get(key);
     if (manifestEntry) {
       canonicalEnv[key] = canonicalSecretMetadata(manifestEntry);
