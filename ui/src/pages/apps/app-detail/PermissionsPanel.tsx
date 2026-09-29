@@ -144,10 +144,7 @@ function AgentAccessSection({
               {
                 value: "specific",
                 title: "Just agents I pick",
-                description: install.onAll
-                  ? "Unavailable while this connection is installed for every agent."
-                  : "Available only to selected agents.",
-                disabled: install.onAll,
+                description: "Available only to selected agents.",
               },
               {
                 value: "all",
