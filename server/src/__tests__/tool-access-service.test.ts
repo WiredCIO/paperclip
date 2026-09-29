@@ -6628,6 +6628,143 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("drops a stale managed OAuth identity when reconnect switches GitHub to a personal access token", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+    const first = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "github",
+        connectionMethodKey: "mcp-key",
+        grantKind: "organization",
+        name: "GitHub method switch",
+        credentialValues: { "credentials.authorization": "seed-token" },
+      },
+      actor,
+    );
+    // Put the row in the state markOAuthReauthorizationRequired leaves a
+    // managed GitHub connection in after its refresh token is rejected.
+    const [seeded] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, first.connectionId));
+    await db
+      .update(toolConnections)
+      .set({
+        status: "draft",
+        enabled: false,
+        authKind: "oauth",
+        lastError: "oauth_reauthorization_required",
+        config: {
+          ...(seeded.config as Record<string, unknown>),
+          connectionMethodKey: "managed",
+          oauth: {
+            strategy: "paperclip_cloud_connector",
+            provider: "github",
+            connectorProfile: "github.code",
+            reauthorizationRequiredAt: new Date().toISOString(),
+          },
+        },
+      })
+      .where(eq(toolConnections.id, first.connectionId));
+
+    mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "github",
+        connectionMethodKey: "mcp-key",
+        grantKind: "organization",
+        reconnectConnectionId: first.connectionId,
+        credentialValues: { "credentials.authorization": "fresh-pat" },
+      },
+      actor,
+    );
+    expect(reconnected.connectionId).toBe(first.connectionId);
+
+    const [after] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, first.connectionId));
+    expect(after.authKind).toBe("api_key");
+    const afterConfig = after.config as Record<string, unknown>;
+    expect(afterConfig.connectionMethodKey).toBe("mcp-key");
+    expect(afterConfig.oauth).toBeUndefined();
+    const health = await service.checkHealth(first.connectionId, actor);
+    expect(health.connection.healthStatus).toBe("ok");
+  });
+
+  it("stores a dedicated agent's personal access token on its agent grant and ignores the connecting user's stale grant", async () => {
+    const company = await createCompany(db);
+    const userId = `github-agent-pat-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: userId };
+    mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "github",
+        connectionMethodKey: "mcp-key",
+        grantKind: "agent",
+        subjectAgentId: agent.id,
+        name: "GitHub agent PAT",
+        credentialValues: { "credentials.authorization": "agent-pat" },
+      },
+      actor,
+    );
+
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+    const agentGrant = grants.find((grant) => grant.kind === "agent");
+    expect(agentGrant).toMatchObject({
+      status: "active",
+      subjectAgentId: agent.id,
+      credentialSecretRefs: [
+        expect.objectContaining({ configPath: "credentials.authorization" }),
+      ],
+    });
+    expect(grants.some((grant) => grant.kind === "organization")).toBe(false);
+
+    // A revoked personal grant for the person clicking Connect, as an earlier
+    // managed OAuth setup leaves behind. It used to win the credential lookup
+    // and fail the check with "OAuth authorization expired".
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      kind: "user",
+      subjectUserId: userId,
+      credentialSecretRefs: [],
+      status: "revoked",
+      isDefault: false,
+    });
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+    const health = await service.checkHealth(connected.connectionId, actor);
+    expect(health.connection.healthStatus).toBe("ok");
+    const init = fetchMock.mock.calls.at(-1)?.[1] as RequestInit | undefined;
+    expect(new Headers(init?.headers).get("authorization")).toBe(
+      "Bearer agent-pat",
+    );
+  });
+
   it("refuses a personal identity when no named user is making the request", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
