@@ -379,7 +379,7 @@ describe("claude execute", () => {
     }
   });
 
-  it("uses a strict per-agent MCP config only when managed servers are present", async () => {
+  it("stages a strict MCP config in the workspace only when managed servers are present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     try {
@@ -414,7 +414,11 @@ describe("claude execute", () => {
       expect(alpha.argv).toEqual(expect.arrayContaining(["--strict-mcp-config", "--mcp-config"]));
       expect(JSON.parse(alpha.mcpConfigContents)).toEqual({
         mcpServers: {
-          alpha: {
+          // CH-22: keys carry the Paperclip prefix. The staged file is merged
+          // into rather than owned outright, and the stale-token sweep finds
+          // our entries by that prefix, so an unprefixed key would be treated
+          // as a foreign entry and its dead bearer kept forever.
+          "paperclip-alpha": {
             type: "http",
             url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
             headers: { Authorization: "Bearer alpha-token" },
@@ -425,7 +429,12 @@ describe("claude execute", () => {
       expect(zero.argv).not.toContain("--strict-mcp-config");
       expect(zero.mcpConfigPath).toBeNull();
       expect(zero.mcpConfigContents).toBeNull();
-      expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
+      // CH-22: a local run stages into the workspace, not the private
+      // per-agent state directory. Both lanes now put the file where someone
+      // debugging the run will look for it.
+      expect(alpha.mcpConfigPath.split(path.sep).join("/")).toContain(
+        "/workspace/.paperclip-runtime/claude/mcp-config.json",
+      );
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

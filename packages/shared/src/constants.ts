@@ -574,6 +574,9 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const PROJECT_BINDING_TARGET_TYPES = ["agent", "tool_connection", "skill", "document"] as const;
+export type ProjectBindingTargetTypeValue = (typeof PROJECT_BINDING_TARGET_TYPES)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
@@ -1022,6 +1025,7 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "pipelines:write",
   "joins:approve",
+  "projects:access",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 

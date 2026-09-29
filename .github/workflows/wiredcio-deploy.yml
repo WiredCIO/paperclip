@@ -1,0 +1,43 @@
+name: WiredCIO Deploy
+
+# Deploys to the WiredCIO production VM (vm-paperclip) on every push to
+# wiredcio/deploy. There is deliberately no approval gate here: merging to
+# this branch IS the deploy trigger. See doc/RELEASING-WIREDCIO.md for the
+# safety model this relies on instead (a branch ruleset requiring `ci /
+# verify` to pass before a PR can merge).
+#
+# This job runs on a self-hosted runner installed directly on vm-paperclip
+# (label: wiredcio-deploy), not a GitHub-hosted runner. That's not
+# incidental: vm-paperclip's NSG only allows SSH from a handful of known
+# static IPs, and GitHub-hosted runners come from a pool of ~7,000+
+# constantly-rotating CIDR ranges that can never be fully allowlisted. A
+# self-hosted runner polls GitHub over an outbound connection, so no inbound
+# access to the VM is needed at all -- the NSG stays exactly as narrow as it
+# was before this pipeline existed. The tradeoff, and the reason this
+# runner's installation was deliberately not automated, is that anything
+# able to schedule a job against the `wiredcio-deploy` label can execute
+# code on this VM.
+#
+# Gated to the WiredCIO fork only, mirroring how upstream's own workflows
+# (release.yml, docker.yml) gate to paperclipai/paperclip.
+
+on:
+  push:
+    branches:
+      - wiredcio/deploy
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiredcio-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'WiredCIO/paperclip'
+    runs-on: [self-hosted, wiredcio-deploy]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy
+        run: /opt/paperclip/scripts/wiredcio-deploy.sh

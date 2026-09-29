@@ -15,7 +15,7 @@ function createInviteToken() {
   return `pcp_bootstrap_${randomBytes(24).toString("hex")}`;
 }
 
-function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
+export function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
   if (explicitDbUrl) return explicitDbUrl;
   const config = readConfig(configPath);
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
