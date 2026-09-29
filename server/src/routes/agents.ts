@@ -1,4 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import { deepMergeConfig } from "../services/deep-merge-config.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -5154,6 +5155,9 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    // CH-18: the escape hatch back to wholesale replacement of runtimeConfig.
+    const replaceRuntimeConfig = patchData.replaceRuntimeConfig === true;
+    delete patchData.replaceRuntimeConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
     // reference to the owner stored value with no login round trip. Remove it
     // from the patch so it never reaches the update values.
@@ -5283,7 +5287,22 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+    // CH-18: `runtimeConfig` deep-merges, the way `adapterConfig` above always
+    // has. Assigning it wholesale meant a PATCH that set one limit erased every
+    // other key — setting a turn cap wiped an agent's `heartbeat` block. An
+    // explicit `null` deletes a key, which is the only way `aiConnection` can
+    // be cleared through the API; it previously took a SQL update, because the
+    // preservation below ran unconditionally.
+    if (requestedRuntimeConfig && !replaceRuntimeConfig) {
+      requestedRuntimeConfig = deepMergeConfig(
+        existing.runtimeConfig as Record<string, unknown>,
+        requestedRuntimeConfig,
+      );
+    } else if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) {
+      // `replaceRuntimeConfig: true` reproduces the previous behaviour exactly,
+      // including carrying `aiConnection` over an omitted key.
+      requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+    }
     const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);
