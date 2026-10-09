@@ -465,6 +465,26 @@ describe("CompanyAccess", () => {
     });
   });
 
+  it("warns before replacing a grant that combines categories and projects, and leaves it alone if unchanged", async () => {
+    getAccessGrantMock.mockResolvedValue({
+      grant: {
+        scope: { categoryIds: ["cat-sales"], projectIds: ["project-1"] },
+        updatedAt: "2026-04-11T00:00:00.000Z",
+      },
+    });
+    const root = await renderAndEditMember(1);
+
+    expect(document.body.textContent).toContain("combines categories and individual projects");
+
+    await click(findButton("Save member"));
+    expect(updateMemberMock).toHaveBeenCalled();
+    expect(putAccessGrantMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not offer project access to non-admin viewers", async () => {
     const members = await listMembersMock();
     listMembersMock.mockResolvedValue({

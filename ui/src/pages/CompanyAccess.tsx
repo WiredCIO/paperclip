@@ -36,6 +36,7 @@ import { InvitesSection } from "@/components/access/InvitesSection";
 import {
   MemberProjectAccessField,
   draftFromScope,
+  isCombinedScope,
   isProjectAccessDraftComplete,
   scopeFromDraft,
   type ProjectAccessDraft,
@@ -536,6 +537,7 @@ export function CompanyAccess() {
                     categories={projectCategoriesQuery.data ?? []}
                     projects={projectsQuery.data ?? []}
                     roleBypassesRestriction={draftRole === "owner" || draftRole === "admin"}
+                    combinedScope={isCombinedScope(projectAccessGrantQuery.data?.grant ?? null)}
                   />
                 ))}
             </div>

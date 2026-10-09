@@ -23,6 +23,16 @@ export function draftFromScope(grant: { scope: ProjectAccessScope } | null): Pro
 }
 
 /** "Org" is an explicit null-scope grant; deleting the row would deny everything. */
+/**
+ * The API accepts a scope with both `categoryIds` and `projectIds` (the
+ * resolver unions them), but this control edits one list at a time. Such a
+ * grant is surfaced as a warning so saving a change never drops half of it
+ * silently.
+ */
+export function isCombinedScope(grant: { scope: ProjectAccessScope } | null) {
+  return Boolean(grant?.scope?.categoryIds?.length && grant.scope.projectIds?.length);
+}
+
 export function scopeFromDraft(draft: ProjectAccessDraft): ProjectAccessScope {
   if (draft.mode === "categories") return { categoryIds: draft.categoryIds };
   if (draft.mode === "projects") return { projectIds: draft.projectIds };
@@ -51,12 +61,14 @@ export function MemberProjectAccessField({
   categories,
   projects,
   roleBypassesRestriction,
+  combinedScope = false,
 }: {
   draft: ProjectAccessDraft;
   onChange: (draft: ProjectAccessDraft) => void;
   categories: ProjectCategory[];
   projects: Project[];
   roleBypassesRestriction: boolean;
+  combinedScope?: boolean;
 }) {
   const options =
     draft.mode === "categories"
@@ -87,6 +99,12 @@ export function MemberProjectAccessField({
         <p className="text-xs text-muted-foreground">
           No project access grant on file. Without one, this member sees no projects when project access control is
           enforced.
+        </p>
+      )}
+      {combinedScope && (
+        <p className="text-xs text-destructive">
+          This member's grant combines categories and individual projects. This control edits one list at a time —
+          changing it replaces the whole grant with the selection below.
         </p>
       )}
       {roleBypassesRestriction && (
