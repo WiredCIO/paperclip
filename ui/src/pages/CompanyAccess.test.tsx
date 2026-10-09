@@ -16,6 +16,11 @@ const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const listInvitesMock = vi.hoisted(() => vi.fn());
 const mockSearchParamsState = vi.hoisted(() => ({ current: new URLSearchParams() }));
+const getAccessGrantMock = vi.hoisted(() => vi.fn());
+const putAccessGrantMock = vi.hoisted(() => vi.fn());
+const deleteAccessGrantMock = vi.hoisted(() => vi.fn());
+const listCategoriesMock = vi.hoisted(() => vi.fn());
+const listProjectsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/access", () => ({
   accessApi: {
@@ -44,6 +49,22 @@ vi.mock("@/api/agents", () => ({
 vi.mock("@/api/issues", () => ({
   issuesApi: {
     list: (companyId: string, filters: unknown) => listIssuesMock(companyId, filters),
+  },
+}));
+
+vi.mock("@/api/project-access", () => ({
+  projectAccessApi: {
+    getAccessGrant: (companyId: string, userId: string) => getAccessGrantMock(companyId, userId),
+    putAccessGrant: (companyId: string, userId: string, scope: unknown) =>
+      putAccessGrantMock(companyId, userId, scope),
+    deleteAccessGrant: (companyId: string, userId: string) => deleteAccessGrantMock(companyId, userId),
+    listCategories: (companyId: string) => listCategoriesMock(companyId),
+  },
+}));
+
+vi.mock("@/api/projects", () => ({
+  projectsApi: {
+    list: (companyId: string) => listProjectsMock(companyId),
   },
 }));
 
@@ -209,6 +230,19 @@ describe("CompanyAccess", () => {
       isLoading: false,
       errorMessage: null,
     });
+    getAccessGrantMock.mockResolvedValue({ grant: { scope: null, updatedAt: "2026-04-10T00:00:00.000Z" } });
+    putAccessGrantMock.mockImplementation(async (_companyId: string, _userId: string, scope: unknown) => ({
+      scope,
+      updatedAt: "2026-04-11T00:00:00.000Z",
+    }));
+    deleteAccessGrantMock.mockResolvedValue({ deleted: true });
+    listCategoriesMock.mockResolvedValue([
+      { id: "cat-sales", companyId: "company-1", name: "Sales", sortOrder: 0 },
+      { id: "cat-ops", companyId: "company-1", name: "Operations", sortOrder: 1 },
+    ]);
+    listProjectsMock.mockResolvedValue([
+      { id: "project-1", companyId: "company-1", name: "Website" },
+    ]);
   });
 
   afterEach(() => {
@@ -311,6 +345,136 @@ describe("CompanyAccess", () => {
       membershipRole: "owner",
       status: "active",
     });
+    expect(putAccessGrantMock).not.toHaveBeenCalled();
+    expect(deleteAccessGrantMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  async function renderAndEditMember(index: number) {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await openEditDialog(index);
+    return root;
+  }
+
+  async function openEditDialog(index: number) {
+    const editButtons = Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent === "Edit",
+    );
+    await act(async () => {
+      editButtons[index]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+  }
+
+  function findLabelInput(text: string) {
+    const label = Array.from(document.body.querySelectorAll("label")).find(
+      (candidate) => candidate.textContent?.trim() === text,
+    );
+    return label?.querySelector("input") as HTMLInputElement | null;
+  }
+
+  function findButton(text: string) {
+    return Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent === text,
+    ) as HTMLButtonElement | undefined;
+  }
+
+  async function click(element: Element | null | undefined) {
+    await act(async () => {
+      element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+  }
+
+  it("shows a Project access control with Org, Categories and Projects modes", async () => {
+    const root = await renderAndEditMember(1);
+
+    expect(getAccessGrantMock).toHaveBeenCalledWith("company-1", "user-2");
+    expect(document.body.textContent).toContain("Project access");
+    expect(findLabelInput("Org")?.checked).toBe(true);
+    expect(findLabelInput("Categories")).toBeTruthy();
+    expect(findLabelInput("Projects")).toBeTruthy();
+
+    await click(findLabelInput("Projects"));
+    expect(findLabelInput("Website")).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("restricts a member to a single category and reads it back", async () => {
+    const root = await renderAndEditMember(1);
+
+    await click(findLabelInput("Categories"));
+    expect(findButton("Save member")?.disabled).toBe(true);
+    await click(findLabelInput("Sales"));
+    expect(findButton("Save member")?.disabled).toBe(false);
+
+    getAccessGrantMock.mockResolvedValue({
+      grant: { scope: { categoryIds: ["cat-sales"] }, updatedAt: "2026-04-11T00:00:00.000Z" },
+    });
+    await click(findButton("Save member"));
+
+    expect(putAccessGrantMock).toHaveBeenCalledWith("company-1", "user-2", { categoryIds: ["cat-sales"] });
+    expect(deleteAccessGrantMock).not.toHaveBeenCalled();
+
+    await openEditDialog(1);
+    expect(findLabelInput("Categories")?.checked).toBe(true);
+    expect(findLabelInput("Sales")?.checked).toBe(true);
+    expect(findLabelInput("Operations")?.checked).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("clears a restriction by writing an explicit null-scope grant for Org, never deleting the grant", async () => {
+    getAccessGrantMock.mockResolvedValue({
+      grant: { scope: { projectIds: ["project-1"] }, updatedAt: "2026-04-11T00:00:00.000Z" },
+    });
+    const root = await renderAndEditMember(1);
+
+    expect(findLabelInput("Projects")?.checked).toBe(true);
+    expect(findLabelInput("Website")?.checked).toBe(true);
+
+    await click(findLabelInput("Org"));
+    await click(findButton("Save member"));
+
+    expect(putAccessGrantMock).toHaveBeenCalledWith("company-1", "user-2", null);
+    expect(deleteAccessGrantMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not offer project access to non-admin viewers", async () => {
+    const members = await listMembersMock();
+    listMembersMock.mockResolvedValue({
+      ...members,
+      access: { ...members.access, currentUserRole: "operator" },
+    });
+    const root = await renderAndEditMember(1);
+
+    expect(document.body.textContent).not.toContain("Project access");
+    expect(getAccessGrantMock).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
