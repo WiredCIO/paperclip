@@ -189,6 +189,11 @@ export function ProjectAccessConfig({ project, onProjectUpdated }: ProjectAccess
             </option>
           ))}
         </select>
+        {categoriesQuery.error ? (
+          <p role="alert" className="text-sm text-destructive">
+            Could not load categories: {errorMessage(categoriesQuery.error)}
+          </p>
+        ) : null}
         {categoryError ? (
           <p role="alert" className="text-sm text-destructive">
             Could not change category: {categoryError}
