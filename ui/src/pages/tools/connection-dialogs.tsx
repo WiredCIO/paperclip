@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/context/ToastContext";
+import { ProjectBindingsField, addProjectBindings } from "@/components/ProjectBindingsField";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import {
   LoadingState,
@@ -166,6 +167,7 @@ export function AddConnectionDialog({
   const [pendingHeader, setPendingHeader] = useState("Authorization");
   const [draft, setDraft] = useState<ToolConnection | null>(null);
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [projectIds, setProjectIds] = useState<string[]>([]);
 
   const secretById = (id: string) => secrets.data?.find((s) => s.id === id);
   const secretName = (id: string) => secretById(id)?.name ?? id.slice(0, 8);
@@ -223,6 +225,13 @@ export function AddConnectionDialog({
     onSuccess: (conn) => {
       setDraft(conn);
       probe.mutate(conn.id);
+      addProjectBindings(companyId, "tool_connection", conn.id, projectIds).catch((err) =>
+        pushToast({
+          title: "Connection created, but not added to the selected projects",
+          body: err instanceof ApiError ? err.message : String(err),
+          tone: "error",
+        }),
+      );
     },
     onError: (err) =>
       pushToast({
@@ -480,6 +489,13 @@ export function AddConnectionDialog({
                   </>
                 ) : null}
               </div>
+
+              <ProjectBindingsField
+                companyId={companyId}
+                value={projectIds}
+                onChange={setProjectIds}
+                disabled={locked}
+              />
             </>
           ) : null}
 

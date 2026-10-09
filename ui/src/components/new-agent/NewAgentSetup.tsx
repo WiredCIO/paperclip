@@ -59,6 +59,7 @@ import {
 import { stepMotion } from "../onboarding/onboarding-motion";
 import { RuntimeTestCard, type TestState } from "../RuntimeTestCard";
 import { AgentBasicsDialog, AdapterMark } from "./AgentBasicsDialog";
+import { ProjectBindingsField, addProjectBindings } from "../ProjectBindingsField";
 import {
   AgentProviderConnection,
   type ProviderConnection,
@@ -168,6 +169,8 @@ function Setup({
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [projectIds, setProjectIds] = useState<string[]>([]);
+  const [bindingError, setBindingError] = useState<string | null>(null);
   const generation = useRef(0);
   const savingRef = useRef(false);
   useEffect(
@@ -514,6 +517,13 @@ function Setup({
           : {}),
       });
       hired = true;
+      try {
+        await addProjectBindings(companyId, "agent", response.agent.id, projectIds);
+      } catch (cause) {
+        setBindingError(
+          `The agent was created, but it could not be added to the selected projects${cause instanceof Error ? `: ${cause.message}` : "."}`,
+        );
+      }
       setApiKey("");
       setConnection(null);
       setCreated(response.agent);
@@ -766,6 +776,11 @@ function Setup({
                         <dt className="text-muted-foreground">Environment</dt>
                         <dd>{environmentLabel}</dd>
                       </dl>
+                      {bindingError && (
+                        <p role="alert" className="text-sm text-destructive">
+                          {bindingError}
+                        </p>
+                      )}
                       <p className="text-sm text-muted-foreground">
                         {created.status === "pending_approval"
                           ? "An organization administrator must approve this agent before it can work."
@@ -1124,6 +1139,12 @@ function Setup({
                           </select>
                         </section>
                       )}
+                      <ProjectBindingsField
+                        companyId={companyId}
+                        value={projectIds}
+                        onChange={setProjectIds}
+                        disabled={busy}
+                      />
                     </fieldset>
                     <RuntimeTestCard
                       state={testState}
