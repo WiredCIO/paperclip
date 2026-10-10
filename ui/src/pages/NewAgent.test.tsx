@@ -43,6 +43,20 @@ const managedApi = vi.hoisted(() => ({
   list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));
+const projectAccess = vi.hoisted(() => ({
+  boardAccess: { isInstanceAdmin: false, memberships: [] as object[] },
+  listBindings: vi.fn(),
+  putBindings: vi.fn(),
+}));
+vi.mock("@/api/access", () => ({
+  accessApi: { getCurrentBoardAccess: async () => projectAccess.boardAccess },
+}));
+vi.mock("@/api/projects", () => ({
+  projectsApi: { list: async () => [{ id: "project-1", name: "Apollo" }, { id: "project-2", name: "Borealis" }] },
+}));
+vi.mock("@/api/project-access", () => ({
+  projectAccessApi: { listBindings: projectAccess.listBindings, putBindings: projectAccess.putBindings },
+}));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({ agentsApi: api }));
 vi.mock("@/api/environments", () => ({ environmentsApi: envApi }));
@@ -98,6 +112,12 @@ vi.mock("motion/react", () => ({
   },
 }));
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+// The Radix checkbox in the projects picker measures itself.
+(globalThis as any).ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
 let root: Root;
 let container: HTMLDivElement;
 let cache: QueryClient;
@@ -191,6 +211,9 @@ beforeEach(() => {
   secrets.createUserSecretDefinition.mockResolvedValue({ id: "definition-1" });
   secrets.createMyUserSecret.mockResolvedValue({ id: "secret-1" });
   secrets.removeUserSecretDefinition.mockResolvedValue({ ok: true });
+  projectAccess.boardAccess = { isInstanceAdmin: false, memberships: [] };
+  projectAccess.listBindings.mockResolvedValue({ bindings: [] });
+  projectAccess.putBindings.mockResolvedValue({ bindings: [] });
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -500,6 +523,46 @@ describe("New agent setup", () => {
       if (runner === "codex") expect(config.acpxAgent).toBeUndefined();
     },
   );
+  it("binds the new agent to the selected projects without dropping existing bindings", async () => {
+    projectAccess.boardAccess = {
+      isInstanceAdmin: false,
+      memberships: [{ companyId: "company-1", membershipRole: "admin" }],
+    };
+    projectAccess.listBindings.mockResolvedValue({
+      bindings: [{ id: "b-1", companyId: "company-1", projectId: "project-1", targetType: "skill", targetId: "skill-1" }],
+    });
+    await render("paperclip_runner", "opencode");
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    const checkbox = container.querySelector('[aria-label="Bind to Borealis"]') as HTMLButtonElement;
+    expect(checkbox).toBeTruthy();
+    await act(async () => checkbox.click());
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(projectAccess.putBindings).toHaveBeenCalledWith("company-1", [
+      { projectId: "project-1", targetType: "skill", targetId: "skill-1" },
+      { projectId: "project-2", targetType: "agent", targetId: "new-agent" },
+    ]);
+  });
+  it("hides the projects picker from non-admins and writes no bindings", async () => {
+    await render("paperclip_runner", "opencode");
+    expect(container.querySelector('[aria-label="Bind to Apollo"]')).toBeNull();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(projectAccess.listBindings).not.toHaveBeenCalled();
+    expect(projectAccess.putBindings).not.toHaveBeenCalled();
+  });
+  it("keeps the created agent when saving project bindings fails", async () => {
+    projectAccess.boardAccess = { isInstanceAdmin: true, memberships: [] };
+    projectAccess.putBindings.mockRejectedValue(new Error("boom"));
+    await render("paperclip_runner", "opencode");
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await act(async () => (container.querySelector('[aria-label="Bind to Apollo"]') as HTMLButtonElement).click());
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Your agent is ready");
+    expect(container.textContent).toContain("could not be added to the selected projects: boom");
+  });
   it("does not create when the test fails and permits retry", async () => {
     await render();
     await fill("Model", "openrouter/unknown/model");

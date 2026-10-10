@@ -37,6 +37,7 @@ import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
+import { ProjectBindingsField, addProjectBindings } from "../components/ProjectBindingsField";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import {
@@ -1490,21 +1491,24 @@ export function DiscoveryGrid({
   );
 }
 
-function NewSkillWizard({
+export function NewSkillWizard({
+  companyId,
   initialDraft,
   onCreate,
   isPending,
   error,
   onCancel,
 }: {
+  companyId: string | null;
   initialDraft: SkillCreateDraft;
-  onCreate: (payload: CompanySkillCreateRequest) => void;
+  onCreate: (payload: CompanySkillCreateRequest, projectIds: string[]) => void;
   isPending: boolean;
   error: string | null;
   onCancel: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<SkillCreateDraft>(initialDraft);
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [slugDirty, setSlugDirty] = useState(initialDraft.slug.trim().length > 0);
   const categoryDraft = draft.categories.join(", ");
   const steps = ["Basics", "Design", "Content", "Review"];
@@ -1512,6 +1516,7 @@ function NewSkillWizard({
   useEffect(() => {
     setStep(0);
     setDraft(initialDraft);
+    setProjectIds([]);
     setSlugDirty(initialDraft.slug.trim().length > 0);
   }, [initialDraft]);
 
@@ -1522,7 +1527,7 @@ function NewSkillWizard({
   const nameValid = draft.name.trim().length > 0;
   const effectiveSlug = draft.slug.trim() || normalizeSkillDraftSlug(draft.name);
   function submit() {
-    onCreate(skillCreateDraftToPayload(draft));
+    onCreate(skillCreateDraftToPayload(draft), projectIds);
   }
 
   return (
@@ -1592,6 +1597,9 @@ function NewSkillWizard({
             placeholder="One-line promise for the skill"
             className="min-h-20"
           />
+          {companyId ? (
+            <ProjectBindingsField companyId={companyId} value={projectIds} onChange={setProjectIds} />
+          ) : null}
         </div>
       ) : step === 1 ? (
         <div className="space-y-4">
@@ -4465,8 +4473,18 @@ export function CompanySkills() {
 
 
   const createSkill = useMutation({
-    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
-    onSuccess: async (skill) => {
+    mutationFn: ({ payload }: { payload: CompanySkillCreateRequest; projectIds: string[] }) =>
+      companySkillsApi.create(selectedCompanyId!, payload),
+    onSuccess: async (skill, { projectIds }) => {
+      try {
+        await addProjectBindings(selectedCompanyId!, "skill", skill.id, projectIds);
+      } catch (error) {
+        pushToast({
+          tone: "error",
+          title: "Skill created, but not added to the selected projects",
+          body: error instanceof Error ? error.message : "Failed to save project bindings.",
+        });
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
       navigate(routeForSkill(skill));
       setCreateError(null);
@@ -5457,8 +5475,9 @@ export function CompanySkills() {
                 <EmptyState icon={Boxes} message="Fork source skill not found." />
               ) : (
                 <NewSkillWizard
+                  companyId={selectedCompanyId}
                   initialDraft={studioDraft}
-                  onCreate={(payload) => createSkill.mutate(payload)}
+                  onCreate={(payload, projectIds) => createSkill.mutate({ payload, projectIds })}
                   isPending={createSkill.isPending}
                   error={createError}
                   onCancel={() => navigate(studioBackHref)}

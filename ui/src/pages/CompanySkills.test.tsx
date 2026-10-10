@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveryGrid,
   InstallPreviewDialog,
+  NewSkillWizard,
   SkillDetailPage,
   buildDiscoveryCards,
   defaultInstallAgentSelection,
@@ -16,6 +17,7 @@ import {
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+import { buildBlankSkillDraft } from "../lib/skill-create";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -86,6 +88,15 @@ vi.mock("@/components/ui/tabs", () => ({
 
 vi.mock("@/components/ui/checkbox", () => ({
   Checkbox: (props: ComponentProps<"input">) => <input type="checkbox" {...props} />,
+}));
+
+vi.mock("../components/ProjectBindingsField", () => ({
+  ProjectBindingsField: ({ companyId, onChange }: { companyId: string; onChange: (ids: string[]) => void }) => (
+    <button type="button" onClick={() => onChange(["project-1", "project-2"])}>
+      Pick projects for {companyId}
+    </button>
+  ),
+  addProjectBindings: vi.fn(),
 }));
 
 vi.mock("../components/MarkdownBody", () => ({
@@ -1122,5 +1133,48 @@ describe("install-time agent enablement", () => {
     await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
+  });
+});
+
+describe("NewSkillWizard project bindings", () => {
+  async function renderWizard(companyId: string | null, onCreate = vi.fn()) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <NewSkillWizard
+          companyId={companyId}
+          initialDraft={{ ...buildBlankSkillDraft(), name: "Triage" }}
+          onCreate={onCreate}
+          isPending={false}
+          error={null}
+          onCancel={vi.fn()}
+        />,
+      );
+    });
+    return container;
+  }
+
+  it("passes the selected projects to onCreate alongside the payload", async () => {
+    const onCreate = vi.fn();
+    const node = await renderWizard("company-1", onCreate);
+
+    await click(buttonsNamed(node, "Pick projects for company-1")[0] as HTMLButtonElement);
+    await click(buttonsNamed(node, "Review")[0] as HTMLButtonElement);
+    await click(buttonsNamed(node, "Create skill")[0] as HTMLButtonElement);
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Triage" }), ["project-1", "project-2"]);
+  });
+
+  it("omits the projects picker without a company and creates with no projects", async () => {
+    const onCreate = vi.fn();
+    const node = await renderWizard(null, onCreate);
+
+    expect(node.textContent).not.toContain("Pick projects");
+    await click(buttonsNamed(node, "Review")[0] as HTMLButtonElement);
+    await click(buttonsNamed(node, "Create skill")[0] as HTMLButtonElement);
+
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "Triage" }), []);
   });
 });
