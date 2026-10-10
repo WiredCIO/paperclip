@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
@@ -10,6 +10,8 @@ import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
+import { projectAccessApi } from "@/api/project-access";
+import { projectsApi } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,6 +33,14 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { InvitesSection } from "@/components/access/InvitesSection";
+import {
+  MemberProjectAccessField,
+  draftFromScope,
+  isCombinedScope,
+  isProjectAccessDraftComplete,
+  scopeFromDraft,
+  type ProjectAccessDraft,
+} from "@/components/access/MemberProjectAccessField";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -66,6 +76,8 @@ export function CompanyAccess() {
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
   const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
+  const [draftProjectAccess, setDraftProjectAccess] = useState<ProjectAccessDraft>(() => draftFromScope(null));
+  const [projectAccessDirty, setProjectAccessDirty] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -101,15 +113,35 @@ export function CompanyAccess() {
   };
 
   const updateMemberMutation = useMutation({
-    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus }) => {
-      return accessApi.updateMember(selectedCompanyId!, input.memberId, {
+    mutationFn: async (input: {
+      memberId: string;
+      membershipRole: CompanyMember["membershipRole"];
+      status: EditableMemberStatus;
+      projectAccess: { userId: string; draft: ProjectAccessDraft } | null;
+    }) => {
+      const updated = await accessApi.updateMember(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
       });
+      // Only written when the operator changed it, so saving role/status never
+      // provisions a grant as a side effect.
+      if (input.projectAccess) {
+        await projectAccessApi.putAccessGrant(
+          selectedCompanyId!,
+          input.projectAccess.userId,
+          scopeFromDraft(input.projectAccess.draft),
+        );
+      }
+      return updated;
     },
-    onSuccess: async () => {
+    onSuccess: async (_result, input) => {
       setEditingMemberId(null);
       await refreshAccessData();
+      if (input.projectAccess && selectedCompanyId) {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.projectAccess.memberGrant(selectedCompanyId, input.projectAccess.userId),
+        });
+      }
       pushToast({
         title: "Member updated",
         tone: "success",
@@ -164,6 +196,28 @@ export function CompanyAccess() {
     () => membersQuery.data?.members.find((member) => member.id === editingMemberId) ?? null,
     [editingMemberId, membersQuery.data?.members],
   );
+  // `projects:access` grants are owner/admin-gated server-side and only exist
+  // for active user members; anyone else never sees or fetches the control.
+  const currentUserRole = membersQuery.data?.access.currentUserRole ?? null;
+  const canManageProjectAccess =
+    (currentUserRole === "owner" || currentUserRole === "admin") &&
+    editingMember?.principalType === "user" &&
+    editingMember.status === "active";
+  const projectAccessGrantQuery = useQuery({
+    queryKey: queryKeys.projectAccess.memberGrant(selectedCompanyId ?? "", editingMember?.principalId ?? ""),
+    queryFn: () => projectAccessApi.getAccessGrant(selectedCompanyId!, editingMember!.principalId),
+    enabled: !!selectedCompanyId && !!editingMember && canManageProjectAccess,
+  });
+  const projectCategoriesQuery = useQuery({
+    queryKey: queryKeys.projectCategories.list(selectedCompanyId ?? ""),
+    queryFn: () => projectAccessApi.listCategories(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!editingMember && canManageProjectAccess,
+  });
+  const projectsQuery = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId ?? ""),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!editingMember && canManageProjectAccess,
+  });
   const removingMember = useMemo(
     () => membersQuery.data?.members.find((member) => member.id === removingMemberId) ?? null,
     [removingMemberId, membersQuery.data?.members],
@@ -221,6 +275,18 @@ export function CompanyAccess() {
     setDraftRole(editingMember.membershipRole);
     setDraftStatus(isEditableMemberStatus(editingMember.status) ? editingMember.status : "suspended");
   }, [editingMember]);
+
+  // Reset the draft when a different member is opened, and follow the server
+  // grant as it loads — but never let a background refetch clobber an edit.
+  const projectAccessDraftMemberRef = useRef<string | null>(null);
+  useEffect(() => {
+    const memberChanged = projectAccessDraftMemberRef.current !== editingMemberId;
+    projectAccessDraftMemberRef.current = editingMemberId;
+    if (!memberChanged && projectAccessDirty) return;
+    if (memberChanged) setProjectAccessDirty(false);
+    setDraftProjectAccess(draftFromScope(projectAccessGrantQuery.data?.grant ?? null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingMemberId, projectAccessGrantQuery.data]);
 
   useEffect(() => {
     if (!removingMember) return;
@@ -451,6 +517,29 @@ export function CompanyAccess() {
                   </select>
                 </label>
               </div>
+              {canManageProjectAccess &&
+                (projectAccessGrantQuery.isLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading project access…</p>
+                ) : projectAccessGrantQuery.error ? (
+                  <p className="text-sm text-destructive">
+                    Couldn't load project access:{" "}
+                    {projectAccessGrantQuery.error instanceof Error
+                      ? projectAccessGrantQuery.error.message
+                      : "Unknown error"}
+                  </p>
+                ) : (
+                  <MemberProjectAccessField
+                    draft={draftProjectAccess}
+                    onChange={(draft) => {
+                      setDraftProjectAccess(draft);
+                      setProjectAccessDirty(true);
+                    }}
+                    categories={projectCategoriesQuery.data ?? []}
+                    projects={projectsQuery.data ?? []}
+                    roleBypassesRestriction={draftRole === "owner" || draftRole === "admin"}
+                    combinedScope={isCombinedScope(projectAccessGrantQuery.data?.grant ?? null)}
+                  />
+                ))}
             </div>
           )}
           <DialogFooter>
@@ -464,9 +553,16 @@ export function CompanyAccess() {
                   memberId: editingMember.id,
                   membershipRole: draftRole,
                   status: draftStatus,
+                  projectAccess:
+                    canManageProjectAccess && projectAccessDirty
+                      ? { userId: editingMember.principalId, draft: draftProjectAccess }
+                      : null,
                 });
               }}
-              disabled={updateMemberMutation.isPending}
+              disabled={
+                updateMemberMutation.isPending ||
+                (canManageProjectAccess && projectAccessDirty && !isProjectAccessDraftComplete(draftProjectAccess))
+              }
             >
               {updateMemberMutation.isPending ? "Saving…" : "Save member"}
             </Button>
