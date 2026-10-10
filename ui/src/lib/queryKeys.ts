@@ -524,6 +524,10 @@ export const queryKeys = {
   projectBindings: {
     list: (companyId: string) => ["project-bindings", companyId] as const,
   },
+  projectAccess: {
+    memberGrant: (companyId: string, userId: string) =>
+      ["project-access", "member-grant", companyId, userId] as const,
+  },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
