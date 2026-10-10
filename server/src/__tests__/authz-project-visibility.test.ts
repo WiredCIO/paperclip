@@ -131,6 +131,8 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
     const adminId = await createMember(db, company.id, "admin");
     const orgOperatorId = await createMember(db, company.id, "operator");
     await grantProjectsAccess(db, company.id, orgOperatorId, null);
+    const orgViewerId = await createMember(db, company.id, "viewer");
+    await grantProjectsAccess(db, company.id, orgViewerId, null);
     const salesOperatorId = await createMember(db, company.id, "operator");
     await grantProjectsAccess(db, company.id, salesOperatorId, { categoryIds: [sales.id] });
 
@@ -147,6 +149,7 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
       ownerId,
       adminId,
       orgOperatorId,
+      orgViewerId,
       salesOperatorId,
     };
   }
@@ -282,6 +285,56 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
       );
     });
 
+    it("shadow keeps the allow when the visibility lookup throws", async () => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "shadow");
+      const warn = vi.spyOn(logger, "warn");
+      const failingDb = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop === "select") {
+            return (...args: unknown[]) => {
+              // Fail only resolveProjectVisibility's projects:access grant lookup.
+              const fields = args[0];
+              if (fields && typeof fields === "object" && Object.keys(fields).join() === "scope") {
+                throw new Error("visibility lookup failed");
+              }
+              return (target.select as (...a: unknown[]) => unknown)(...args);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      const decision = await authorizationService(failingDb).decide({
+        actor: sessionActor(fixture.salesOperatorId),
+        action: "issue:read",
+        resource: issueResource(fixture.deliveryIssue),
+      });
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "project_visibility_shadow_error" }),
+        expect.any(String),
+      );
+    });
+
+    it("off issues no queries beyond the baseline decision", async () => {
+      const selects = vi.spyOn(db, "select");
+      async function countSelects(mode: "off" | "enforce", userId: string) {
+        vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", mode);
+        selects.mockClear();
+        await authorizationService(db).decide({
+          actor: sessionActor(userId),
+          action: "issue:read",
+          resource: issueResource(fixture.deliveryIssue),
+        });
+        return selects.mock.calls.length;
+      }
+      // An owner's decision never reaches the visibility hook's queries in off
+      // mode, so it is the baseline query count for this decision path.
+      const baseline = await countSelects("off", fixture.ownerId);
+      expect(await countSelects("off", fixture.salesOperatorId)).toBe(baseline);
+      // Sanity check that the counter would see the hook's queries.
+      expect(await countSelects("enforce", fixture.salesOperatorId)).toBeGreaterThan(baseline);
+    });
+
     it("off allows without logging", async () => {
       vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "off");
       const info = vi.spyOn(logger, "info");
@@ -305,13 +358,23 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
    */
   describe("unrestricted actors are unchanged in every mode", () => {
     type Row = [string, AuthorizationAction, string, boolean, string];
-    const actors = ["owner", "admin", "orgOperator", "localImplicit", "salesOperatorBaseline"] as const;
+    const actors = [
+      "owner",
+      "admin",
+      "orgOperator",
+      "orgViewer",
+      "nonMember",
+      "localImplicit",
+      "salesOperatorBaseline",
+    ] as const;
 
     function actorFor(name: (typeof actors)[number]): AuthorizationActor {
       if (name === "localImplicit") return { type: "board", userId: "local-board", source: "local_implicit" };
       if (name === "owner") return sessionActor(fixture.ownerId);
       if (name === "admin") return sessionActor(fixture.adminId);
       if (name === "orgOperator") return sessionActor(fixture.orgOperatorId);
+      if (name === "orgViewer") return sessionActor(fixture.orgViewerId);
+      if (name === "nonMember") return sessionActor(`user-${randomUUID()}`);
       return sessionActor(fixture.salesOperatorId);
     }
 
@@ -347,6 +410,14 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
       owner: cases.map(([action, resource]) => ["owner", action, resource, true, "allow_simple_company_member"]),
       admin: cases.map(([action, resource]) => ["admin", action, resource, true, "allow_simple_company_member"]),
       orgOperator: cases.map(([action, resource]) => ["orgOperator", action, resource, true, "allow_simple_company_member"]),
+      orgViewer: cases.map(([action, resource]): Row => [
+        "orgViewer",
+        action,
+        resource,
+        action !== "issue:mutate" && action !== "issue:comment",
+        action === "issue:mutate" || action === "issue:comment" ? "deny_missing_grant" : "allow_simple_company_member",
+      ]),
+      nonMember: cases.map(([action, resource]) => ["nonMember", action, resource, false, "deny_missing_membership"]),
       localImplicit: cases.map(([action, resource]) => ["localImplicit", action, resource, true, "allow_local_board"]),
       // The sales-only operator only differs from baseline under enforce; off
       // and shadow must reproduce the pre-change decision exactly.
@@ -365,9 +436,9 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
     }
 
     for (const mode of ["off", "shadow", "enforce"] as const) {
-      it(`matches the pre-change snapshot for owner, admin, org-grant operator and local_implicit (mode=${mode})`, async () => {
+      it(`matches the pre-change snapshot for owner, admin, org-grant operator/viewer, non-member and local_implicit (mode=${mode})`, async () => {
         vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", mode);
-        for (const name of ["owner", "admin", "orgOperator", "localImplicit"] as const) {
+        for (const name of ["owner", "admin", "orgOperator", "orgViewer", "nonMember", "localImplicit"] as const) {
           expect(await record(name)).toEqual(snapshot[name]);
         }
       });

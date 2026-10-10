@@ -808,11 +808,14 @@ export function authorizationService(db: Db | DbTransaction) {
     companyId: string,
     resolution: Extract<ProjectVisibilityResolution, { kind: "restricted" }>,
   ): Promise<boolean> {
+    // A resource without a project/agent id (company-level list checks) has
+    // nothing project-scoped to test, so it stays visible.
     if (resource.type === "project") {
       return !resource.projectId || resolution.projectIds.has(resource.projectId);
     }
     if (resource.type === "issue") {
-      // Routes pass the issue row's projectId; only look it up when absent.
+      // Routes pass the issue row's projectId (null = unbound), so trust it
+      // and only look it up when the caller omitted the field entirely.
       let projectId = resource.projectId;
       if (projectId === undefined && resource.issueId) {
         const issue = await loadIssue(resource.issueId);
@@ -852,12 +855,28 @@ export function authorizationService(db: Db | DbTransaction) {
   }): Promise<AuthorizationDecision | null> {
     const mode = projectAccessMode();
     if (mode === "off") return null;
-    const resolution = await resolveProjectVisibility(
-      db as Db,
-      projectVisibilityActorFor(input.actor, input.companyId, input.userId),
-    );
-    if (resolution.kind === "unrestricted") return null;
-    if (await resourceWithinVisibleProjects(input.resource, input.companyId, resolution)) return null;
+    let visible: boolean;
+    try {
+      const resolution = await resolveProjectVisibility(
+        db as Db,
+        projectVisibilityActorFor(input.actor, input.companyId, input.userId),
+      );
+      visible = resolution.kind === "unrestricted" ||
+        await resourceWithinVisibleProjects(input.resource, input.companyId, resolution);
+    } catch (err) {
+      // Enforce fails closed (the error propagates); shadow must never change
+      // a decision, so it logs and keeps the caller's allow.
+      if (mode !== "shadow") throw err;
+      logger.warn({
+        err,
+        event: "project_visibility_shadow_error",
+        action: input.action,
+        companyId: input.companyId,
+        userId: input.userId,
+      }, "Project visibility check failed in shadow mode; allowed");
+      return null;
+    }
+    if (visible) return null;
     if (mode === "shadow") {
       logger.info({
         event: "project_visibility_shadow_deny",
