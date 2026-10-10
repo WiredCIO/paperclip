@@ -521,6 +521,9 @@ export const queryKeys = {
   projectCategories: {
     list: (companyId: string) => ["project-categories", companyId] as const,
   },
+  projectBindings: {
+    list: (companyId: string) => ["project-bindings", companyId] as const,
+  },
   projectAccess: {
     memberGrant: (companyId: string, userId: string) =>
       ["project-access", "member-grant", companyId, userId] as const,

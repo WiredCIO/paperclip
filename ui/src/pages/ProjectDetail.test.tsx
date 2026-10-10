@@ -29,6 +29,14 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateProject: vi.fn(),
 }));
+const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
+const mockProjectAccessApi = vi.hoisted(() => ({
+  listCategories: vi.fn(),
+  listBindings: vi.fn(),
+  putBindings: vi.fn(),
+}));
+const mockToolsApi = vi.hoisted(() => ({ listConnections: vi.fn() }));
+const mockCompanySkillsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
@@ -53,6 +61,10 @@ vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExec
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
 vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResourceMembershipsApi }));
+vi.mock("../api/access", () => ({ accessApi: mockAccessApi }));
+vi.mock("../api/project-access", () => ({ projectAccessApi: mockProjectAccessApi }));
+vi.mock("../api/tools", () => ({ toolsApi: mockToolsApi }));
+vi.mock("../api/companySkills", () => ({ companySkillsApi: mockCompanySkillsApi }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -347,6 +359,119 @@ describe("ProjectDetail", () => {
 
       expect(container.querySelector('[data-testid="navigate"]')?.textContent)
         .toBe("/projects/project-1/issues");
+    });
+  });
+
+  describe("configuration tab: category and bound resources", () => {
+    const now = new Date("2026-05-01T00:00:00Z");
+    function binding(projectId: string, targetType: "agent" | "skill", targetId: string) {
+      return { id: `${projectId}-${targetId}`, companyId: "company-1", projectId, targetType, targetId, createdByUserId: "user-1", createdAt: now };
+    }
+
+    async function renderConfig() {
+      mockLocation.pathname = "/projects/project-1/configuration";
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root = createRoot(container);
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <ProjectDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+    }
+
+    async function flush() {
+      for (let i = 0; i < 4; i += 1) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+      }
+    }
+
+    async function choose(label: string, value: string) {
+      const select = container.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement | null;
+      expect(select).not.toBeNull();
+      await act(async () => {
+        select!.value = value;
+        select!.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await flush();
+    }
+
+    beforeEach(() => {
+      mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+        isInstanceAdmin: false,
+        memberships: [{ companyId: "company-1", membershipRole: "admin" }],
+      });
+      mockProjectAccessApi.listCategories.mockResolvedValue([
+        { id: "cat-1", companyId: "company-1", name: "Client work", sortOrder: 0, createdAt: now, updatedAt: now },
+      ]);
+      mockProjectAccessApi.listBindings.mockResolvedValue({ bindings: [binding("project-2", "agent", "agent-1")] });
+      mockProjectAccessApi.putBindings.mockImplementation(async (_companyId: string, bindings: unknown[]) => ({
+        bindings: (bindings as Array<{ projectId: string; targetType: "agent" | "skill"; targetId: string }>).map((b) =>
+          binding(b.projectId, b.targetType, b.targetId),
+        ),
+      }));
+      mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Builder" }, { id: "agent-2", name: "Reviewer" }]);
+      mockToolsApi.listConnections.mockResolvedValue({ connections: [] });
+      mockCompanySkillsApi.list.mockResolvedValue([]);
+      mockProjectsApi.update.mockResolvedValue(project());
+    });
+
+    it("sets and clears the project category", async () => {
+      await renderConfig();
+      await choose("Project category", "cat-1");
+      expect(mockProjectsApi.update).toHaveBeenCalledWith("project-1", { categoryId: "cat-1" }, "company-1");
+
+      mockProjectsApi.get.mockResolvedValue(project({ categoryId: "cat-1" }));
+      await flush();
+      await choose("Project category", "");
+      expect(mockProjectsApi.update).toHaveBeenLastCalledWith("project-1", { categoryId: null }, "company-1");
+    });
+
+    it("surfaces a server rejection of a category change instead of failing silently", async () => {
+      mockProjectsApi.update.mockRejectedValue(new Error("Only company owners or admins can change a project's category"));
+      await renderConfig();
+      await choose("Project category", "cat-1");
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain("Only company owners or admins can change a project's category");
+    });
+
+    it("binds and unbinds an agent without clobbering other projects' bindings", async () => {
+      await renderConfig();
+      await choose("Bind agents", "agent-2");
+      expect(mockProjectAccessApi.putBindings).toHaveBeenCalledWith("company-1", [
+        { projectId: "project-2", targetType: "agent", targetId: "agent-1" },
+        { projectId: "project-1", targetType: "agent", targetId: "agent-2" },
+      ]);
+      expect(container.textContent).toContain("Reviewer");
+
+      mockProjectAccessApi.listBindings.mockResolvedValue({
+        bindings: [binding("project-2", "agent", "agent-1"), binding("project-1", "agent", "agent-2")],
+      });
+      const unbind = container.querySelector('button[aria-label="Unbind Reviewer"]') as HTMLButtonElement | null;
+      expect(unbind).not.toBeNull();
+      await act(async () => {
+        unbind!.click();
+      });
+      await flush();
+      expect(mockProjectAccessApi.putBindings).toHaveBeenLastCalledWith("company-1", [
+        { projectId: "project-2", targetType: "agent", targetId: "agent-1" },
+      ]);
+    });
+
+    it("tells a non-owner/admin they cannot change the category and skips the gated fetches", async () => {
+      mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+        isInstanceAdmin: false,
+        memberships: [{ companyId: "company-1", membershipRole: "member" }],
+      });
+      await renderConfig();
+      expect(container.textContent).toContain("Only company owners or admins can change a project's category");
+      expect(container.querySelector('select[aria-label="Project category"]')).toBeNull();
+      expect(mockProjectAccessApi.listCategories).not.toHaveBeenCalled();
+      expect(mockProjectAccessApi.listBindings).not.toHaveBeenCalled();
     });
   });
 });
