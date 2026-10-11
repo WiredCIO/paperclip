@@ -407,7 +407,7 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
     expect(opened.body.issue.description).toContain("Sales notes");
   });
 
-  it("automation retry plans and results leave out a Delivery issue id", async () => {
+  it("automation retry plans, retries and transition results leave out a Delivery issue id", async () => {
     const fixture = await seed();
     const salesIssue = await fixture.createIssue({
       title: "Quote follow-up",
@@ -464,6 +464,23 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
       visibilityFor(fixture.salesOperator),
     );
     expect(single.execution.executionIssueId).toBeNull();
+
+    // Transition / ingest / review results carry an executions array too.
+    const transitionResult = {
+      case: { id: randomUUID(), updatedAt: new Date("2026-03-01T00:00:00Z") },
+      automationLedger: execution,
+      automationExecution: { status: "succeeded", execution },
+      automationExecutions: [{ status: "succeeded", execution }, { status: "none" }],
+    };
+    const operatorTransition = await redactHiddenAutomationIssueRefs(
+      db,
+      fixture.companyId,
+      transitionResult,
+      visibilityFor(fixture.salesOperator),
+    );
+    expectNoTraceOf(operatorTransition, deliveryIssue);
+    expect(operatorTransition.automationExecutions[0]).toMatchObject({ execution: { executionIssueId: null } });
+    expect(operatorTransition.case.updatedAt).toBeInstanceOf(Date);
 
     const ownerResult = await redactHiddenAutomationIssueRefs(db, fixture.companyId, retryResult, visibilityFor(fixture.owner));
     expect(ownerResult).toEqual(retryResult);

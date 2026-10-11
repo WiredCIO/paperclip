@@ -844,7 +844,16 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const results = [];
     for (const item of req.body.items) {
       try {
-        results.push({ caseId: item.caseId, ok: true, result: await svc.reviewCase({ companyId, ...item, actor }) });
+        results.push({
+          caseId: item.caseId,
+          ok: true,
+          result: await redactHiddenAutomationIssueRefs(
+            db,
+            companyId,
+            await svc.reviewCase({ companyId, ...item, actor }),
+            issueVisibilityForRequest(req, access),
+          ),
+        });
       } catch (error) {
         const httpError = error as { status?: number; message?: string; details?: unknown };
         const details = httpError.details && typeof httpError.details === "object" && !Array.isArray(httpError.details)
@@ -1371,7 +1380,8 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
     const actor = actorForMutation(req);
     const result = await svc.ingestCase({ companyId, pipelineId, ...req.body, actor });
-    res.status(result.created ? 201 : 200).json(result);
+    res.status(result.created ? 201 : 200)
+      .json(await redactHiddenAutomationIssueRefs(db, companyId, result, issueVisibilityForRequest(req, access)));
   });
 
   router.post("/pipelines/:pipelineId/cases/batch", validate(batchIngestSchema), async (req, res) => {
@@ -1379,7 +1389,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const companyId = await assertPipelineAccess(db, req, pipelineId);
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
     const actor = actorForMutation(req);
-    res.json(await svc.ingestCases({ companyId, pipelineId, items: req.body.items, actor }));
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
+      companyId,
+      await svc.ingestCases({ companyId, pipelineId, items: req.body.items, actor }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   router.post("/cases/:caseId/breakdown", validate(breakdownCaseSchema), async (req, res) => {
@@ -1388,7 +1403,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const target = await svc.resolveBreakdownTarget({ companyId, caseId });
     await assertPipelineWriteAccess(req, { access, companyId, pipelineId: target.targetPipeline.id });
     const actor = actorForMutation(req);
-    res.json(await svc.breakdownCase({ companyId, caseId, items: req.body.items, actor }));
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
+      companyId,
+      await svc.breakdownCase({ companyId, caseId, items: req.body.items, actor }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   router.get("/pipelines/:pipelineId/cases", async (req, res) => {
@@ -1843,17 +1863,22 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
-    res.json(await svc.transitionCase({
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
       companyId,
-      caseId,
-      toStageKey: req.body.toStageKey,
-      expectedVersion: req.body.expectedVersion,
-      leaseToken: req.body.leaseToken,
-      reason: req.body.reason,
-      force: req.body.force,
-      suggestionId: req.body.acceptSuggestionId,
-      actor,
-    }));
+      await svc.transitionCase({
+        companyId,
+        caseId,
+        toStageKey: req.body.toStageKey,
+        expectedVersion: req.body.expectedVersion,
+        leaseToken: req.body.leaseToken,
+        reason: req.body.reason,
+        force: req.body.force,
+        suggestionId: req.body.acceptSuggestionId,
+        actor,
+      }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   router.post("/cases/:caseId/suggest-transition", validate(suggestTransitionSchema), async (req, res) => {
@@ -1867,16 +1892,21 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
-    res.json(await svc.resolveSuggestion({
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
       companyId,
-      caseId,
-      suggestionId: req.body.suggestionId,
-      decision: req.body.resolution,
-      expectedVersion: req.body.expectedVersion,
-      reason: req.body.reason,
-      leaseToken: req.body.leaseToken,
-      actor,
-    }));
+      await svc.resolveSuggestion({
+        companyId,
+        caseId,
+        suggestionId: req.body.suggestionId,
+        decision: req.body.resolution,
+        expectedVersion: req.body.expectedVersion,
+        reason: req.body.reason,
+        leaseToken: req.body.leaseToken,
+        actor,
+      }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   router.post("/cases/:caseId/acknowledge-drift", validate(acknowledgeDriftSchema), async (req, res) => {
@@ -1895,7 +1925,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
-    res.json(await svc.reviewCase({ companyId, caseId, ...req.body, actor }));
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
+      companyId,
+      await svc.reviewCase({ companyId, caseId, ...req.body, actor }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   router.put("/cases/:caseId/blockers", validate(blockersSchema), async (req, res) => {
