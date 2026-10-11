@@ -3,15 +3,18 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   authUsers,
   companies,
   companyMemberships,
   createDb,
+  documentRevisions,
   documents,
   instanceSettings,
   issueDocuments,
   issues,
+  pipelineCaseDocuments,
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
   pipelineCases,
@@ -58,9 +61,12 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
     vi.unstubAllEnvs();
     await db.delete(pipelineCaseIssueLinks);
     await db.delete(pipelineCaseEvents);
+    await db.delete(pipelineCaseDocuments);
     await db.delete(pipelineCases);
     await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(activityLog);
     await db.delete(pipelineStages);
     await db.delete(pipelines);
     await db.delete(issues);
@@ -190,6 +196,8 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
 
     return {
       companyId,
+      ownerId,
+      salesOperatorId,
       setup,
       agentId: agent!.id,
       pipelineId: pipeline.body.id as string,
@@ -484,6 +492,45 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
 
     const ownerResult = await redactHiddenAutomationIssueRefs(db, fixture.companyId, retryResult, visibilityFor(fixture.owner));
     expect(ownerResult).toEqual(retryResult);
+  });
+
+  it("restoring a case body revision does not return a hidden conversation issue id", async () => {
+    const fixture = await seed();
+    const caseId = await fixture.createCase("case-restore");
+    const deliveryConversation = await fixture.createIssue({
+      title: "Delivery discussion",
+      identifier: `${fixture.prefix}-10`,
+      projectId: fixture.deliveryProjectId,
+      status: "todo",
+      updatedAt: new Date(),
+    });
+    await fixture.link(caseId, deliveryConversation.id, "conversation");
+    // Body writes are mirrored onto the active conversation issue.
+    const first = await fixture.setup.put(`/api/cases/${caseId}/documents/body`).send({ body: "v1" }).expect(200);
+    await fixture.setup
+      .put(`/api/cases/${caseId}/documents/body`)
+      .send({ body: "v2", baseRevisionId: first.body.revision.id })
+      .expect(200);
+    const restorePath = `/api/cases/${caseId}/documents/body/revisions/${first.body.revision.id}/restore`;
+
+    // Restoring is a pipeline write: it needs pipelines:write, which project access does not give.
+    await db.insert(principalPermissionGrants).values([fixture.ownerId, fixture.salesOperatorId].map((principalId) => ({
+      companyId: fixture.companyId,
+      principalType: "user" as const,
+      principalId,
+      permissionKey: "pipelines:write" as const,
+      scope: null,
+      grantedByUserId: null,
+    })));
+    const ownerRestore = await request(app(fixture.owner)).post(restorePath).send({});
+    expect(ownerRestore.status, ownerRestore.text).toBe(200);
+    expect(ownerRestore.body.linkedIssueDocuments.map((link: { issueId: string }) => link.issueId))
+      .toEqual([deliveryConversation.id]);
+
+    const restored = await request(app(fixture.salesOperator)).post(restorePath).send({});
+    expect(restored.status, restored.text).toBe(200);
+    expectNoTraceOf(restored.body, deliveryConversation);
+    expect(restored.body.linkedIssueDocuments).toEqual([]);
   });
 
   it("with project access off every linked issue stays visible and no visibility check is built", async () => {

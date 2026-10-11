@@ -1802,7 +1802,15 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         linkedIssueIds: result.linkedIssueDocuments.map((link) => link.issueId),
       },
     });
-    res.json(result);
+    res.json({
+      ...result,
+      linkedIssueDocuments: await filterVisibleIssueLinks(
+        db,
+        companyId,
+        result.linkedIssueDocuments,
+        issueVisibilityForRequest(req, access),
+      ),
+    });
   });
 
   // Direct children of a case, scoped by parent rather than pipeline. Children can be
