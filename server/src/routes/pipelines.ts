@@ -65,6 +65,7 @@ import {
   type PipelineActor,
   type PipelineStageConfig,
   type PipelineStageKind,
+  type ResolvedPipelineCaseConversationSource,
 } from "../services/pipelines.js";
 import {
   COMPANY_CASE_EVENTS_DEFAULT_LIMIT,
@@ -81,11 +82,12 @@ import {
   PIPELINE_ATTENTION_DEFAULT_LIMIT,
   PIPELINE_ATTENTION_MAX_LIMIT,
   type AttentionCaller,
+  type PipelineIssueVisibility,
 } from "../services/pipelines-aggregation.js";
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
-import { assertCompanyAccess, isIssueHiddenByProjectVisibility } from "./authz.js";
+import { assertCompanyAccess, isIssueHiddenByProjectVisibility, issueVisibilityForRequest } from "./authz.js";
 import {
   computePipelineHealth,
   deriveCaseType,
@@ -759,7 +761,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const requestedLimit = parseOptionalNonNegativeInteger(req.query.limit, "limit");
     if (requestedLimit === 0) throw badRequest("limit must be a positive integer");
     const limit = Math.min(requestedLimit ?? PIPELINE_ATTENTION_DEFAULT_LIMIT, PIPELINE_ATTENTION_MAX_LIMIT);
-    res.json(await listPipelineAttention(db, { companyId, caller, limit }));
+    res.json(await listPipelineAttention(db, {
+      companyId,
+      caller,
+      limit,
+      isIssueVisible: issueVisibilityForRequest(req, access),
+    }));
   });
 
   router.get("/companies/:companyId/case-events", async (req, res) => {
@@ -1426,7 +1433,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .orderBy(asc(pipelineCases.createdAt));
     const caseIds = rows.map((row) => row.case.id);
     const [activeWork, descendantActiveWorkCounts] = await Promise.all([
-      loadActiveWorkForCases(db, companyId, caseIds),
+      loadActiveWorkForCases(db, companyId, caseIds, issueVisibilityForRequest(req, access)),
       loadDescendantActiveWorkCountsForCases(db, companyId, caseIds),
     ]);
     res.json(rows.map((row) => ({
@@ -1446,7 +1453,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   router.get("/cases/:caseId", async (req, res) => {
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
-    const detail = await getCaseDetail(db, companyId, caseId);
+    const detail = await getCaseDetail(db, companyId, caseId, issueVisibilityForRequest(req, access));
     res.json(detail);
   });
 
@@ -1791,7 +1798,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .orderBy(asc(pipelineCases.createdAt));
     const caseIds = rows.map((row) => row.case.id);
     const [activeWork, descendantActiveWorkCounts] = await Promise.all([
-      loadActiveWorkForCases(db, companyId, caseIds),
+      loadActiveWorkForCases(db, companyId, caseIds, issueVisibilityForRequest(req, access)),
       loadDescendantActiveWorkCountsForCases(db, companyId, caseIds),
     ]);
     res.json(rows.map((row) => ({
@@ -1896,18 +1903,19 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
-    const conversationSource = await resolvePipelineCaseConversationSource(db, companyId, caseId);
+    const isIssueVisible = issueVisibilityForRequest(req, access);
+    const conversationSource = await resolveVisibleConversationSource(db, companyId, caseId, isIssueVisible);
     if (conversationSource?.isActive) {
       res.json({ issue: conversationSource.issue, created: false });
       return;
     }
-    const detail = await getCaseDetail(db, companyId, caseId);
+    const detail = await getCaseDetail(db, companyId, caseId, isIssueVisible);
     const [bodyDocumentContext, outputSummaries] = await Promise.all([
       loadPipelineConversationBodyDocumentContext(db, { companyId, caseId }),
       outputsSvc.listCaseOutputs(companyId, caseId).then((outputs) => summarizePipelineCaseOutputsForContext(outputs)),
     ]);
     const result = await db.transaction(async (tx) => {
-      const existingConversationSource = await resolvePipelineCaseConversationSource(tx, companyId, caseId);
+      const existingConversationSource = await resolveVisibleConversationSource(tx, companyId, caseId, isIssueVisible);
       if (existingConversationSource?.isActive) {
         return { issue: existingConversationSource.issue, created: false };
       }
@@ -2078,7 +2086,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   router.get("/cases/:caseId/context-pack", async (req, res) => {
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
-    const detail = await getCaseDetail(db, companyId, caseId);
+    const detail = await getCaseDetail(db, companyId, caseId, issueVisibilityForRequest(req, access));
     const [events, outputs, childOutcomes] = await Promise.all([
       svc.listCaseEventsPage(companyId, caseId, {
         limit: PIPELINE_CONTEXT_PACK_EVENT_LIMIT,
@@ -2169,7 +2177,86 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   return router;
 }
 
-async function getCaseDetail(db: Db, companyId: string, caseId: string) {
+/**
+ * Resolves a case's conversation source, treating one hidden from the caller
+ * by project visibility as absent. In that case the newest visible explicit
+ * conversation link stands in, so a caller who cannot see the producer issue
+ * reuses the conversation they opened instead of creating one per request.
+ */
+async function resolveVisibleConversationSource(
+  db: Db | any,
+  companyId: string,
+  caseId: string,
+  isIssueVisible: PipelineIssueVisibility | undefined,
+): Promise<ResolvedPipelineCaseConversationSource | null> {
+  const source = await resolvePipelineCaseConversationSource(db, companyId, caseId);
+  if (!source || !isIssueVisible || await isIssueVisible(source.issue)) return source;
+  const conversationLinks: Array<{
+    issue: typeof issueRows.$inferSelect;
+    link: typeof pipelineCaseIssueLinks.$inferSelect;
+  }> = await db
+    .select({ issue: issueRows, link: pipelineCaseIssueLinks })
+    .from(pipelineCaseIssueLinks)
+    .innerJoin(issueRows, eq(pipelineCaseIssueLinks.issueId, issueRows.id))
+    .where(and(
+      eq(pipelineCaseIssueLinks.companyId, companyId),
+      eq(pipelineCaseIssueLinks.caseId, caseId),
+      eq(pipelineCaseIssueLinks.role, "conversation"),
+      eq(issueRows.companyId, companyId),
+      isNull(issueRows.hiddenAt),
+      isNull(issueRows.cancelledAt),
+      ne(issueRows.status, "cancelled"),
+    ))
+    .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
+  for (const { issue, link } of conversationLinks) {
+    if (!(await isIssueVisible(issue))) continue;
+    return {
+      issue,
+      kind: "explicit_conversation",
+      isActive: true,
+      reason: "conversation_link",
+      linkRole: "conversation",
+      sourceRunId: link.createdByRunId,
+    };
+  }
+  return null;
+}
+
+async function filterVisibleIssueLinks<T extends { issueId: string }>(
+  db: Db,
+  companyId: string,
+  links: T[],
+  isIssueVisible: PipelineIssueVisibility | undefined,
+): Promise<T[]> {
+  if (!isIssueVisible || links.length === 0) return links;
+  const linkedIssues = await db
+    .select()
+    .from(issueRows)
+    .where(and(
+      eq(issueRows.companyId, companyId),
+      inArray(issueRows.id, [...new Set(links.map((link) => link.issueId))]),
+    ));
+  const issueById = new Map(linkedIssues.map((issue) => [issue.id, issue]));
+  const visible = await Promise.all(links.map((link) => {
+    const issue = issueById.get(link.issueId);
+    // A link whose issue is not in this company has no project to hide by.
+    return issue ? isIssueVisible(issue) : Promise.resolve(true);
+  }));
+  return links.filter((_, index) => visible[index]);
+}
+
+/**
+ * Pass `isIssueVisible` for any response that reaches a caller: linked issues
+ * hidden from them by project visibility are dropped from `links`,
+ * `activeWork`, `liveness` and `conversationSource`. Omit it only when
+ * project visibility is off.
+ */
+async function getCaseDetail(
+  db: Db,
+  companyId: string,
+  caseId: string,
+  isIssueVisible?: PipelineIssueVisibility,
+) {
   const row = await db
     .select({ case: pipelineCases, stage: pipelineStages, pipeline: pipelines })
     .from(pipelineCases)
@@ -2207,15 +2294,17 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     builtFromAutomation,
   ] = await Promise.all([
     db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, row.case.pipelineId)).orderBy(asc(pipelineStages.position)),
-    db.select().from(pipelineCaseIssueLinks).where(and(eq(pipelineCaseIssueLinks.companyId, companyId), eq(pipelineCaseIssueLinks.caseId, caseId))),
+    db.select().from(pipelineCaseIssueLinks)
+      .where(and(eq(pipelineCaseIssueLinks.companyId, companyId), eq(pipelineCaseIssueLinks.caseId, caseId)))
+      .then((rows) => filterVisibleIssueLinks(db, companyId, rows, isIssueVisible)),
     db.select().from(pipelineCaseBlockers).where(and(eq(pipelineCaseBlockers.companyId, companyId), eq(pipelineCaseBlockers.caseId, caseId))),
     db.select().from(pipelineCaseBlockers).where(and(eq(pipelineCaseBlockers.companyId, companyId), eq(pipelineCaseBlockers.blockedByCaseId, caseId))),
     getDirectChildrenSummary(db, companyId, caseId),
-    loadActiveWorkForCases(db, companyId, [caseId]),
+    loadActiveWorkForCases(db, companyId, [caseId], isIssueVisible),
     loadDescendantActiveWorkCountsForCases(db, companyId, [caseId]),
     parentCasePromise,
-    resolvePipelineCaseConversationSource(db, companyId, caseId),
-    derivePipelineCaseLiveness(db, companyId, row),
+    resolveVisibleConversationSource(db, companyId, caseId, isIssueVisible),
+    derivePipelineCaseLiveness(db, companyId, row, isIssueVisible),
     loadBuiltFromAutomation(db, companyId, row.case),
   ]);
   return {
@@ -2330,6 +2419,14 @@ function isLiveIssueStatus(status: string) {
 
 function isWaitingIssueStatus(status: string) {
   return status === "backlog" || status === "todo" || status === "in_review";
+}
+
+// Upper bound on the blocker issues scanned for the first visible one.
+const PIPELINE_LIVENESS_BLOCKER_SCAN_LIMIT = 50;
+
+async function filterAsync<T>(items: T[], predicate: (item: T) => Promise<boolean>): Promise<T[]> {
+  const keep = await Promise.all(items.map(predicate));
+  return items.filter((_, index) => keep[index]);
 }
 
 function summarizeLinkedIssue(issue: typeof issueRows.$inferSelect) {
@@ -2470,6 +2567,7 @@ async function derivePipelineCaseLiveness(
   db: Db,
   companyId: string,
   row: { case: typeof pipelineCases.$inferSelect; stage: typeof pipelineStages.$inferSelect },
+  isIssueVisible?: PipelineIssueVisibility,
 ): Promise<PipelineCaseLiveness> {
   if (row.case.terminalKind) {
     return {
@@ -2516,7 +2614,7 @@ async function derivePipelineCaseLiveness(
     };
   }
 
-  const linkedIssues = await db
+  const allLinkedIssues = await db
     .select({ link: pipelineCaseIssueLinks, issue: issueRows })
     .from(pipelineCaseIssueLinks)
     .innerJoin(issueRows, eq(pipelineCaseIssueLinks.issueId, issueRows.id))
@@ -2528,14 +2626,24 @@ async function derivePipelineCaseLiveness(
       isNull(issueRows.hiddenAt),
     ))
     .orderBy(desc(issueRows.updatedAt), desc(pipelineCaseIssueLinks.createdAt));
+  // Hidden linked issues are skipped, so liveness falls through to the next
+  // visible one rather than describing an issue the caller cannot see.
+  const linkedIssues = isIssueVisible
+    ? await filterAsync(allLinkedIssues, ({ issue }) => isIssueVisible(issue))
+    : allLinkedIssues;
   const blockedIssue = linkedIssues.find(({ issue }) => issue.status === "blocked");
   if (blockedIssue) {
-    const blocker = await db
+    const blockers = await db
       .select({
         id: issueRows.id,
         identifier: issueRows.identifier,
         title: issueRows.title,
         status: issueRows.status,
+        companyId: issueRows.companyId,
+        projectId: issueRows.projectId,
+        parentId: issueRows.parentId,
+        assigneeAgentId: issueRows.assigneeAgentId,
+        assigneeUserId: issueRows.assigneeUserId,
       })
       .from(issueRelations)
       .innerJoin(issueRows, eq(issueRelations.issueId, issueRows.id))
@@ -2545,8 +2653,11 @@ async function derivePipelineCaseLiveness(
         eq(issueRelations.relatedIssueId, blockedIssue.issue.id),
       ))
       .orderBy(asc(issueRows.title))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .limit(isIssueVisible ? PIPELINE_LIVENESS_BLOCKER_SCAN_LIMIT : 1);
+    const visibleBlockers = isIssueVisible
+      ? await filterAsync(blockers, (blocker) => isIssueVisible(blocker))
+      : blockers;
+    const blocker = visibleBlockers[0] ?? null;
     return {
       state: "blocked",
       reason: "linked_issue_blocked",

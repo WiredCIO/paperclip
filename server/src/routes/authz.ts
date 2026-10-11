@@ -292,6 +292,29 @@ export async function isIssueHiddenByProjectVisibility(
 }
 
 /**
+ * A per-request "can the caller see this issue?" check for code that lists
+ * or summarises many issues. Returns `undefined` when project visibility
+ * cannot hide anything (`PAPERCLIP_PROJECT_ACCESS_MODE=off`, or no actor), so
+ * callers skip filtering without a query. Answers are cached per issue id.
+ */
+export function issueVisibilityForRequest(
+  req: Request,
+  access: ProjectVisibilityDecider,
+): ((issue: VisibilityCheckedIssue) => Promise<boolean>) | undefined {
+  if (projectAccessMode() === "off" || req.actor.type === "none") return undefined;
+  const cache = new Map<string, Promise<boolean>>();
+  return (issue) => {
+    let visible = cache.get(issue.id);
+    if (!visible) {
+      visible = isIssueHiddenByProjectVisibility(req, access, issue).then((hidden) => !hidden);
+      cache.set(issue.id, visible);
+      void visible.catch(() => cache.delete(issue.id));
+    }
+    return visible;
+  };
+}
+
+/**
  * `getAccessibleResource` for issues, plus project visibility: a missing,
  * cross-tenant or project-hidden issue all get the same
  * `404 { error: notFoundMessage }`. Pass the not-found message of the
