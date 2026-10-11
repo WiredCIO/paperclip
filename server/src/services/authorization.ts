@@ -9,6 +9,7 @@ import {
   issueComments,
   issues,
   principalPermissionGrants,
+  projectBindings,
   projects,
   userInboxAgentPolicies,
 } from "@paperclipai/db";
@@ -30,6 +31,12 @@ import {
 import { logger } from "../middleware/logger.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
+import {
+  projectAccessMode,
+  resolveProjectVisibility,
+  type ProjectVisibilityActor,
+  type ProjectVisibilityResolution,
+} from "./project-visibility.js";
 
 export type AuthorizationActor =
   {
@@ -130,6 +137,7 @@ export type AuthorizationDecision = {
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
     | "deny_scope"
+    | "deny_project_visibility"
     | "deny_unsupported_action";
   grant?: {
     principalType: PrincipalType;
@@ -479,6 +487,26 @@ type ResponsibleUserActorWithMemo = AuthorizationActor & {
   __responsibleUserSnapshotMemo?: Map<string, Promise<ResponsibleUserSnapshot>>;
 };
 
+// resolveProjectVisibility memoizes on the object it is handed, keyed only by
+// call name. Hand it one object per (request actor, company, user) so a single
+// request that authorizes across companies never reuses another company's set.
+const projectVisibilityActors = new WeakMap<AuthorizationActor, Map<string, ProjectVisibilityActor>>();
+
+function projectVisibilityActorFor(actor: AuthorizationActor, companyId: string, userId: string) {
+  let byKey = projectVisibilityActors.get(actor);
+  if (!byKey) {
+    byKey = new Map();
+    projectVisibilityActors.set(actor, byKey);
+  }
+  const key = `${companyId}:${userId}`;
+  let visibilityActor = byKey.get(key);
+  if (!visibilityActor) {
+    visibilityActor = { companyId, principalType: "user", principalId: userId };
+    byKey.set(key, visibilityActor);
+  }
+  return visibilityActor;
+}
+
 export function responsibleUserAuthzShadowMode() {
   const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
   const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
@@ -773,6 +801,97 @@ export function authorizationService(db: Db | DbTransaction) {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function resourceWithinVisibleProjects(
+    resource: AuthorizationResource,
+    companyId: string,
+    resolution: Extract<ProjectVisibilityResolution, { kind: "restricted" }>,
+  ): Promise<boolean> {
+    // A resource without a project/agent id (company-level list checks) has
+    // nothing project-scoped to test, so it stays visible.
+    if (resource.type === "project") {
+      return !resource.projectId || resolution.projectIds.has(resource.projectId);
+    }
+    if (resource.type === "issue") {
+      // Routes pass the issue row's projectId (null = unbound), so trust it
+      // and only look it up when the caller omitted the field entirely.
+      let projectId = resource.projectId;
+      if (projectId === undefined && resource.issueId) {
+        const issue = await loadIssue(resource.issueId);
+        projectId = issue && issue.companyId === companyId ? issue.projectId : null;
+      }
+      return !projectId || resolution.projectIds.has(projectId);
+    }
+    if (resource.type === "agent") {
+      if (!resource.agentId) return true;
+      const bindings = await db
+        .select({ projectId: projectBindings.projectId })
+        .from(projectBindings)
+        .where(
+          and(
+            eq(projectBindings.companyId, companyId),
+            eq(projectBindings.targetType, "agent"),
+            eq(projectBindings.targetId, resource.agentId),
+          ),
+        );
+      // An agent with no binding is unrestricted; bindings only ever narrow.
+      return bindings.length === 0 || bindings.some((binding) => resolution.projectIds.has(binding.projectId));
+    }
+    return true;
+  }
+
+  /**
+   * Project-visibility gate for board-user reads. Returns a deny decision
+   * only in `enforce` mode; `shadow` logs the would-be deny and returns null
+   * so the caller's existing allow stands; `off` never touches the database.
+   */
+  async function decideProjectVisibility(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    companyId: string;
+    userId: string;
+  }): Promise<AuthorizationDecision | null> {
+    const mode = projectAccessMode();
+    if (mode === "off") return null;
+    let visible: boolean;
+    try {
+      const resolution = await resolveProjectVisibility(
+        db as Db,
+        projectVisibilityActorFor(input.actor, input.companyId, input.userId),
+      );
+      visible = resolution.kind === "unrestricted" ||
+        await resourceWithinVisibleProjects(input.resource, input.companyId, resolution);
+    } catch (err) {
+      // Enforce fails closed (the error propagates); shadow must never change
+      // a decision, so it logs and keeps the caller's allow.
+      if (mode !== "shadow") throw err;
+      logger.warn({
+        err,
+        event: "project_visibility_shadow_error",
+        action: input.action,
+        companyId: input.companyId,
+        userId: input.userId,
+      }, "Project visibility check failed in shadow mode; allowed");
+      return null;
+    }
+    if (visible) return null;
+    if (mode === "shadow") {
+      logger.info({
+        event: "project_visibility_shadow_deny",
+        action: input.action,
+        resourceType: input.resource.type,
+        companyId: input.companyId,
+        userId: input.userId,
+      }, "Project visibility would deny this read (shadow mode; allowed)");
+      return null;
+    }
+    return deny({
+      action: input.action,
+      reason: "deny_project_visibility",
+      explanation: `The ${input.resource.type} belongs to a project the actor cannot see.`,
+    });
   }
 
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
@@ -1805,6 +1924,21 @@ export function authorizationService(db: Db | DbTransaction) {
             input.action === "decision_queue:manage" ||
             input.action === "decision_triage:manage";
           if (membership && (!requiresNonViewer || membership.membershipRole !== "viewer")) {
+            if (
+              input.action === "agent:read" ||
+              input.action === "company_scope:read" ||
+              input.action === "issue:read" ||
+              input.action === "project:read"
+            ) {
+              const visibilityDeny = await decideProjectVisibility({
+                actor: input.actor,
+                action: input.action,
+                resource: input.resource,
+                companyId,
+                userId: input.actor.userId,
+              });
+              if (visibilityDeny) return visibilityDeny;
+            }
             return allow({
               action: input.action,
               reason: "allow_simple_company_member",
