@@ -325,6 +325,75 @@ export async function listPipelineAttention(
   };
 }
 
+type CaseEventIssueRedactable = {
+  payload: unknown;
+  automation?: { issue: { id: string } | null } | undefined;
+};
+
+/**
+ * Removes references to issues the caller cannot see from case events:
+ * `payload.issueId` becomes null, `payload.*IssueIds` arrays drop hidden ids,
+ * and `automation.issue` becomes null. The event itself stays, so paging is
+ * unchanged. A no-op when `isIssueVisible` is undefined.
+ */
+export async function redactHiddenIssuesFromCaseEvents<T extends CaseEventIssueRedactable>(
+  db: Db,
+  companyId: string,
+  events: T[],
+  isIssueVisible: PipelineIssueVisibility | undefined,
+): Promise<T[]> {
+  if (!isIssueVisible || events.length === 0) return events;
+  const isIssueIdList = (key: string, value: unknown): value is unknown[] =>
+    key.endsWith("IssueIds") && Array.isArray(value);
+  const referencedIds = new Set<string>();
+  for (const event of events) {
+    const payload = event.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === "issueId" && typeof value === "string") referencedIds.add(value);
+      if (isIssueIdList(key, value)) {
+        for (const id of value) if (typeof id === "string") referencedIds.add(id);
+      }
+    }
+    if (event.automation?.issue) referencedIds.add(event.automation.issue.id);
+  }
+  if (referencedIds.size === 0) return events;
+  const referencedIssues = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      parentId: issues.parentId,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...referencedIds])));
+  const hidden = new Set<string>();
+  await Promise.all(referencedIssues.map(async (issue) => {
+    if (!(await isIssueVisible(issue))) hidden.add(issue.id);
+  }));
+  if (hidden.size === 0) return events;
+  return events.map((event) => {
+    const payload = event.payload;
+    let redactedPayload = payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      redactedPayload = Object.fromEntries(Object.entries(payload).map(([key, value]) => {
+        if (key === "issueId" && typeof value === "string" && hidden.has(value)) return [key, null];
+        if (isIssueIdList(key, value)) {
+          return [key, value.filter((id) => !(typeof id === "string" && hidden.has(id)))];
+        }
+        return [key, value];
+      }));
+    }
+    const automation = event.automation?.issue && hidden.has(event.automation.issue.id)
+      ? { ...event.automation, issue: null }
+      : event.automation;
+    return { ...event, payload: redactedPayload, ...(event.automation !== undefined ? { automation } : {}) };
+  });
+}
+
 export async function listCompanyCaseEvents(
   db: Db,
   input: { companyId: string; types?: string[]; limit?: number; offset?: number },

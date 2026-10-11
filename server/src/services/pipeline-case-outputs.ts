@@ -26,6 +26,7 @@ import {
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import type { PipelineIssueVisibility } from "./pipelines-aggregation.js";
 import { isLowTrustQuarantined, LOW_TRUST_QUARANTINED_BODY } from "./source-trust.js";
 
 const PREVIEW_TEXT_MAX_LENGTH = 500;
@@ -265,7 +266,15 @@ function sourceFromRow(row: SourceRow): PipelineCaseOutputSource {
 
 export function pipelineCaseOutputsService(db: Db) {
   return {
-    listCaseOutputs: async (companyId: string, caseId: string): Promise<PipelineCaseOutputsResponse> => {
+    /**
+     * Pass `isIssueVisible` for caller-facing responses: outputs of linked
+     * issues hidden by project visibility are left out entirely.
+     */
+    listCaseOutputs: async (
+      companyId: string,
+      caseId: string,
+      options?: { isIssueVisible?: PipelineIssueVisibility },
+    ): Promise<PipelineCaseOutputsResponse> => {
       const [caseRow, company] = await Promise.all([
         db
           .select({ id: pipelineCases.id, pipelineId: pipelineCases.pipelineId })
@@ -293,6 +302,11 @@ export function pipelineCaseOutputsService(db: Db) {
           sourceTrust: issues.sourceTrust,
           createdByRunId: pipelineCaseIssueLinks.createdByRunId,
           linkedAt: pipelineCaseIssueLinks.createdAt,
+          issueCompanyId: issues.companyId,
+          issueProjectId: issues.projectId,
+          issueParentId: issues.parentId,
+          issueAssigneeAgentId: issues.assigneeAgentId,
+          issueAssigneeUserId: issues.assigneeUserId,
         })
         .from(pipelineCaseIssueLinks)
         .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
@@ -307,7 +321,19 @@ export function pipelineCaseOutputsService(db: Db) {
         ))
         .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
 
-      const sources = sourceRows.map(sourceFromRow);
+      const isIssueVisible = options?.isIssueVisible;
+      const visibleSourceRows = isIssueVisible
+        ? await Promise.all(sourceRows.map((row) => isIssueVisible({
+          id: row.issueId,
+          companyId: row.issueCompanyId,
+          projectId: row.issueProjectId,
+          parentId: row.issueParentId,
+          assigneeAgentId: row.issueAssigneeAgentId,
+          assigneeUserId: row.issueAssigneeUserId,
+          status: row.issueStatus,
+        }))).then((visible) => sourceRows.filter((_, index) => visible[index]))
+        : sourceRows;
+      const sources = visibleSourceRows.map(sourceFromRow);
       const sourceByIssueId = new Map(sources.map((source) => [source.issueId, source]));
       const sourceIssueIds = sources.map((source) => source.issueId);
       const items: PipelineCaseOutputItem[] = [];

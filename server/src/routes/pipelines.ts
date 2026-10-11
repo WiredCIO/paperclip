@@ -83,6 +83,7 @@ import {
   PIPELINE_ATTENTION_MAX_LIMIT,
   type AttentionCaller,
   type PipelineIssueVisibility,
+  redactHiddenIssuesFromCaseEvents,
 } from "../services/pipelines-aggregation.js";
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
@@ -777,7 +778,11 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     if (requestedLimit === 0) throw badRequest("limit must be a positive integer");
     const limit = Math.min(requestedLimit ?? COMPANY_CASE_EVENTS_DEFAULT_LIMIT, COMPANY_CASE_EVENTS_MAX_LIMIT);
     const offset = parseOptionalNonNegativeInteger(req.query.offset, "offset") ?? 0;
-    res.json(await listCompanyCaseEvents(db, { companyId, types, limit, offset }));
+    const page = await listCompanyCaseEvents(db, { companyId, types, limit, offset });
+    res.json({
+      ...page,
+      items: await redactHiddenIssuesFromCaseEvents(db, companyId, page.items, issueVisibilityForRequest(req, access)),
+    });
   });
 
   router.post("/companies/:companyId/pipelines", validate(createPipelineSchema), async (req, res) => {
@@ -1917,7 +1922,8 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const detail = await getCaseDetail(db, companyId, caseId, isIssueVisible);
     const [bodyDocumentContext, outputSummaries] = await Promise.all([
       loadPipelineConversationBodyDocumentContext(db, { companyId, caseId }),
-      outputsSvc.listCaseOutputs(companyId, caseId).then((outputs) => summarizePipelineCaseOutputsForContext(outputs)),
+      outputsSvc.listCaseOutputs(companyId, caseId, { isIssueVisible })
+        .then((outputs) => summarizePipelineCaseOutputsForContext(outputs)),
     ]);
     const result = await db.transaction(async (tx) => {
       const existingConversationSource = await resolveVisibleConversationSource(tx, companyId, caseId, isIssueVisible);
@@ -1989,7 +1995,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   router.get("/cases/:caseId/outputs", async (req, res) => {
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
-    res.json(await outputsSvc.listCaseOutputs(companyId, caseId));
+    res.json(await outputsSvc.listCaseOutputs(companyId, caseId, { isIssueVisible: issueVisibilityForRequest(req, access) }));
   });
 
   router.post("/cases/:caseId/issue-links", validate(createIssueLinkSchema), async (req, res) => {
@@ -2073,7 +2079,11 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
     const pagination = parseCaseEventsQuery(req.query);
-    res.json(await svc.listCaseEventsPage(companyId, caseId, pagination));
+    const page = await svc.listCaseEventsPage(companyId, caseId, pagination);
+    res.json({
+      ...page,
+      items: await redactHiddenIssuesFromCaseEvents(db, companyId, page.items, issueVisibilityForRequest(req, access)),
+    });
   });
 
   router.get("/cases/:caseId/children/tree", async (req, res) => {
@@ -2091,13 +2101,14 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
   router.get("/cases/:caseId/context-pack", async (req, res) => {
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
-    const detail = await getCaseDetail(db, companyId, caseId, issueVisibilityForRequest(req, access));
+    const isIssueVisible = issueVisibilityForRequest(req, access);
+    const detail = await getCaseDetail(db, companyId, caseId, isIssueVisible);
     const [events, outputs, childOutcomes] = await Promise.all([
       svc.listCaseEventsPage(companyId, caseId, {
         limit: PIPELINE_CONTEXT_PACK_EVENT_LIMIT,
         order: "desc",
       }),
-      outputsSvc.listCaseOutputs(companyId, caseId),
+      outputsSvc.listCaseOutputs(companyId, caseId, { isIssueVisible }),
       getChildOutcomeSummaries(db, companyId, caseId),
     ]);
     const outputSummaries = summarizePipelineCaseOutputsForContext(outputs);
@@ -2118,7 +2129,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       blockers: detail.blockers,
       childOutcomes,
       outputSummaries,
-      events: [...events.items].reverse(),
+      events: (await redactHiddenIssuesFromCaseEvents(db, companyId, events.items, isIssueVisible)).reverse(),
     });
   });
 

@@ -8,7 +8,9 @@ import {
   companies,
   companyMemberships,
   createDb,
+  documents,
   instanceSettings,
+  issueDocuments,
   issues,
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
@@ -55,6 +57,8 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
     await db.delete(pipelineCaseIssueLinks);
     await db.delete(pipelineCaseEvents);
     await db.delete(pipelineCases);
+    await db.delete(issueDocuments);
+    await db.delete(documents);
     await db.delete(pipelineStages);
     await db.delete(pipelines);
     await db.delete(issues);
@@ -184,6 +188,8 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
 
     return {
       companyId,
+      setup,
+      agentId: agent!.id,
       pipelineId: pipeline.body.id as string,
       salesProjectId: salesProject!.id,
       deliveryProjectId: deliveryProject!.id,
@@ -315,6 +321,88 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
     // The operator's own conversation is reused rather than created again.
     const reopened = await operator.post(`/api/cases/${caseId}/open-conversation`).expect(200);
     expect(reopened.body).toMatchObject({ created: false, issue: { id: opened.body.issue.id } });
+  });
+
+  it("outputs, events, the company event feed and a new conversation's description leave out a Delivery issue", async () => {
+    const fixture = await seed();
+    const caseId = await fixture.createCase("case-outputs");
+    const salesIssue = await fixture.createIssue({
+      title: "Quote follow-up",
+      identifier: `${fixture.prefix}-6`,
+      projectId: fixture.salesProjectId,
+      status: "done",
+      updatedAt: new Date(),
+    });
+    const deliveryIssue = await fixture.createIssue({
+      title: "Rack installation",
+      identifier: `${fixture.prefix}-7`,
+      projectId: fixture.deliveryProjectId,
+      status: "done",
+      updatedAt: new Date(),
+    });
+    // Linking through the API writes issue_linked events carrying the issue id.
+    for (const issue of [salesIssue, deliveryIssue]) {
+      await fixture.setup.post(`/api/cases/${caseId}/issue-links`).send({ issueId: issue.id, role: "work" }).expect(201);
+    }
+    for (const [issue, title] of [[salesIssue, "Sales notes"], [deliveryIssue, "Delivery notes"]] as const) {
+      const [document] = await db.insert(documents).values({
+        companyId: fixture.companyId,
+        title,
+        latestBody: `${title} body`,
+        createdByAgentId: fixture.agentId,
+      }).returning();
+      await db.insert(issueDocuments).values({
+        companyId: fixture.companyId,
+        issueId: issue.id,
+        documentId: document!.id,
+        key: "notes",
+      });
+    }
+    await db.insert(pipelineCaseEvents).values([
+      {
+        companyId: fixture.companyId,
+        caseId,
+        type: "automation_executed",
+        actorType: "system",
+        payload: { automationId: "a", routineId: randomUUID(), issueId: deliveryIssue.id, status: "succeeded" },
+      },
+      {
+        companyId: fixture.companyId,
+        caseId,
+        type: "upstream_drift",
+        actorType: "system",
+        payload: { notifiedIssueIds: [salesIssue.id, deliveryIssue.id] },
+      },
+    ]);
+
+    const owner = request(app(fixture.owner));
+    const ownerOutputs = await owner.get(`/api/cases/${caseId}/outputs`).expect(200);
+    expect(JSON.stringify(ownerOutputs.body)).toContain(deliveryIssue.id);
+    const ownerEvents = await owner.get(`/api/cases/${caseId}/events`).expect(200);
+    expect(JSON.stringify(ownerEvents.body)).toContain(deliveryIssue.id);
+
+    const operator = request(app(fixture.salesOperator));
+    const outputs = await operator.get(`/api/cases/${caseId}/outputs`).expect(200);
+    expectNoTraceOf(outputs.body, deliveryIssue);
+    expect(JSON.stringify(outputs.body)).not.toContain("Delivery notes");
+    expect(JSON.stringify(outputs.body)).toContain("Sales notes");
+
+    const events = await operator.get(`/api/cases/${caseId}/events`).expect(200);
+    expectNoTraceOf(events.body, deliveryIssue);
+    expect(JSON.stringify(events.body)).toContain(salesIssue.id);
+
+    const contextPack = await operator.get(`/api/cases/${caseId}/context-pack`).expect(200);
+    expectNoTraceOf(contextPack.body, deliveryIssue);
+
+    const companyEvents = await operator.get(`/api/companies/${fixture.companyId}/case-events`).expect(200);
+    expectNoTraceOf(companyEvents.body, deliveryIssue);
+    expect(JSON.stringify(companyEvents.body)).toContain(salesIssue.id);
+
+    const opened = await operator.post(`/api/cases/${caseId}/open-conversation`);
+    expect([200, 201]).toContain(opened.status);
+    expect(opened.body.created).toBe(true);
+    expectNoTraceOf(opened.body, deliveryIssue);
+    expect(opened.body.issue.description).toContain("Sales notes");
   });
 
   it("with project access off every linked issue stays visible and no visibility check is built", async () => {
