@@ -28,6 +28,8 @@ import {
 import { errorHandler } from "../middleware/error-handler.js";
 import { issueVisibilityForRequest } from "../routes/authz.js";
 import { pipelineRoutes } from "../routes/pipelines.js";
+import { accessService } from "../services/access.js";
+import { redactHiddenAutomationIssueRefs } from "../services/pipelines-aggregation.js";
 
 /**
  * WIR-1020 (T6b): pipeline case detail, liveness, active work, context pack,
@@ -403,6 +405,68 @@ describeEmbeddedPostgres("pipeline case responses under project visibility", () 
     expect(opened.body.created).toBe(true);
     expectNoTraceOf(opened.body, deliveryIssue);
     expect(opened.body.issue.description).toContain("Sales notes");
+  });
+
+  it("automation retry plans and results leave out a Delivery issue id", async () => {
+    const fixture = await seed();
+    const salesIssue = await fixture.createIssue({
+      title: "Quote follow-up",
+      identifier: `${fixture.prefix}-8`,
+      projectId: fixture.salesProjectId,
+      status: "in_progress",
+      updatedAt: new Date(),
+    });
+    const deliveryIssue = await fixture.createIssue({
+      title: "Rack installation",
+      identifier: `${fixture.prefix}-9`,
+      projectId: fixture.deliveryProjectId,
+      status: "in_progress",
+      updatedAt: new Date(),
+    });
+    const issueIds = [salesIssue.id, deliveryIssue.id];
+    const execution = { id: randomUUID(), executionIssueId: deliveryIssue.id };
+    const plan = {
+      allowed: false,
+      blockers: [
+        { kind: "active_descendants", message: "active", issueIds },
+        { kind: "unresolved_blockers", message: "blocked", caseIds: [randomUUID()] },
+      ],
+    };
+    const retryResult = {
+      plan,
+      retired: { caseIds: [], issueIds },
+      automationLedger: execution,
+      automationExecution: { status: "succeeded", execution },
+    };
+    const access = accessService(db);
+    const visibilityFor = (actor: Express.Request["actor"]) =>
+      issueVisibilityForRequest({ actor } as never, access);
+
+    const operatorPlan = await redactHiddenAutomationIssueRefs(db, fixture.companyId, plan, visibilityFor(fixture.salesOperator));
+    expect(operatorPlan.blockers[0]).toMatchObject({ kind: "active_descendants", issueIds: [salesIssue.id] });
+    expect(operatorPlan.blockers[1]).toEqual(plan.blockers[1]);
+
+    const operatorResult = await redactHiddenAutomationIssueRefs(
+      db,
+      fixture.companyId,
+      retryResult,
+      visibilityFor(fixture.salesOperator),
+    );
+    expectNoTraceOf(operatorResult, deliveryIssue);
+    expect(operatorResult.retired.issueIds).toEqual([salesIssue.id]);
+    expect(operatorResult.automationLedger.executionIssueId).toBeNull();
+    expect(operatorResult.automationExecution.execution.executionIssueId).toBeNull();
+
+    const single = await redactHiddenAutomationIssueRefs(
+      db,
+      fixture.companyId,
+      { status: "succeeded", execution },
+      visibilityFor(fixture.salesOperator),
+    );
+    expect(single.execution.executionIssueId).toBeNull();
+
+    const ownerResult = await redactHiddenAutomationIssueRefs(db, fixture.companyId, retryResult, visibilityFor(fixture.owner));
+    expect(ownerResult).toEqual(retryResult);
   });
 
   it("with project access off every linked issue stays visible and no visibility check is built", async () => {

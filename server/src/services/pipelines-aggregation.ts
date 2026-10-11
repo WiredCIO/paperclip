@@ -394,6 +394,70 @@ export async function redactHiddenIssuesFromCaseEvents<T extends CaseEventIssueR
   });
 }
 
+type AutomationExecutionRef = { executionIssueId: string | null };
+type AutomationIssueRefs = {
+  blockers?: Array<{ issueIds?: string[] }>;
+  plan?: { blockers?: Array<{ issueIds?: string[] }> };
+  retired?: { issueIds: string[] };
+  execution?: AutomationExecutionRef;
+  automationLedger?: AutomationExecutionRef;
+  automationExecution?: { execution?: AutomationExecutionRef };
+};
+
+/**
+ * Removes issues hidden from the caller by project visibility from automation
+ * retry plans and results: blocker `issueIds`, `retired.issueIds`, and the
+ * `executionIssueId` of returned execution rows.
+ */
+export async function redactHiddenAutomationIssueRefs<T extends object>(
+  db: Db,
+  companyId: string,
+  result: T,
+  isIssueVisible: PipelineIssueVisibility | undefined,
+): Promise<T> {
+  if (!isIssueVisible) return result;
+  // Plans and results are unions (e.g. `{ status: "none" }`); read the
+  // issue-bearing fields structurally.
+  const value = result as AutomationIssueRefs;
+  const blockersOf = (target: AutomationIssueRefs) => target.blockers ?? target.plan?.blockers ?? [];
+  const executions = [value.execution, value.automationLedger, value.automationExecution?.execution];
+  const referencedIds = new Set<string>([
+    ...blockersOf(value).flatMap((blocker) => blocker.issueIds ?? []),
+    ...(value.retired?.issueIds ?? []),
+    ...executions.flatMap((execution) => execution?.executionIssueId ? [execution.executionIssueId] : []),
+  ]);
+  if (referencedIds.size === 0) return result;
+  const referencedIssues = await db
+    .select()
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...referencedIds])));
+  const hidden = new Set<string>();
+  await Promise.all(referencedIssues.map(async (issue) => {
+    if (!(await isIssueVisible(issue))) hidden.add(issue.id);
+  }));
+  if (hidden.size === 0) return result;
+  const visibleIds = (ids: string[]) => ids.filter((id) => !hidden.has(id));
+  const redactBlockers = <B extends { issueIds?: string[] }>(blockers: B[] | undefined) =>
+    blockers?.map((blocker) => blocker.issueIds ? { ...blocker, issueIds: visibleIds(blocker.issueIds) } : blocker);
+  const redactExecution = <E extends AutomationExecutionRef>(execution: E | undefined) =>
+    execution && execution.executionIssueId && hidden.has(execution.executionIssueId)
+      ? { ...execution, executionIssueId: null }
+      : execution;
+  const redacted: AutomationIssueRefs = { ...value };
+  if (value.blockers) redacted.blockers = redactBlockers(value.blockers);
+  if (value.plan) redacted.plan = { ...value.plan, blockers: redactBlockers(value.plan.blockers) };
+  if (value.retired) redacted.retired = { ...value.retired, issueIds: visibleIds(value.retired.issueIds) };
+  if (value.execution) redacted.execution = redactExecution(value.execution);
+  if (value.automationLedger) redacted.automationLedger = redactExecution(value.automationLedger);
+  if (value.automationExecution) {
+    redacted.automationExecution = {
+      ...value.automationExecution,
+      execution: redactExecution(value.automationExecution.execution),
+    };
+  }
+  return redacted as T;
+}
+
 export async function listCompanyCaseEvents(
   db: Db,
   input: { companyId: string; types?: string[]; limit?: number; offset?: number },
