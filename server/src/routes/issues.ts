@@ -228,7 +228,11 @@ import {
   assertCompanyAccess,
   getAccessibleResource,
   getActorInfo,
+  getVisibleIssue,
+  isIssueHiddenByProjectVisibility,
+  isProjectVisibilityDenial,
 } from "./authz.js";
+import { projectAccessMode } from "../services/project-visibility.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -5086,10 +5090,15 @@ export function issueRoutes(
     return false as const;
   }
 
+  /**
+   * `notFoundMessage` is the 404 copy for the resource named in the URL; a
+   * project-visibility denial must read exactly like that resource not existing.
+   */
   async function assertIssueReadAllowed(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1],
+    notFoundMessage = "Issue not found",
   ) {
     const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
     const value = memoizeIssueReadDecision(req, key, () =>
@@ -5097,6 +5106,10 @@ export function issueRoutes(
     );
     const decision = await value;
     if (decision.allowed) return true;
+    if (isProjectVisibilityDenial(decision)) {
+      res.status(404).json({ error: notFoundMessage });
+      return false;
+    }
     res
       .status(403)
       .json({ error: "Issue is outside this actor's authorization boundary" });
@@ -11074,6 +11087,10 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
+      if (await isIssueHiddenByProjectVisibility(req, access, issue)) {
+        res.status(404).json({ error: "Work product not found" });
+        return;
+      }
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (
         !(await assertDeliverableMutationAllowedByRunContext(req, res, issue))
@@ -11167,6 +11184,10 @@ export function issueRoutes(
     const issue = await svc.getById(existing.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (await isIssueHiddenByProjectVisibility(req, access, issue)) {
+      res.status(404).json({ error: "Work product not found" });
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -17148,6 +17169,14 @@ export function issueRoutes(
       if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
       if (!resolved.agent) throw notFound("Agent not found");
       const agent = resolved.agent;
+      if (projectAccessMode() !== "off") {
+        const agentDecision = await access.decide({
+          actor: req.actor,
+          action: "agent:read",
+          resource: { type: "agent", companyId, agentId: agent.id },
+        });
+        if (isProjectVisibilityDenial(agentDecision)) throw notFound("Agent not found");
+      }
       const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
       if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
       if (existing || method === "get") { res.json(existing); return; }
@@ -18366,15 +18395,16 @@ export function issueRoutes(
       const companyId = req.params.companyId as string;
       const issueId = req.params.issueId as string;
       assertCompanyAccess(req, companyId);
-      const issue = await svc.getById(issueId);
-      if (!issue) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      if (issue.companyId !== companyId) {
-        res.status(422).json({ error: "Issue does not belong to company" });
-        return;
-      }
+      const issue = await getVisibleIssue(
+        req,
+        res,
+        access,
+        svc
+          .getById(issueId)
+          .then((row) => (row?.companyId === companyId ? row : null)),
+        "Issue not found",
+      );
+      if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
         throw notFound("Agent Chat is disabled");
       }
@@ -18535,7 +18565,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertIssueReadAllowed(req, res, issue, "Attachment not found"))) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
@@ -18626,6 +18656,10 @@ export function issueRoutes(
     const issue = await svc.getById(attachment.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (await isIssueHiddenByProjectVisibility(req, access, issue)) {
+      res.status(404).json({ error: "Attachment not found" });
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;

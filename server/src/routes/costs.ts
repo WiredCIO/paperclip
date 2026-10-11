@@ -20,7 +20,13 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+  isProjectVisibilityDenial,
+} from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -107,6 +113,10 @@ export function costRoutes(
       },
     });
     if (decision.allowed) return true;
+    if (isProjectVisibilityDenial(decision)) {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     res.status(403).json({ error: "Issue costs are outside this actor's authorization boundary" });
     return false;
   }
