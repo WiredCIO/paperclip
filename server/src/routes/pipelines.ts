@@ -83,6 +83,7 @@ import {
   PIPELINE_ATTENTION_MAX_LIMIT,
   type AttentionCaller,
   type PipelineIssueVisibility,
+  redactHiddenAutomationIssueRefs,
   redactHiddenIssuesFromCaseEvents,
 } from "../services/pipelines-aggregation.js";
 import { accessService } from "../services/access.js";
@@ -2146,7 +2147,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     if (plan.targetStage) {
       await assertStageAutomationTargetWriteAccess(db, req, { access, companyId, stage: plan.targetStage });
     }
-    res.json(plan);
+    res.json(await redactHiddenAutomationIssueRefs(db, companyId, plan, issueVisibilityForRequest(req, access)));
   });
 
   router.post("/cases/:caseId/automation/retry", validate(pipelineAutomationRetryRequestSchema), async (req, res) => {
@@ -2162,7 +2163,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     if (plan.targetStage) {
       await assertStageAutomationTargetWriteAccess(db, req, { access, companyId, stage: plan.targetStage });
     }
-    res.json(await svc.retryStageAutomation({
+    res.json(await redactHiddenAutomationIssueRefs(db, companyId, await svc.retryStageAutomation({
       companyId,
       caseId,
       scope: req.body.scope,
@@ -2170,7 +2171,7 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       expectedVersion: req.body.expectedVersion,
       cleanup: req.body.cleanup,
       actor,
-    }));
+    }), issueVisibilityForRequest(req, access)));
   });
 
   router.post("/cases/:caseId/automations/:automationId/retry", async (req, res) => {
@@ -2179,7 +2180,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const companyId = await assertCaseAccess(db, req, caseId);
     await assertCurrentStageAutomationTargetWriteAccess(db, req, { access, companyId, caseId, automationId });
     const actor = actorForMutation(req);
-    res.json(await svc.retryAutomation({ companyId, caseId, automationId, actor }));
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
+      companyId,
+      await svc.retryAutomation({ companyId, caseId, automationId, actor }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   router.post("/cases/:caseId/automation/current-stage/rerun", async (req, res) => {
@@ -2187,7 +2193,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const companyId = await assertCaseAccess(db, req, caseId);
     await assertCurrentStageAutomationTargetWriteAccess(db, req, { access, companyId, caseId });
     const actor = actorForMutation(req);
-    res.json(await svc.rerunCurrentStageAutomation({ companyId, caseId, actor }));
+    res.json(await redactHiddenAutomationIssueRefs(
+      db,
+      companyId,
+      await svc.rerunCurrentStageAutomation({ companyId, caseId, actor }),
+      issueVisibilityForRequest(req, access),
+    ));
   });
 
   return router;
