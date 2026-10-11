@@ -69,6 +69,7 @@ const mockIssueService = vi.hoisted(() => ({
   removeAttachment: vi.fn(),
   createAttachment: vi.fn(),
   getConversation: vi.fn(),
+  create: vi.fn(),
 }));
 const mockWorkProductService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -282,6 +283,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.removeAttachment.mockResolvedValue(hiddenAttachment);
     mockIssueService.getConversation.mockResolvedValue(null);
+    mockIssueService.create.mockResolvedValue({ ...hiddenIssue, projectId: null, conversationAgentId: DELIVERY_AGENT_ID });
     mockIssueService.createAttachment.mockResolvedValue({ ...hiddenAttachment, artifactWorkProductId: null });
     mockWorkProductService.getById.mockImplementation(async (id: string) =>
       id === HIDDEN_WORK_PRODUCT_ID ? hiddenWorkProduct : null,
@@ -354,7 +356,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       name: "POST /companies/:companyId/chats/:agentRef",
       hiddenId: DELIVERY_AGENT_ID,
       probe: (app, id) => request(app).post(`/api/companies/${COMPANY_ID}/chats/${id}`),
-      ownerStatus: -1, // creates a conversation; covered by the GET variant for owners
+      ownerStatus: 200,
     },
   ];
 
@@ -365,7 +367,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     });
   }
 
-  for (const { name, hiddenId, probe, ownerStatus } of probes.filter((entry) => entry.ownerStatus > 0)) {
+  for (const { name, hiddenId, probe, ownerStatus } of probes) {
     it(`${name}: owner still reaches the resource`, async () => {
       const app = await createApp("owner");
       const res = await probe(app, hiddenId);

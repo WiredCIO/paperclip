@@ -4,7 +4,14 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import {
+  assertAuthenticated,
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  hasCompanyAccess,
+  isProjectVisibilityDenial,
+} from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
@@ -207,6 +214,10 @@ export function activityRoutes(db: Db) {
       },
     });
     if (decision.allowed) return true;
+    if (isProjectVisibilityDenial(decision)) {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     res.status(403).json({ error: "Issue activity is outside this actor's authorization boundary" });
     return false;
   }

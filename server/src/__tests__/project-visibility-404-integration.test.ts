@@ -24,6 +24,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { activityRoutes } from "../routes/activity.js";
+import { costRoutes } from "../routes/costs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { pipelineRoutes } from "../routes/pipelines.js";
 
@@ -91,6 +93,8 @@ describeEmbeddedPostgres("project visibility 404 mapping against the real decide
     });
     instance.use("/api", pipelineRoutes(db, { heartbeat: { wakeup: async () => null } } as never));
     instance.use("/api", issueRoutes(db, {} as never));
+    instance.use("/api", activityRoutes(db));
+    instance.use("/api", costRoutes(db));
     instance.use(errorHandler);
     return instance;
   }
@@ -150,6 +154,28 @@ describeEmbeddedPostgres("project visibility 404 mapping against the real decide
     await request(app(fixture.owner)).get(`/api/issues/${fixture.deliveryIssue.id}/attachments`).expect(200);
   });
 
+  it("upload, activity and cost-summary answer a Delivery issue like a random id", async () => {
+    const fixture = await seed();
+    const operator = request(app(fixture.salesOperator));
+    const probes: Array<(id: string) => request.Test> = [
+      (id) => operator
+        .post(`/api/companies/${fixture.companyId}/issues/${id}/attachments`)
+        .attach("file", Buffer.from("test"), { filename: "notes.txt", contentType: "text/plain" }),
+      (id) => operator.get(`/api/issues/${id}/activity`),
+      (id) => operator.get(`/api/issues/${id}/cost-summary`),
+    ];
+    for (const probe of probes) {
+      const hidden = await probe(fixture.deliveryIssue.id);
+      const random = await probe(randomUUID());
+      expect(random.status).toBe(404);
+      expect(hidden.status).toBe(404);
+      expect(hidden.text).toBe(random.text);
+    }
+    const owner = request(app(fixture.owner));
+    await owner.get(`/api/issues/${fixture.deliveryIssue.id}/activity`).expect(200);
+    await owner.get(`/api/issues/${fixture.deliveryIssue.id}/cost-summary`).expect(200);
+  });
+
   it("GET /cases/:caseId/issue-links leaves out Delivery issues for a Sales-only operator", async () => {
     const fixture = await seed();
     // Pipeline setup needs pipeline-management rights; seed it as the local board.
@@ -182,5 +208,21 @@ describeEmbeddedPostgres("project visibility 404 mapping against the real decide
 
     const operatorLinks = await request(app(fixture.salesOperator)).get(`/api/cases/${caseId}/issue-links`).expect(200);
     expect(operatorLinks.body.map((row: { issue: { id: string } }) => row.issue.id)).toEqual([fixture.salesIssue.id]);
+
+    // Linking or unlinking a hidden issue reads exactly like an unknown issue or link.
+    const operator = request(app(fixture.salesOperator));
+    const linkHidden = await operator.post(`/api/cases/${caseId}/issue-links`).send({ issueId: fixture.deliveryIssue.id, role: "work" });
+    const linkRandom = await operator.post(`/api/cases/${caseId}/issue-links`).send({ issueId: randomUUID(), role: "work" });
+    expect(linkRandom.status).toBe(404);
+    expect(linkHidden.status).toBe(404);
+    expect(linkHidden.text).toBe(linkRandom.text);
+    const deliveryLinkId = ownerLinks.body.find(
+      (row: { issue: { id: string } }) => row.issue.id === fixture.deliveryIssue.id,
+    ).link.id;
+    const unlinkHidden = await operator.delete(`/api/cases/${caseId}/issue-links/${deliveryLinkId}`);
+    const unlinkRandom = await operator.delete(`/api/cases/${caseId}/issue-links/${randomUUID()}`);
+    expect(unlinkRandom.status).toBe(404);
+    expect(unlinkHidden.status).toBe(404);
+    expect(unlinkHidden.text).toBe(unlinkRandom.text);
   });
 });

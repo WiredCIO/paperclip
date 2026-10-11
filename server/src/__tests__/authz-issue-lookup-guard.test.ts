@@ -22,8 +22,6 @@ const ROUTES_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "routes")
 const ACCESS_HELPERS = [
   "getAccessibleResource",
   "getVisibleIssue",
-  "hasCompanyAccess",
-  "actorCanAccessCompany",
   "assertIssueReadAllowed",
   "isIssueHiddenByProjectVisibility",
   "filterIssuesForActor",
@@ -44,7 +42,8 @@ const HANDLER_END = /^\s{2}(?:\}\)|\);|router\.)/;
 const REVIEWED_LOOKUPS = new Set([
   // Harness cleanup callbacks; they never respond to the request.
   "company-skills.ts:const issue = await issues.getById(issueId);",
-  // Resolver helper; every caller gates the result with assertIssueCostReadAllowed.
+  // Resolver helper; its caller wraps it in getAccessibleResource and then
+  // assertIssueCostReadAllowed, which maps a visibility denial to 404.
   "costs.ts:return issues.getById(rawId);",
   // Wakes members of a hold whose root issue the route already authorized.
   "issue-tree-control.ts:const issue = await issuesSvc.getById(member.issueId);",

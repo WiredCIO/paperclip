@@ -1984,7 +1984,9 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const companyId = await assertCaseAccess(db, req, caseId);
     const actor = actorForMutation(req);
     const targetIssue = await getIssueMutationTarget(db, { companyId, issueId: req.body.issueId });
-    if (!targetIssue) throw notFound("Issue not found");
+    if (!targetIssue || await isIssueHiddenByProjectVisibility(req, access, targetIssue)) {
+      throw notFound("Issue not found");
+    }
     await assertIssueLinkMutationAllowed(req, { access, issuesSvc, issue: targetIssue });
     try {
       const link = await db.transaction(async (tx) => {
@@ -2027,7 +2029,10 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .then((rows) => rows[0] ?? null);
     if (!existingLink) throw notFound("Pipeline case issue link not found");
     const targetIssue = await getIssueMutationTarget(db, { companyId, issueId: existingLink.issueId });
-    if (!targetIssue) throw notFound("Issue not found");
+    if (!targetIssue || await isIssueHiddenByProjectVisibility(req, access, targetIssue)) {
+      // The link is only reachable through the hidden issue; answer as for an unknown link.
+      throw notFound(targetIssue ? "Pipeline case issue link not found" : "Issue not found");
+    }
     await assertIssueLinkMutationAllowed(req, { access, issuesSvc, issue: targetIssue });
     const deleted = await db.transaction(async (tx) => {
       const [removed] = await tx
