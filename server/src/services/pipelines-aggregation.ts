@@ -394,41 +394,56 @@ export async function redactHiddenIssuesFromCaseEvents<T extends CaseEventIssueR
   });
 }
 
-type AutomationExecutionRef = { executionIssueId: string | null };
-type AutomationIssueRefs = {
-  blockers?: Array<{ issueIds?: string[] }>;
-  plan?: { blockers?: Array<{ issueIds?: string[] }> };
-  retired?: { issueIds: string[] };
-  execution?: AutomationExecutionRef;
-  automationLedger?: AutomationExecutionRef;
-  automationExecution?: { execution?: AutomationExecutionRef };
-};
+const AUTOMATION_ISSUE_REF_MAX_DEPTH = 8;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
 
 /**
- * Removes issues hidden from the caller by project visibility from automation
- * retry plans and results: blocker `issueIds`, `retired.issueIds`, and the
- * `executionIssueId` of returned execution rows.
+ * Removes issues hidden from the caller by project visibility from pipeline
+ * automation results (transition, ingest, review, breakdown, retry plans and
+ * retries). Walks the result and rewrites the two shapes that name issues:
+ * `executionIssueId` on automation execution rows becomes null, and any
+ * `issueIds` list (retry blockers, `retired.issueIds`) drops hidden ids.
+ * A no-op when `isIssueVisible` is undefined.
  */
-export async function redactHiddenAutomationIssueRefs<T extends object>(
+export async function redactHiddenAutomationIssueRefs<T>(
   db: Db,
   companyId: string,
   result: T,
   isIssueVisible: PipelineIssueVisibility | undefined,
 ): Promise<T> {
   if (!isIssueVisible) return result;
-  // Plans and results are unions (e.g. `{ status: "none" }`); read the
-  // issue-bearing fields structurally.
-  const value = result as AutomationIssueRefs;
-  const blockersOf = (target: AutomationIssueRefs) => target.blockers ?? target.plan?.blockers ?? [];
-  const executions = [value.execution, value.automationLedger, value.automationExecution?.execution];
-  const referencedIds = new Set<string>([
-    ...blockersOf(value).flatMap((blocker) => blocker.issueIds ?? []),
-    ...(value.retired?.issueIds ?? []),
-    ...executions.flatMap((execution) => execution?.executionIssueId ? [execution.executionIssueId] : []),
-  ]);
+  const referencedIds = new Set<string>();
+  const collect = (value: unknown, depth: number) => {
+    if (depth > AUTOMATION_ISSUE_REF_MAX_DEPTH) return;
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, depth + 1);
+      return;
+    }
+    if (!isPlainObject(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "executionIssueId" && typeof child === "string") referencedIds.add(child);
+      else if (key === "issueIds" && Array.isArray(child)) {
+        for (const id of child) if (typeof id === "string") referencedIds.add(id);
+      } else collect(child, depth + 1);
+    }
+  };
+  collect(result, 0);
   if (referencedIds.size === 0) return result;
   const referencedIssues = await db
-    .select()
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      parentId: issues.parentId,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      status: issues.status,
+    })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...referencedIds])));
   const hidden = new Set<string>();
@@ -436,26 +451,19 @@ export async function redactHiddenAutomationIssueRefs<T extends object>(
     if (!(await isIssueVisible(issue))) hidden.add(issue.id);
   }));
   if (hidden.size === 0) return result;
-  const visibleIds = (ids: string[]) => ids.filter((id) => !hidden.has(id));
-  const redactBlockers = <B extends { issueIds?: string[] }>(blockers: B[] | undefined) =>
-    blockers?.map((blocker) => blocker.issueIds ? { ...blocker, issueIds: visibleIds(blocker.issueIds) } : blocker);
-  const redactExecution = <E extends AutomationExecutionRef>(execution: E | undefined) =>
-    execution && execution.executionIssueId && hidden.has(execution.executionIssueId)
-      ? { ...execution, executionIssueId: null }
-      : execution;
-  const redacted: AutomationIssueRefs = { ...value };
-  if (value.blockers) redacted.blockers = redactBlockers(value.blockers);
-  if (value.plan) redacted.plan = { ...value.plan, blockers: redactBlockers(value.plan.blockers) };
-  if (value.retired) redacted.retired = { ...value.retired, issueIds: visibleIds(value.retired.issueIds) };
-  if (value.execution) redacted.execution = redactExecution(value.execution);
-  if (value.automationLedger) redacted.automationLedger = redactExecution(value.automationLedger);
-  if (value.automationExecution) {
-    redacted.automationExecution = {
-      ...value.automationExecution,
-      execution: redactExecution(value.automationExecution.execution),
-    };
-  }
-  return redacted as T;
+  const redact = (value: unknown, depth: number): unknown => {
+    if (depth > AUTOMATION_ISSUE_REF_MAX_DEPTH) return value;
+    if (Array.isArray(value)) return value.map((item) => redact(item, depth + 1));
+    if (!isPlainObject(value)) return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      if (key === "executionIssueId" && typeof child === "string") return [key, hidden.has(child) ? null : child];
+      if (key === "issueIds" && Array.isArray(child)) {
+        return [key, child.filter((id) => !(typeof id === "string" && hidden.has(id)))];
+      }
+      return [key, redact(child, depth + 1)];
+    }));
+  };
+  return redact(result, 0) as T;
 }
 
 export async function listCompanyCaseEvents(
