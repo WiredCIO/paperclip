@@ -85,7 +85,7 @@ import {
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
-import { assertCompanyAccess } from "./authz.js";
+import { assertCompanyAccess, isIssueHiddenByProjectVisibility } from "./authz.js";
 import {
   computePipelineHealth,
   deriveCaseType,
@@ -1965,7 +1965,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
         eq(issueRows.companyId, companyId),
       ))
       .orderBy(asc(pipelineCaseIssueLinks.createdAt));
-    res.json(links);
+    // Drop links to issues hidden by project visibility, so the list reads the
+    // same as if those issues did not exist.
+    const hidden = await Promise.all(
+      links.map(({ issue }) => isIssueHiddenByProjectVisibility(req, access, issue)),
+    );
+    res.json(links.filter((_, index) => !hidden[index]));
   });
 
   router.get("/cases/:caseId/outputs", async (req, res) => {

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 
 const mockRegistry = vi.hoisted(() => ({
@@ -28,6 +28,14 @@ vi.mock("../services/plugin-lifecycle.js", () => ({
 
 vi.mock("../services/issues.js", () => ({
   issueService: () => mockIssueService,
+}));
+
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(),
+}));
+
+vi.mock("../services/access.js", () => ({
+  accessService: () => mockAccessService,
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -473,5 +481,69 @@ describe.sequential("plugin scoped API routes", () => {
     expect(result.error.issues.map((issue) => issue.message).join("\n")).toContain(
       "path must stay inside the plugin api namespace",
     );
+  });
+});
+
+describe.sequential("plugin scoped API routes: project visibility (WIR-124)", () => {
+  const pluginId = "11111111-1111-4111-8111-111111111111";
+  const companyId = "22222222-2222-4222-8222-222222222222";
+  const hiddenIssueId = "55555555-5555-4555-8555-555555555555";
+  const randomIssueId = "99999999-9999-4999-8999-999999999999";
+  const apiRoutes = manifest([
+    {
+      routeKey: "issue.summary",
+      method: "GET",
+      path: "/issues/:issueId/summary",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "issue", param: "issueId" },
+    },
+  ]);
+  const plugin = { id: pluginId, pluginKey: apiRoutes.id, status: "ready", manifestJson: apiRoutes };
+
+  function boardActor(userId: string, membershipRole: string) {
+    return {
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole }],
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    mockIssueService.getById.mockImplementation(async (id: string) =>
+      id === hiddenIssueId
+        ? { id, companyId, projectId: "project-delivery", parentId: null, status: "todo", assigneeAgentId: null, assigneeUserId: null }
+        : null,
+    );
+    mockAccessService.decide.mockImplementation(async (input: { actor: { userId?: string }; action: string }) =>
+      input.actor.userId === "user-sales"
+        ? { allowed: false, action: input.action, reason: "deny_project_visibility", explanation: "hidden" }
+        : { allowed: true, action: input.action, reason: "allow_simple_company_member", explanation: "ok" },
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("answers a Delivery issue exactly like an unknown issue id for a Sales-only operator", async () => {
+    const { app, workerManager } = await createApp({ actor: boardActor("user-sales", "operator"), plugin });
+    const hidden = await request(app).get(`/api/plugins/${pluginId}/api/issues/${hiddenIssueId}/summary`);
+    const random = await request(app).get(`/api/plugins/${pluginId}/api/issues/${randomIssueId}/summary`);
+    expect(hidden.status).toBe(random.status);
+    expect(hidden.text).toBe(random.text);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("still dispatches for the owner", async () => {
+    const { app, workerManager } = await createApp({ actor: boardActor("user-owner", "owner"), plugin });
+    const res = await request(app).get(`/api/plugins/${pluginId}/api/issues/${hiddenIssueId}/summary`);
+    expect(res.status).toBe(200);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({ companyId }));
   });
 });

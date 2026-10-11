@@ -56,6 +56,7 @@ import {
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
+import { accessService } from "../services/access.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
 import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -72,6 +73,8 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
+  isIssueHiddenByProjectVisibility,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -541,6 +544,7 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const access = accessService(db);
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -630,7 +634,16 @@ export function pluginRoutes(
     const issueId = params[resolution.param ?? ""];
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);
-    return issue?.companyId ?? null;
+    // An issue the caller cannot see resolves exactly like an unknown id, so
+    // the response cannot confirm that it exists.
+    if (
+      !issue ||
+      !hasCompanyAccess(req, issue.companyId) ||
+      await isIssueHiddenByProjectVisibility(req, access, issue)
+    ) {
+      return null;
+    }
+    return issue.companyId;
   }
 
   function assertScopedApiAuth(req: Request, route: PluginApiRouteDeclaration) {

@@ -2,7 +2,12 @@ import type { Request, Response } from "express";
 import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+import {
+  responsibleUserAuthzShadowMode,
+  type AuthorizationActor,
+  type AuthorizationResource,
+} from "../services/authorization.js";
+import { projectAccessMode } from "../services/project-visibility.js";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -214,6 +219,98 @@ export async function getAccessibleResource<T extends { companyId: string }>(
 ): Promise<T | null> {
   const resolved = await resource;
   if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
+    res.status(404).json({ error: notFoundMessage });
+    return null;
+  }
+  assertCompanyAccess(req, resolved.companyId);
+  return resolved;
+}
+
+/**
+ * True when an authorization decision denied the read only because the
+ * resource sits in a project the actor cannot see. Routes must render that
+ * denial exactly like a missing resource: a 403 would confirm it exists.
+ */
+export function isProjectVisibilityDenial(
+  decision: { allowed: boolean; reason?: string | null } | null | undefined,
+): boolean {
+  return Boolean(decision && !decision.allowed && decision.reason === "deny_project_visibility");
+}
+
+type ProjectVisibilityDecider = {
+  decide(input: {
+    actor: AuthorizationActor;
+    action: "issue:read";
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<{ allowed: boolean; reason?: string | null }>;
+};
+
+type VisibilityCheckedIssue = {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  parentId?: string | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  status?: string | null;
+};
+
+/**
+ * Whether project visibility hides this issue from the caller. Only the
+ * visibility denial counts; every other read denial stays with the route's
+ * own checks. With `PAPERCLIP_PROJECT_ACCESS_MODE=off` this makes no query.
+ */
+export async function isIssueHiddenByProjectVisibility(
+  req: Request,
+  access: ProjectVisibilityDecider,
+  issue: VisibilityCheckedIssue,
+): Promise<boolean> {
+  if (projectAccessMode() === "off" || req.actor.type === "none") return false;
+  const decision = await access.decide({
+    actor: req.actor as AuthorizationActor,
+    action: "issue:read",
+    resource: {
+      type: "issue",
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId ?? null,
+      assigneeAgentId: issue.assigneeAgentId ?? null,
+      assigneeUserId: issue.assigneeUserId ?? null,
+      status: issue.status ?? null,
+    },
+    scope: {
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId ?? null,
+      assigneeAgentId: issue.assigneeAgentId ?? null,
+      assigneeUserId: issue.assigneeUserId ?? null,
+    },
+  });
+  return isProjectVisibilityDenial(decision);
+}
+
+/**
+ * `getAccessibleResource` for issues, plus project visibility: a missing,
+ * cross-tenant or project-hidden issue all get the same
+ * `404 { error: notFoundMessage }`. Pass the not-found message of the
+ * resource named in the URL (e.g. "Work product not found" when the issue is
+ * a work product's parent) so the body matches a random id byte for byte.
+ */
+export async function getVisibleIssue<T extends VisibilityCheckedIssue>(
+  req: Request,
+  res: Response,
+  access: ProjectVisibilityDecider,
+  issue: T | null | undefined | Promise<T | null | undefined>,
+  notFoundMessage: string,
+): Promise<T | null> {
+  const resolved = await issue;
+  if (
+    !resolved ||
+    !hasCompanyAccess(req, resolved.companyId) ||
+    await isIssueHiddenByProjectVisibility(req, access, resolved)
+  ) {
     res.status(404).json({ error: notFoundMessage });
     return null;
   }
