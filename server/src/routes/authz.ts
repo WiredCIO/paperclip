@@ -245,7 +245,7 @@ export function isProjectVisibilityDenial(
 type ProjectVisibilityDecider = {
   decide(input: {
     actor: AuthorizationActor;
-    action: "issue:read";
+    action: "issue:read" | "project:read";
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }): Promise<{ allowed: boolean; reason?: string | null }>;
@@ -342,6 +342,26 @@ export function issueVisibilityForRequest(
     }
     return visible;
   };
+}
+
+/**
+ * Whether project visibility hides `projectId` from the caller. Write routes
+ * use it to refuse creating an issue in, or moving one into, a project the
+ * actor cannot see. A null project is always visible; `off` makes no query.
+ */
+export async function isProjectHiddenByProjectVisibility(
+  req: Request,
+  access: ProjectVisibilityDecider,
+  companyId: string,
+  projectId: string | null | undefined,
+): Promise<boolean> {
+  if (!projectId || projectAccessMode() === "off" || req.actor.type === "none") return false;
+  const decision = await access.decide({
+    actor: req.actor as AuthorizationActor,
+    action: "project:read",
+    resource: { type: "project", companyId, projectId },
+  });
+  return isProjectVisibilityDenial(decision);
 }
 
 /**
