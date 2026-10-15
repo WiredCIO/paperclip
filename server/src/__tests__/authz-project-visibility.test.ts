@@ -341,6 +341,88 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
     }
   });
 
+  // WIR-1187 (T5c): an agent acting for a Sales-only user must not write to a
+  // Delivery issue, even when the route's issue resource omits the projectId.
+  describe("agent writes on behalf of a restricted responsible user", () => {
+    function agentActor(agentId: string, onBehalfOfUserId: string): AuthorizationActor {
+      return {
+        type: "agent",
+        agentId,
+        companyId: fixture.company.id,
+        source: "agent_jwt",
+        onBehalfOfUserId,
+      };
+    }
+
+    async function decideFor(
+      userId: string,
+      action: AuthorizationAction,
+      resource: AuthorizationResource,
+      scope?: Record<string, unknown>,
+    ) {
+      return authorizationService(db).decide({
+        actor: agentActor(fixture.unboundAgent.id, userId),
+        action,
+        resource,
+        scope,
+      });
+    }
+
+    const companyIssue = () => ({ type: "issue" as const, companyId: fixture.company.id });
+
+    beforeEach(async () => {
+      // The intersection only evaluates responsible users that exist.
+      for (const id of [fixture.salesOperatorId, fixture.ownerId]) {
+        await db.insert(authUsers).values({
+          id,
+          name: `User ${id}`,
+          email: `${id}@example.com`,
+          emailVerified: true,
+          image: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    });
+
+    it("denies issue writes to a Delivery issue under enforce, whatever the resource carries", async () => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+      for (const action of ["issue:mutate", "issue:comment"] as const) {
+        for (const [resource, scope] of [
+          [issueResource(fixture.deliveryIssue), undefined],
+          [{ ...companyIssue(), issueId: fixture.deliveryIssue.id }, undefined],
+          [companyIssue(), { issueId: fixture.deliveryIssue.id }],
+          [companyIssue(), { projectId: fixture.deliveryProject.id }],
+          [{ ...companyIssue(), parentIssueId: fixture.deliveryIssue.id }, undefined],
+        ] as Array<[AuthorizationResource, Record<string, unknown> | undefined]>) {
+          await expect(decideFor(fixture.salesOperatorId, action, resource, scope)).resolves.toMatchObject({
+            allowed: false,
+            reason: "deny_project_visibility",
+            code: "RESPONSIBLE_USER_UNAUTHORIZED",
+          });
+        }
+      }
+    });
+
+    it("allows Sales and unbound issues, and every issue for an owner, under enforce", async () => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+      for (const issue of [fixture.salesIssue, fixture.unboundIssue]) {
+        await expect(decideFor(fixture.salesOperatorId, "issue:mutate", { ...companyIssue(), issueId: issue.id }))
+          .resolves.toMatchObject({ allowed: true });
+      }
+      await expect(decideFor(fixture.ownerId, "issue:mutate", { ...companyIssue(), issueId: fixture.deliveryIssue.id }))
+        .resolves.toMatchObject({ allowed: true });
+    });
+
+    for (const mode of ["off", "shadow"] as const) {
+      it(`keeps the agent's allow in ${mode} mode`, async () => {
+        vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", mode);
+        await expect(decideFor(fixture.salesOperatorId, "issue:mutate", { ...companyIssue(), issueId: fixture.deliveryIssue.id }))
+          .resolves.toMatchObject({ allowed: true });
+      });
+    }
+  });
+
   describe("shadow and off modes", () => {
     it("shadow allows the would-be deny and logs it", async () => {
       vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "shadow");
