@@ -1589,7 +1589,12 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
 
       if (key === "body") {
         const conversationSource = await resolvePipelineCaseConversationSource(tx, companyId, caseId);
-        if (conversationSource?.isActive) {
+        // Skip a conversation issue hidden from the writer by project visibility:
+        // a restricted actor writes nothing into a project it cannot see (WIR-1038).
+        if (
+          conversationSource?.isActive
+          && !(await isIssueHiddenByProjectVisibility(req, access, conversationSource.issue))
+        ) {
           await tx.insert(issueDocuments).values({
             companyId,
             issueId: conversationSource.issue.id,
