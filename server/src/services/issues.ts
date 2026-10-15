@@ -178,6 +178,10 @@ import {
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import {
+  projectColumnPredicate,
+  type ProjectVisibilityResolution,
+} from "./project-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -1766,6 +1770,11 @@ export interface IssueFilters {
   includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
+  /**
+   * Projects the caller can see. Applied in SQL so pagination and counts are
+   * computed over visible issues only. Absent or unrestricted adds nothing.
+   */
+  projectVisibility?: ProjectVisibilityResolution;
   q?: string;
   limit?: number;
   offset?: number;
@@ -3251,6 +3260,14 @@ const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = [
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND =
   "harness_liveness_escalation";
 const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "cancelled"];
+
+function projectVisibilityIssueCondition(
+  resolution: ProjectVisibilityResolution | undefined,
+) {
+  if (!resolution || resolution.kind === "unrestricted") return null;
+  return projectColumnPredicate(resolution, issues.projectId);
+}
+
 function lowTrustBoundaryIssueCondition(
   companyId: string,
   boundary: (LowTrustBoundary & { companyId: string }) | null | undefined,
@@ -6159,6 +6176,10 @@ async function blockedInboxIssueConditions(
     filters?.lowTrustBoundary,
   );
   if (lowTrustCondition) conditions.push(lowTrustCondition);
+  const projectVisibilityCondition = projectVisibilityIssueCondition(
+    filters?.projectVisibility,
+  );
+  if (projectVisibilityCondition) conditions.push(projectVisibilityCondition);
   const statuses = parseStatusFilter(filters?.status);
   if (statuses.length > 0) {
     conditions.push(
@@ -7838,6 +7859,10 @@ export function issueService(db: Db) {
         filters?.lowTrustBoundary,
       );
       if (lowTrustCondition) conditions.push(lowTrustCondition);
+      const projectVisibilityCondition = projectVisibilityIssueCondition(
+        filters?.projectVisibility,
+      );
+      if (projectVisibilityCondition) conditions.push(projectVisibilityCondition);
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) {
         conditions.push(eq(issues.status, statuses[0]));
@@ -8114,6 +8139,10 @@ export function issueService(db: Db) {
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
       if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
+      const projectVisibilityCondition = projectVisibilityIssueCondition(
+        filters?.projectVisibility,
+      );
+      if (projectVisibilityCondition) conditions.push(projectVisibilityCondition);
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)
         conditions.push(eq(issues.status, statuses[0]!));

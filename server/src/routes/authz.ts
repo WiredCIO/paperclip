@@ -7,7 +7,12 @@ import {
   type AuthorizationActor,
   type AuthorizationResource,
 } from "../services/authorization.js";
-import { projectAccessMode } from "../services/project-visibility.js";
+import {
+  projectAccessMode,
+  resolveProjectVisibility,
+  type ProjectVisibilityResolution,
+} from "../services/project-visibility.js";
+import type { Db } from "@paperclipai/db";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -289,6 +294,31 @@ export async function isIssueHiddenByProjectVisibility(
     },
   });
   return isProjectVisibilityDenial(decision);
+}
+
+/**
+ * The project visibility a company-wide issue list must apply in SQL, or
+ * `undefined` when nothing narrows it. Mirrors who `decideProjectVisibility`
+ * gates: only board users, and never the local implicit board, instance
+ * admins or cloud tenant members. Only `enforce` narrows a list; `shadow`
+ * must not change what a list returns, and `off` makes no query.
+ */
+export async function issueListProjectVisibility(
+  req: Request,
+  db: Db,
+  companyId: string,
+): Promise<ProjectVisibilityResolution | undefined> {
+  if (projectAccessMode() !== "enforce") return undefined;
+  const actor = req.actor;
+  if (actor.type !== "board" || !actor.userId) return undefined;
+  if (actor.source === "local_implicit" || actor.source === "cloud_tenant") return undefined;
+  if (actor.isInstanceAdmin) return undefined;
+  const resolution = await resolveProjectVisibility(db, {
+    companyId,
+    principalType: "user",
+    principalId: actor.userId,
+  });
+  return resolution.kind === "unrestricted" ? undefined : resolution;
 }
 
 /**
