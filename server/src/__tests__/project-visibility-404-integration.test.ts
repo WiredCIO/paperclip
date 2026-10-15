@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +9,12 @@ import {
   companies,
   companyMemberships,
   createDb,
+  documentRevisions,
+  documents,
   instanceSettings,
+  issueDocuments,
   issues,
+  pipelineCaseDocuments,
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
   pipelineCases,
@@ -53,6 +58,10 @@ describeEmbeddedPostgres("project visibility 404 mapping against the real decide
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    await db.delete(issueDocuments);
+    await db.delete(pipelineCaseDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(pipelineCaseIssueLinks);
     await db.delete(pipelineCaseEvents);
     await db.delete(pipelineCases);
@@ -140,6 +149,84 @@ describeEmbeddedPostgres("project visibility 404 mapping against the real decide
       deliveryIssue: deliveryIssue!,
     };
   }
+
+  async function seedCase(companyId: string) {
+    // Pipeline setup needs pipeline-management rights; seed it as the local board.
+    const setup = request(app({ type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true } as Express.Request["actor"]));
+    const pipeline = await setup
+      .post(`/api/companies/${companyId}/pipelines`)
+      .send({
+        key: "visibility",
+        name: "Visibility",
+        stages: [
+          { key: "intake", name: "Intake", kind: "open", position: 100 },
+          { key: "done", name: "Done", kind: "done", position: 900 },
+          { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
+        ],
+      });
+    expect(pipeline.status, pipeline.text).toBe(201);
+    const ingested = await setup
+      .post(`/api/pipelines/${pipeline.body.id}/cases`)
+      .send({ caseKey: "case-1", title: "Case 1" })
+      .expect(201);
+    return { setup, caseId: ingested.body.case.id as string };
+  }
+
+  async function grantPipelineWrite(companyId: string, actor: Express.Request["actor"]) {
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "user",
+      principalId: (actor as { userId: string }).userId,
+      permissionKey: "pipelines:write",
+      scope: null,
+      grantedByUserId: null,
+    });
+  }
+
+  function bodyMirrorRows(issueId: string) {
+    return db.select().from(issueDocuments).where(eq(issueDocuments.issueId, issueId));
+  }
+
+  it("PUT /cases/:caseId/documents/body does not mirror into a conversation issue the writer cannot see", async () => {
+    const fixture = await seed();
+    const { setup, caseId } = await seedCase(fixture.companyId);
+    await setup
+      .post(`/api/cases/${caseId}/issue-links`)
+      .send({ issueId: fixture.deliveryIssue.id, role: "conversation" })
+      .expect(201);
+    await grantPipelineWrite(fixture.companyId, fixture.salesOperator);
+
+    const write = await request(app(fixture.salesOperator))
+      .put(`/api/cases/${caseId}/documents/body`)
+      .send({ format: "markdown", body: "Written by Sales" });
+    expect(write.status, write.text).toBeLessThan(300);
+    expect(await bodyMirrorRows(fixture.deliveryIssue.id)).toEqual([]);
+
+    // The owner can see the conversation issue, so their write still mirrors.
+    await grantPipelineWrite(fixture.companyId, fixture.owner);
+    const ownerWrite = await request(app(fixture.owner))
+      .put(`/api/cases/${caseId}/documents/body`)
+      .send({ format: "markdown", body: "Written by the owner", baseRevisionId: write.body.document.latestRevisionId });
+    expect(ownerWrite.status, ownerWrite.text).toBeLessThan(300);
+    expect(await bodyMirrorRows(fixture.deliveryIssue.id)).toHaveLength(1);
+  });
+
+  it("PUT /cases/:caseId/documents/body still mirrors for a Sales-only operator when visibility is off", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "off");
+    const fixture = await seed();
+    const { setup, caseId } = await seedCase(fixture.companyId);
+    await setup
+      .post(`/api/cases/${caseId}/issue-links`)
+      .send({ issueId: fixture.deliveryIssue.id, role: "conversation" })
+      .expect(201);
+    await grantPipelineWrite(fixture.companyId, fixture.salesOperator);
+
+    const write = await request(app(fixture.salesOperator))
+      .put(`/api/cases/${caseId}/documents/body`)
+      .send({ format: "markdown", body: "Written by Sales" });
+    expect(write.status, write.text).toBeLessThan(300);
+    expect(await bodyMirrorRows(fixture.deliveryIssue.id)).toHaveLength(1);
+  });
 
   it("GET /issues/:id/attachments returns the random-id 404 for a Delivery issue", async () => {
     const fixture = await seed();
