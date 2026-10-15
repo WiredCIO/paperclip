@@ -842,7 +842,7 @@ export function authorizationService(db: Db | DbTransaction) {
   }
 
   /**
-   * Project-visibility gate for board-user reads. Returns a deny decision
+   * Project-visibility gate for board-user reads and issue writes. Returns a deny decision
    * only in `enforce` mode; `shadow` logs the would-be deny and returns null
    * so the caller's existing allow stands; `off` never touches the database.
    */
@@ -884,7 +884,7 @@ export function authorizationService(db: Db | DbTransaction) {
         resourceType: input.resource.type,
         companyId: input.companyId,
         userId: input.userId,
-      }, "Project visibility would deny this read (shadow mode; allowed)");
+      }, "Project visibility would deny this action (shadow mode; allowed)");
       return null;
     }
     return deny({
@@ -1788,7 +1788,8 @@ export function authorizationService(db: Db | DbTransaction) {
       // replaced by company-scoped visibility: an active membership in the
       // resource company grants the same read surface a same-company agent
       // gets, and non-viewer members may mutate issues inside their company.
-      // Cross-company access stays denied.
+      // Cross-company access stays denied. Project visibility narrows this
+      // shortcut exactly as it narrows the session-user branch below.
       if (input.actor.source === "cloud_tenant" && input.actor.userId) {
         const membership = await getActiveMembership(companyId, "user", input.actor.userId);
         if (membership) {
@@ -1799,6 +1800,16 @@ export function authorizationService(db: Db | DbTransaction) {
             input.action === "issue:read" ||
             input.action === "project:read"
           ) {
+            if (input.action !== "decision_queue:read") {
+              const visibilityDeny = await decideProjectVisibility({
+                actor: input.actor,
+                action: input.action,
+                resource: input.resource,
+                companyId,
+                userId: input.actor.userId,
+              });
+              if (visibilityDeny) return visibilityDeny;
+            }
             return allow({
               action: input.action,
               reason: "allow_company_member",
@@ -1814,6 +1825,16 @@ export function authorizationService(db: Db | DbTransaction) {
             ) &&
             membership.membershipRole !== "viewer"
           ) {
+            if (input.action === "issue:comment" || input.action === "issue:mutate") {
+              const visibilityDeny = await decideProjectVisibility({
+                actor: input.actor,
+                action: input.action,
+                resource: input.resource,
+                companyId,
+                userId: input.actor.userId,
+              });
+              if (visibilityDeny) return visibilityDeny;
+            }
             return allow({
               action: input.action,
               reason: "allow_company_member",
@@ -1882,6 +1903,14 @@ export function authorizationService(db: Db | DbTransaction) {
           }
           const membership = await getActiveMembership(companyId, "user", input.actor.userId);
           if (membership && membership.membershipRole !== "viewer") {
+            const visibilityDeny = await decideProjectVisibility({
+              actor: input.actor,
+              action: input.action,
+              resource: input.resource,
+              companyId,
+              userId: input.actor.userId,
+            });
+            if (visibilityDeny) return visibilityDeny;
             return allow({
               action: input.action,
               reason: "allow_simple_company_member",
