@@ -444,7 +444,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
   // issue exactly like an id that does not exist.
   const ID = "55555555-5555-4555-8555-555555555555";
   const queue = { queueId: "queue-1", revision: "rev-1" };
-  const writeProbes: Array<{ name: string; probe: Probe }> = [
+  const subRouteWriteProbes: Array<{ name: string; probe: Probe }> = [
     ["POST", "runner-goal/actions", { requestId: "r-1", agentId: ID, expectedRevision: 0, action: "pause" }],
     ["PUT", "watchdog", { agentId: ID }],
     ["DELETE", "watchdog"],
@@ -510,14 +510,14 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     },
   }));
 
-  for (const { name, probe } of writeProbes) {
+  for (const { name, probe } of subRouteWriteProbes) {
     it(`${name}: Sales-only operator gets the random-id 404 byte for byte`, async () => {
       const app = await createApp("operator");
       await expectIndistinguishable(app, probe, HIDDEN_ISSUE_ID);
     });
   }
 
-  for (const { name, probe } of writeProbes) {
+  for (const { name, probe } of subRouteWriteProbes) {
     it(`${name}: owner is not turned away by project visibility`, async () => {
       const app = await createApp("owner");
       const hidden = await probe(app, HIDDEN_ISSUE_ID);
