@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -150,6 +150,22 @@ describeEmbeddedPostgres("project-access routes", () => {
 
       const deleteRes = await request(app).delete(`/api/project-categories/${categoryId}`);
       expect(deleteRes.status).toBe(200);
+
+      const [refreshedProject] = await db.select().from(projects).where(eq(projects.id, project.id));
+      expect(refreshedProject?.categoryId).toBeNull();
+    });
+
+    it("nulls category_id when a referenced category is deleted directly", async () => {
+      const company = await seedCompany("RawDelete");
+      const category = await db
+        .insert(projectCategories)
+        .values({ companyId: company.id, name: "Doomed" })
+        .returning()
+        .then((rows) => rows[0]!);
+      const project = await seedProject(company.id);
+      await db.update(projects).set({ categoryId: category.id }).where(eq(projects.id, project.id));
+
+      await db.execute(sql`DELETE FROM project_categories WHERE id = ${category.id}`);
 
       const [refreshedProject] = await db.select().from(projects).where(eq(projects.id, project.id));
       expect(refreshedProject?.categoryId).toBeNull();
