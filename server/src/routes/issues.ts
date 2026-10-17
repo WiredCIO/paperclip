@@ -12745,9 +12745,10 @@ export function issueRoutes(
     validateIssueMutationBody(updateIssueRouteSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -14941,9 +14942,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -17202,9 +17204,10 @@ export function issueRoutes(
     validate(addIssueCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
