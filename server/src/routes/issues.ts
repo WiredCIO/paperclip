@@ -230,6 +230,7 @@ import {
   getActorInfo,
   getVisibleIssue,
   isIssueHiddenByProjectVisibility,
+  issueListProjectVisibility,
   isProjectVisibilityDenial,
 } from "./authz.js";
 import { projectAccessMode } from "../services/project-visibility.js";
@@ -8121,7 +8122,10 @@ export function issueRoutes(
       allowTtlCache: compactView,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-        const rawResult = await svc.list(companyId, listFilters);
+        const rawResult = await svc.list(companyId, {
+          ...listFilters,
+          projectVisibility: await issueListProjectVisibility(req, db, companyId),
+        });
         const result = (await actorCanReadCompanyScope(req, companyId))
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
@@ -8319,6 +8323,7 @@ export function issueRoutes(
       includeBlockedInboxAttention: true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
+      projectVisibility: await issueListProjectVisibility(req, db, companyId),
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
