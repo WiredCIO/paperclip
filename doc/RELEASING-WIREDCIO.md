@@ -154,3 +154,14 @@ deploy that passes health but is wrong in some other way, revert the merge
 commit on `wiredcio/deploy` through the same PR path — there is no separate
 manual rollback command, because a revert PR going through the pipeline again
 is the tested path, and an ad hoc `git reset` on the VM outside of it is not.
+
+A failed image build (for example a full disk) does not touch the running
+container: the script resets the checkout to the previous commit and fails
+the job. A failed `docker compose up -d` takes the full rollback path.
+
+The script decides whether there is anything to deploy by comparing the new
+commit with the commit production is actually running, not with git `HEAD`.
+It reads that commit from `/api/health` (the script stamps every image with
+`PAPERCLIP_BUILD_COMMIT`), falling back to `.git/wiredcio-deployed-sha`, which
+it writes after every healthy deploy or rollback. Re-running a failed deploy
+job therefore really deploys instead of reporting "nothing to deploy".
