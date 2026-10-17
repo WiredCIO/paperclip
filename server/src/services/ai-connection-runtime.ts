@@ -20,6 +20,7 @@ import {
   hasRenewableClaudeOauthValue,
   parseClaudeOauthCredential,
   CLAUDE_USE_SOURCE,
+  copyClaudeUserAgentDefinitions,
 } from "@paperclipai/adapter-claude-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
@@ -286,6 +287,20 @@ export async function prepareManagedAiRuntime(
       GROK_HOME: providerHome,
       CLAUDE_CONFIG_DIR: providerHome,
     };
+    // The connection replaces the agent's own CLAUDE_CONFIG_DIR, which also
+    // holds its user-level subagents (`agents/*.md`). Carry those into the
+    // per-run home so the run, local or sandboxed, can still dispatch them.
+    const configuredClaudeConfigDir = configuredEnv.CLAUDE_CONFIG_DIR;
+    if (
+      input.binding.provider === "anthropic" &&
+      typeof configuredClaudeConfigDir === "string" &&
+      configuredClaudeConfigDir.trim().length > 0
+    )
+      // Best effort: a missing or unreadable dir must not fail the run.
+      await copyClaudeUserAgentDefinitions(
+        configuredClaudeConfigDir.trim(),
+        providerHome,
+      ).catch(() => undefined);
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
         selection.attribution.method

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -238,5 +238,33 @@ describe("hired agents sharing a subscription", () => {
       await heartbeat.drainActiveRunExecutions();
       unregisterServerAdapter(f.adapterType);
     }
+  });
+});
+
+describe("managed Claude runtime home", () => {
+  it("carries the agent's user-level subagents into the per-run Claude config dir", async () => {
+    const f = await fixture("anthropic", "subscription");
+    const seatDir = path.join(home, `seat-${f.agentId}`);
+    await mkdir(path.join(seatDir, "agents"), { recursive: true });
+    await writeFile(path.join(seatDir, "agents", "hostile-reviewer.md"), "# hostile-reviewer subagent");
+    await writeFile(path.join(seatDir, "agents", "notes.txt"), "not an agent");
+    await writeFile(path.join(seatDir, ".credentials.json"), JSON.stringify({ token: "seat-only" }));
+    const runtime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { env: { CLAUDE_CONFIG_DIR: seatDir } } });
+    try {
+      const runtimeConfigDir = String((runtime.config.env as Record<string, unknown>).CLAUDE_CONFIG_DIR);
+      expect(runtimeConfigDir).not.toBe(seatDir);
+      expect(await readdir(path.join(runtimeConfigDir, "agents"))).toEqual(["hostile-reviewer.md"]);
+      await expect(readFile(path.join(runtimeConfigDir, "agents", "hostile-reviewer.md"), "utf8")).resolves.toBe("# hostile-reviewer subagent");
+      await expect(readFile(path.join(runtimeConfigDir, ".credentials.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await runtime.cleanup(); }
+  });
+
+  it("still prepares the runtime when the configured Claude config dir is missing", async () => {
+    const f = await fixture("anthropic", "subscription");
+    const runtime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { env: { CLAUDE_CONFIG_DIR: path.join(home, "does-not-exist") } } });
+    try {
+      const runtimeConfigDir = String((runtime.config.env as Record<string, unknown>).CLAUDE_CONFIG_DIR);
+      await expect(readdir(path.join(runtimeConfigDir, "agents"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await runtime.cleanup(); }
   });
 });
