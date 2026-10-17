@@ -21,6 +21,9 @@ import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
+// User-level subagent definitions (`$CLAUDE_CONFIG_DIR/agents/*.md`). Without
+// them a remote sandbox run cannot dispatch a subagent the host config defines.
+const SEEDED_AGENTS_DIR = "agents";
 
 interface SeedFile {
   name: string;
@@ -74,7 +77,51 @@ async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
       : rawContents;
     files.push({ name, sourcePath, contents });
   }
+  files.push(...(await collectSeedAgentFiles(sourceDir)));
   return files;
+}
+
+/**
+ * Regular `*.md` files directly under `agents/`, sorted so the snapshot hash is
+ * stable. A symbolic link (the directory itself or an entry) is skipped, so the
+ * seed never pulls an arbitrary host file into the sandbox.
+ */
+async function collectSeedAgentFiles(sourceDir: string): Promise<SeedFile[]> {
+  const agentsDir = path.join(sourceDir, SEEDED_AGENTS_DIR);
+  const dirStat = await fs.lstat(agentsDir).catch(() => null);
+  if (!dirStat?.isDirectory()) return [];
+  const entries = await fs.readdir(agentsDir, { withFileTypes: true });
+  const files: SeedFile[] = [];
+  for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith(".md"))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    const sourcePath = path.join(agentsDir, entry.name);
+    files.push({
+      name: path.posix.join(SEEDED_AGENTS_DIR, entry.name),
+      sourcePath,
+      contents: await fs.readFile(sourcePath),
+    });
+  }
+  return files;
+}
+
+/**
+ * Copy the regular `agents/*.md` subagent definitions from one Claude config dir
+ * into another, with the same rules as the seed (no symbolic links, no nested
+ * dirs). A managed AI connection replaces the agent's `CLAUDE_CONFIG_DIR` with a
+ * fresh per-run home; this carries the agent's subagents into it. Returns the
+ * copied file names.
+ */
+export async function copyClaudeUserAgentDefinitions(
+  sourceDir: string,
+  targetDir: string,
+): Promise<string[]> {
+  const files = await collectSeedAgentFiles(sourceDir);
+  if (files.length === 0) return [];
+  await fs.mkdir(path.join(targetDir, SEEDED_AGENTS_DIR), { recursive: true });
+  for (const file of files) {
+    await fs.writeFile(path.join(targetDir, ...file.name.split("/")), file.contents);
+  }
+  return files.map((file) => file.name);
 }
 
 async function buildSeedSnapshotKey(files: SeedFile[]): Promise<string> {
@@ -103,7 +150,9 @@ async function materializeSeedSnapshot(input: {
   const stagingDir = await fs.mkdtemp(path.join(input.rootDir, ".tmp-"));
   try {
     for (const file of input.files) {
-      await fs.writeFile(path.join(stagingDir, file.name), file.contents);
+      const targetPath = path.join(stagingDir, ...file.name.split("/"));
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.writeFile(targetPath, file.contents);
     }
     try {
       await fs.rename(stagingDir, targetDir);

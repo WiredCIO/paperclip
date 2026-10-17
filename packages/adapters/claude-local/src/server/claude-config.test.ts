@@ -22,7 +22,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-import { prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import {
+  copyClaudeUserAgentDefinitions,
+  prepareClaudeConfigSeed,
+  prepareSandboxClaudeProbeRuntime,
+} from "./claude-config.js";
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];
@@ -127,6 +131,94 @@ describe("prepareClaudeConfigSeed", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.readFile(path.join(seedDir, "CLAUDE.md"), "utf8"))
       .resolves.toBe("local instructions");
+  });
+
+  it("seeds user-level subagents from agents/*.md and skips symbolic links", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-agents-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    const agentsDir = path.join(sourceDir, "agents");
+    await fs.mkdir(path.join(agentsDir, "nested"), { recursive: true });
+    await fs.writeFile(path.join(agentsDir, "hostile-reviewer.md"), "# hostile-reviewer subagent", "utf8");
+    await fs.writeFile(path.join(agentsDir, "notes.txt"), "not an agent", "utf8");
+    await fs.writeFile(path.join(agentsDir, "nested", "deep.md"), "nested", "utf8");
+    const outside = path.join(root, "outside-secret.md");
+    await fs.writeFile(outside, "host secret", "utf8");
+    let symlinkCreated = true;
+    await fs.symlink(outside, path.join(agentsDir, "linked.md")).catch(() => {
+      symlinkCreated = false;
+    });
+
+    const onLog = vi.fn(async () => {});
+    const seedDir = await prepareClaudeConfigSeed(createEnv(root, sourceDir), onLog, "company-1");
+
+    await expect(fs.readFile(path.join(seedDir, "agents", "hostile-reviewer.md"), "utf8"))
+      .resolves.toBe("# hostile-reviewer subagent");
+    expect((await fs.readdir(path.join(seedDir, "agents"))).sort()).toEqual(["hostile-reviewer.md"]);
+    if (symlinkCreated) {
+      await expect(fs.access(path.join(seedDir, "agents", "linked.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(onLog).toHaveBeenCalledWith("stdout", expect.stringContaining("agents/hostile-reviewer.md"));
+  });
+
+  it("skips an agents directory that is itself a symbolic link", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-agents-link-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    const realAgents = path.join(root, "elsewhere");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.mkdir(realAgents, { recursive: true });
+    await fs.writeFile(path.join(realAgents, "reviewer.md"), "reviewer", "utf8");
+    await fs.writeFile(path.join(sourceDir, "CLAUDE.md"), "guidance", "utf8");
+    try {
+      await fs.symlink(realAgents, path.join(sourceDir, "agents"), "junction");
+    } catch {
+      return; // The platform refused to create the link; nothing to assert.
+    }
+
+    const seedDir = await prepareClaudeConfigSeed(createEnv(root, sourceDir), vi.fn(async () => {}), "company-1");
+
+    await expect(fs.access(path.join(seedDir, "agents")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(seedDir, "CLAUDE.md"), "utf8")).resolves.toBe("guidance");
+  });
+
+  it("produces a new snapshot when a subagent definition changes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-agents-hash-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(path.join(sourceDir, "agents"), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "CLAUDE.md"), "guidance", "utf8");
+    const env = createEnv(root, sourceDir);
+    const onLog = vi.fn(async () => {});
+
+    const withoutAgents = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    await fs.writeFile(path.join(sourceDir, "agents", "reviewer.md"), "v1", "utf8");
+    const first = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    await fs.writeFile(path.join(sourceDir, "agents", "reviewer.md"), "v2", "utf8");
+    const second = await prepareClaudeConfigSeed(env, onLog, "company-1");
+
+    expect(first).not.toBe(withoutAgents);
+    expect(second).not.toBe(first);
+    await expect(fs.readFile(path.join(first, "agents", "reviewer.md"), "utf8")).resolves.toBe("v1");
+    await expect(fs.readFile(path.join(second, "agents", "reviewer.md"), "utf8")).resolves.toBe("v2");
+  });
+
+  it("copies only regular agents/*.md into a managed connection home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-agents-copy-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "seat");
+    const targetDir = path.join(root, "provider");
+    await fs.mkdir(path.join(sourceDir, "agents"), { recursive: true });
+    await fs.mkdir(targetDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "agents", "deep-analyst.md"), "analyst", "utf8");
+    await fs.writeFile(path.join(sourceDir, ".credentials.json"), "{}", "utf8");
+
+    await expect(copyClaudeUserAgentDefinitions(sourceDir, targetDir)).resolves.toEqual(["agents/deep-analyst.md"]);
+    await expect(fs.readFile(path.join(targetDir, "agents", "deep-analyst.md"), "utf8")).resolves.toBe("analyst");
+    expect(await fs.readdir(targetDir)).toEqual(["agents"]);
+    await expect(copyClaudeUserAgentDefinitions(path.join(root, "missing"), targetDir)).resolves.toEqual([]);
   });
 });
 

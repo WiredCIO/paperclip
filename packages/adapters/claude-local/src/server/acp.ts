@@ -192,7 +192,7 @@ export function resolveClaudeAcpBillingIdentity(
 /**
  * Claude remote managed-home seed for the runner-backed remote sandbox ACP lane.
  * Mirrors the Claude CLI lane (`claude-local/execute.ts`): ship a sanitized
- * config seed (settings.json + CLAUDE.md, no credentials) as the `config-seed`
+ * config seed (settings.json, CLAUDE.md and agents/*.md, no credentials) as the `config-seed`
  * asset, materialize it into an in-sandbox config dir (copying the sandbox's own
  * `$HOME/.claude` credentials in), then repoint `CLAUDE_CONFIG_DIR` onto that
  * in-sandbox config dir. Claude has no credential copy-back (its CLI lane has
