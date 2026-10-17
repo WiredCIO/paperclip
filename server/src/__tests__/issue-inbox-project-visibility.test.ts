@@ -228,27 +228,47 @@ describeEmbeddedPostgres("inbox lists and counts under project visibility", () =
     });
   });
 
-  describe("owner", () => {
-    it("gets inbox lists and counts identical to baseline", async () => {
-      const svc = issueService(db);
-      const projectVisibility = await issueListProjectVisibility(boardRequest(fixture.ownerId), db, fixture.company.id);
+  describe("unrestricted actors", () => {
+    // The owner and every actor in off mode resolve to no visibility at all,
+    // so they must see every bucket, Delivery included, in each inbox shape.
+    async function expectUnnarrowedInbox(projectVisibility: Awaited<ReturnType<typeof issueListProjectVisibility>>) {
       expect(projectVisibility).toBeUndefined();
+      const svc = issueService(db);
       const userId = fixture.salesOperatorId;
+      const allTouchedIds = ids(fixture.touched);
 
       for (const filters of [
         { touchedByUserId: userId },
         { touchedByUserId: userId, inboxArchivedByUserId: userId },
         { unreadForUserId: userId },
-        { attention: "blocked" as const },
       ]) {
-        const baseline = await svc.list(fixture.company.id, filters);
-        const withVisibility = await svc.list(fixture.company.id, { ...filters, projectVisibility });
-        expect(JSON.stringify(withVisibility)).toBe(JSON.stringify(baseline));
+        expect(ids(await svc.list(fixture.company.id, { ...filters, projectVisibility }))).toEqual(allTouchedIds);
       }
+      expect(ids(await svc.list(fixture.company.id, { attention: "blocked", projectVisibility })))
+        .toEqual(ids(fixture.blockedSources));
       await expect(svc.countUnreadTouchedByUser(fixture.company.id, userId, undefined, projectVisibility))
         .resolves.toBe(PER_BUCKET * BUCKETS.length);
       await expect(svc.count(fixture.company.id, { attention: "blocked", projectVisibility }))
         .resolves.toBe(BUCKETS.length);
+    }
+
+    it("gives an owner every inbox issue, Delivery included", async () => {
+      await expectUnnarrowedInbox(
+        await issueListProjectVisibility(boardRequest(fixture.ownerId), db, fixture.company.id),
+      );
+    });
+
+    it("makes no query and narrows nothing for the Sales operator in off mode", async () => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "off");
+      const failingDb = new Proxy({}, {
+        get() {
+          throw new Error("unexpected database access");
+        },
+      }) as unknown as Db;
+
+      await expectUnnarrowedInbox(
+        await issueListProjectVisibility(boardRequest(fixture.salesOperatorId), failingDb, fixture.company.id),
+      );
     });
   });
 });
