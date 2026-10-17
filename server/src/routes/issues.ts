@@ -233,7 +233,10 @@ import {
   issueListProjectVisibility,
   isProjectVisibilityDenial,
 } from "./authz.js";
-import { projectAccessMode } from "../services/project-visibility.js";
+import {
+  projectAccessMode,
+  type ProjectVisibilityResolution,
+} from "../services/project-visibility.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -469,10 +472,12 @@ type CompanySearchService = {
   extract(
     companyId: string,
     query: CompanySearchExtractQuery,
+    options?: { projectVisibility?: ProjectVisibilityResolution },
   ): Promise<CompanySearchExtractResponse>;
   search(
     companyId: string,
     query: CompanySearchQuery,
+    options?: { projectVisibility?: ProjectVisibilityResolution },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -7823,6 +7828,7 @@ export function issueRoutes(
     const result = await getSearchService().extract(
       companyId,
       parsedQuery.data,
+      { projectVisibility: await issueListProjectVisibility(req, db, companyId) },
     );
     res.json(result);
   });
@@ -7871,7 +7877,9 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const result = await getSearchService().search(companyId, query, {
+      projectVisibility: await issueListProjectVisibility(req, db, companyId),
+    });
     res.json(result);
   });
 
