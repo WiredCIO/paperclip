@@ -11,7 +11,7 @@ export const projects = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     goalId: uuid("goal_id").references(() => goals.id),
-    categoryId: uuid("category_id").references(() => projectCategories.id),
+    categoryId: uuid("category_id").references(() => projectCategories.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
