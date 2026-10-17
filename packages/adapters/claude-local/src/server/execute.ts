@@ -995,6 +995,7 @@ ${runtimeToolsSection.trim()}`
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
       localProcessUid: process.getuid?.() ?? null,
+      mcpServerNames: Object.keys(buildPaperclipClaudeMcpServerEntries(runtimeMcpServers)),
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier

@@ -44,10 +44,15 @@ export function buildClaudeExecutionPermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsRemote: boolean;
   localProcessUid?: number | null;
+  // Keys of the run's `--mcp-config` servers. The allowlist names only
+  // built-in tools, so without an `mcp__<server>` entry per server every
+  // connected tool is listed to the model and then refused at call time.
+  mcpServerNames?: string[];
 }): string[] {
   if (!input.dangerouslySkipPermissions) return [];
   if (shouldUseAllowedTools(input)) {
-    return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
+    const mcpEntries = (input.mcpServerNames ?? []).map((name) => `mcp__${name}`);
+    return ["--allowedTools", [SANDBOX_ALLOWED_TOOLS, ...mcpEntries].join(" ")];
   }
   return ["--dangerously-skip-permissions"];
 }

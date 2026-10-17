@@ -32,6 +32,19 @@ describe("claude-local remote permission args", () => {
     expect(allowedTools).not.toContain("Bash(*)");
   });
 
+  it("allows every tool of each runtime MCP server, or connected tools are listed but refused", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: true,
+        mcpServerNames: ["paperclip-supabase-0ad0f4e4", "paperclip-supabase-efefe975"],
+      }),
+    ).toEqual([
+      "--allowedTools",
+      `${SANDBOX_ALLOWED_TOOLS} mcp__paperclip-supabase-0ad0f4e4 mcp__paperclip-supabase-efefe975`,
+    ]);
+  });
+
   it("does not pass permission flags when skip-permissions is disabled", () => {
     expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
     expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
