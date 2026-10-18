@@ -8,6 +8,19 @@ import type { AgentEnvConfig } from "./secrets.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
+export type ProjectVisibility = "open" | "private";
+export type ProjectAccessSubjectType = "user" | "agent";
+
+export interface ProjectAccessMember {
+  id: string;
+  companyId: string;
+  projectId: string;
+  subjectType: ProjectAccessSubjectType;
+  subjectId: string;
+  subjectDisplayName: string | null;
+  subjectAvatarUrl: string | null;
+  createdAt: Date;
+}
 
 export type ProjectBindingTargetType = "agent" | "tool_connection" | "skill" | "document";
 
@@ -105,6 +118,19 @@ export interface ProjectManagedByPlugin {
   updatedAt: Date;
 }
 
+export interface ProjectDiscoverySummary {
+  id: string;
+  name: string;
+  status: string;
+  description: string | null;
+  descriptionTruncated: boolean;
+}
+
+export interface ProjectDiscoveryPage {
+  projects: ProjectDiscoverySummary[];
+  nextCursor: string | null;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -115,6 +141,12 @@ export interface Project {
   goals: ProjectGoalRef[];
   name: string;
   description: string | null;
+  /** Omitted by older servers/fixtures; clients must treat omission as open. */
+  visibility?: ProjectVisibility;
+  /** Present only for the lazily-created per-user "My private tasks" project. */
+  personalOwnerUserId?: string | null;
+  /** Only this user and administrators may change the project audience. */
+  privacyOwnerUserId?: string | null;
   status: ProjectStatus;
   categoryId: string | null;
   leadAgentId: string | null;
@@ -148,12 +180,16 @@ export interface Project {
 export interface ProjectRepository {
   id: string;
   fullName: string;
+  /** Provider-confirmed ownership; absent on older repository observations. */
+  ownerType?: "personal" | "organization";
   url: string;
   private?: boolean;
   connections: string[];
+  connectionIds?: string[];
 }
 
 export interface ProjectRepositoryOptions {
+  connections?: Array<{ id: string; name: string }>;
   repositories: ProjectRepository[];
   connectionCount: number;
   failedConnectionCount: number;

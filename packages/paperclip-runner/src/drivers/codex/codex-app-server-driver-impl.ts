@@ -1,3 +1,4 @@
+import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
@@ -17,7 +18,7 @@ import type {
   PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
-import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
@@ -144,6 +145,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       usage: true,
       reconciliation: true,
       dynamicTools: true,
+      toolRefreshOnResume: true,
       runtimeRequestResolution: true,
       goals: true,
       threadLineage: true,
@@ -167,6 +169,10 @@ export class CodexAppServerDriver implements HarnessDriver {
 
   #direct(): boolean {
     return this.#options.conversationMode === "direct";
+  }
+
+  #prepared(): boolean {
+    return this.#options.conversationMode === "prepared";
   }
 
   #providerDynamicTools(): readonly Readonly<Record<string, unknown>>[] {
@@ -193,6 +199,14 @@ export class CodexAppServerDriver implements HarnessDriver {
 
   #baseInstructions(): string {
     return this.#options.baseInstructions ?? CODEX_SKILLLESS_BASE_INSTRUCTIONS;
+  }
+
+  #instructionParams(instructions = this.#baseInstructions()): Record<string, string> {
+    // baseInstructions replaces Codex's stock prompt. Other providers use this
+    // driver as a protocol facade and retain their existing instruction field.
+    return (this.#options.driverIdentity?.kind ?? DRIVER_KIND) === DRIVER_KIND
+      ? { developerInstructions: instructions }
+      : { baseInstructions: instructions };
   }
 
   async descriptor(): Promise<HarnessDriverDescriptor> {
@@ -236,6 +250,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         reconciliation: this.#caps.reconciliation,
         usage: this.#caps.usage,
         dynamicTools: this.#caps.dynamicTools,
+        toolRefreshOnResume: this.#caps.resume && this.#caps.dynamicTools && this.#caps.toolRefreshOnResume,
         runtimeRequestResolution: this.#caps.runtimeRequestResolution,
         runtimeRequestHandoff: this.#caps.runtimeRequestResolution,
         goals: this.#caps.goals,
@@ -271,12 +286,12 @@ export class CodexAppServerDriver implements HarnessDriver {
             this.#options.includeSkillInstructions ?? false,
             this.#options.environment,
           ),
-          approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
+          approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           ...(this.#direct()
             ? {}
             : {
-                baseInstructions: this.#baseInstructions(),
+                ...this.#instructionParams(),
                 completionContract: {
                   revision:
                     this.#options.taskEnvelope.completionContract.revision,
@@ -287,6 +302,7 @@ export class CodexAppServerDriver implements HarnessDriver {
                 },
               }),
           dynamicTools: this.#providerDynamicTools(),
+          ...(this.#prepared() ? { conversationMode: "prepared" } : {}),
           experimentalRawEvents: false,
           persistExtendedHistory: false,
         }),
@@ -403,10 +419,11 @@ export class CodexAppServerDriver implements HarnessDriver {
             this.#options.includeSkillInstructions ?? false,
             this.#options.environment,
           ),
-          baseInstructions: this.#direct() ? "" : this.#baseInstructions(),
-          approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
+          ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
+          approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           dynamicTools: this.#providerDynamicTools(),
+          ...(this.#prepared() ? { conversationMode: "prepared" } : {}),
           persistExtendedHistory: false,
         }),
       );
@@ -512,6 +529,12 @@ export class CodexAppServerDriver implements HarnessDriver {
         turns.forEach((turn, index) => {
           if (terminalIds.has(text(turn.id))) lastKnownTerminalIndex = index;
         });
+        if (nativeRestartInterruptedTurnId({
+          ...snapshot, semanticResult: null,
+        }) && (!providerHistoryIsArray || lastKnownTerminalIndex < 0)) {
+          await cancellation.wait(cancellation.close());
+          return { recovered: false, reason: "restart interruption history is incomplete" };
+        }
         // Releasing a consumed marker requires both an actual history array
         // and a checkpointed terminal that anchors its ordering. An array that
         // omits every durable terminal may be truncated or inconsistent, so
@@ -601,6 +624,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         resumed: true,
         activeTurnId: recoveredActiveTurnId,
         semanticResult: snapshot.semanticResult ?? null,
+        normalizeReplayPayload: options.normalizeReplayPayload,
         terminalTurns: snapshot.terminalTurns ?? [],
         codexUsageBaseline: snapshot.codexUsageBaseline,
         dispositionOnlyRecoveryConsumed,
@@ -647,14 +671,14 @@ export class CodexAppServerDriver implements HarnessDriver {
     >;
   }): CodexAppServerTransport {
     const workingDirectory = context?.workingDirectory ?? this.#options.environment?.PAPERCLIP_WORKSPACE_CWD;
-    if (!this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
+    if (!usesPreconfiguredHome(this.#options.environment) && !this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
       trustCodexStartupRoot(this.#options.environment.CODEX_HOME, workingDirectory);
     }
     return (
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
         workingDirectory,
-        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env)),
+        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
         onDiagnostic: this.#options.onDiagnostic,
         processGroup: true,
@@ -851,7 +875,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         approvalPolicy: boundedCodexValue(
           response.approvalPolicy ??
             this.#options.approvalPolicy ??
-            "untrusted",
+            "never",
         ),
         baseInstructions: this.#baseInstructions(),
         instructionSources: Array.isArray(response.instructionSources)
@@ -874,7 +898,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         ),
         modelInputKinds: ["text"],
         liveConsole: {
-          conversationMode: this.#direct() ? "direct" : "task",
+          conversationMode: this.#prepared()
+            ? "prepared"
+            : this.#direct()
+              ? "direct"
+              : "task",
           runtimeRequestResolution: this.#caps.runtimeRequestResolution,
           goals: this.#caps.goals,
           threadLineage: this.#caps.threadLineage,
@@ -897,6 +925,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
+    normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
     terminalTurns?: PersistedHarnessTurnTerminal[];
     codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
     dispositionOnlyRecoveryConsumed?: boolean;
@@ -908,13 +937,19 @@ export class CodexAppServerDriver implements HarnessDriver {
     return new CodexHarnessSession({
       ...input,
       taskEnvelope: this.#options.taskEnvelope,
-      conversationMode: this.#direct() ? "direct" : "task",
+      conversationMode: this.#prepared()
+        ? "prepared"
+        : this.#direct()
+          ? "direct"
+          : "task",
       now: this.#options.now ?? (() => new Date()),
       runnerInstanceId: this.#options.runnerInstanceId ?? "runner-codex",
       driverKind: this.#options.driverIdentity?.kind ?? DRIVER_KIND,
       capabilities: this.#caps,
       goalCapability: this.#goalCapability,
       dynamicTools: this.#providerDynamicTools(),
+      skillInputs: this.#options.skillInputs,
+      reasoningEffort: this.#options.reasoningEffort,
       dynamicToolHandler: this.#options.dynamicToolHandler,
       completionFeedback: this.#options.completionFeedback,
     });

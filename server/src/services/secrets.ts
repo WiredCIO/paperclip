@@ -338,7 +338,6 @@ function remoteProviderHttpError(error: unknown, context: {
   if (isSecretProviderClientError(error)) {
     logger.warn(
       {
-        err: error,
         companyId: context.companyId,
         provider: context.provider,
         providerConfigId: context.providerConfigId,
@@ -352,7 +351,6 @@ function remoteProviderHttpError(error: unknown, context: {
   if (error instanceof HttpError) return error;
   logger.warn(
     {
-      err: error,
       companyId: context.companyId,
       provider: context.provider,
       providerConfigId: context.providerConfigId,
@@ -634,7 +632,7 @@ type SecretConsumerContext = {
   responsibleUserId?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
-  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;
@@ -649,6 +647,7 @@ type SecretResolutionOptions = {
   bindingContext?: SecretBindingContext;
   accessContext?: SecretConsumerContext;
   allowUserSecretScope?: boolean;
+  instanceOwner?: { agentId: string; pluginId: string };
 };
 
 export type AgentSecretReadContext = {
@@ -1361,7 +1360,9 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
-    if (secret.scope !== "company" && !options?.allowUserSecretScope) {
+    const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
+      secret.ownerAgentId === options.instanceOwner.agentId && secret.ownerPluginId === options.instanceOwner.pluginId;
+    if (secret.scope !== "company" && !(secret.scope === "user" && options?.allowUserSecretScope) && !instanceOwned) {
       throw unprocessable("User-scoped secrets must be resolved through user secret declarations", {
         code: "secret_scope_invalid",
       });
@@ -1502,9 +1503,11 @@ export function secretService(db: Db | DbTransaction) {
               ? "local_implicit" as const
               : context.actorSource === "board_key"
                 ? "board_key" as const
-                : context.actorSource === "cloud_tenant"
-                  ? "cloud_tenant" as const
-                  : "session" as const,
+                : context.actorSource === "mcp_oauth"
+                  ? "mcp_oauth" as const
+                  : context.actorSource === "cloud_tenant"
+                    ? "cloud_tenant" as const
+                    : "session" as const,
           };
     const decision = await authorization.decide({
       actor,
@@ -2184,12 +2187,13 @@ export function secretService(db: Db | DbTransaction) {
       providerMetadata?: Record<string, unknown> | null;
     },
     actor?: { userId?: string | null; agentId?: string | null },
+    instanceOwner?: { agentId: string; pluginId: string },
   ) {
-    const existing = await getByName(companyId, input.name);
+    const existing = instanceOwner ? null : await getByName(companyId, input.name);
     if (existing) throw conflict(`Secret already exists: ${input.name}`);
     const key = normalizeSecretKey(input.key ?? input.name);
     if (!key) throw unprocessable("Secret key is required");
-    const duplicateKey = await db
+    const duplicateKey = instanceOwner ? null : await db
       .select()
       .from(companySecrets)
       .where(and(
@@ -2227,6 +2231,9 @@ export function secretService(db: Db | DbTransaction) {
       .insert(companySecrets)
       .values({
         companyId,
+        scope: instanceOwner ? "instance" : "company",
+        ownerAgentId: instanceOwner?.agentId ?? null,
+        ownerPluginId: instanceOwner?.pluginId ?? null,
         key,
         name: input.name,
         provider: input.provider,
@@ -2397,6 +2404,8 @@ export function secretService(db: Db | DbTransaction) {
       // update matches the latest version, so a concurrent rotation between the
       // read and the write cannot pass. A mismatch throws a 409 conflict.
       expectedLatestVersion?: number;
+      /** Internal authenticated refresh write-back only; never accepted by HTTP schemas. */
+      preserveAiSessionEpoch?: boolean;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2522,26 +2531,19 @@ export function secretService(db: Db | DbTransaction) {
     }
 
     try {
+      // Lock and update the parent secret row before touching its version
+      // rows. A credential write-back locks the parent secret row first, then
+      // calls this function. If this transaction updated the version rows
+      // first instead, the two transactions would take their two row locks
+      // in opposite order and could deadlock. Matching the order here removes
+      // that risk: every caller now locks the parent row before the version
+      // rows, so a lock cycle between the two tables cannot form.
       return await db.transaction(async (tx) => {
-        await tx
-          .update(companySecretVersions)
-          .set({ status: "previous" })
-          .where(and(
-            eq(companySecretVersions.secretId, secret.id),
-            ne(companySecretVersions.version, nextVersion),
-          ));
-        await tx
-          .update(companySecretVersions)
-          .set({ status: "current" })
-          .where(and(
-            eq(companySecretVersions.secretId, secret.id),
-            eq(companySecretVersions.version, nextVersion),
-          ));
-
         const updated = await tx
           .update(companySecrets)
           .set({
             latestVersion: nextVersion,
+            aiSessionEpoch: input.preserveAiSessionEpoch ? secret.aiSessionEpoch : sql`${companySecrets.aiSessionEpoch} + 1`,
             externalRef: prepared.externalRef,
             providerConfigId,
             lastRotatedAt: new Date(),
@@ -2561,11 +2563,28 @@ export function secretService(db: Db | DbTransaction) {
         if (!updated) {
           // The predicate matched no row. A supplied expected version means a
           // concurrent rotation won the race; return the stale conflict. An
-          // unguarded rotation means the secret is gone.
+          // unguarded rotation means the secret is gone. Neither version row
+          // has been touched yet, so there is nothing to undo here.
           throw input.expectedLatestVersion === undefined
             ? notFound("Secret not found")
             : conflict(SECRET_VERSION_STALE_CONFLICT);
         }
+
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "previous" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            ne(companySecretVersions.version, nextVersion),
+          ));
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "current" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            eq(companySecretVersions.version, nextVersion),
+          ));
+
         return updated;
       });
     } catch (error) {
@@ -2876,7 +2895,7 @@ export function secretService(db: Db | DbTransaction) {
         status: companySecrets.status,
       })
       .from(companySecrets)
-      .where(and(eq(companySecrets.companyId, companyId), ne(companySecrets.status, "deleted")));
+      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), ne(companySecrets.status, "deleted")));
     return {
       byProviderConfigExternalRef: new Map(
         activeSecrets
@@ -3453,6 +3472,56 @@ export function secretService(db: Db | DbTransaction) {
 
   return {
     listProviders: () => listSecretProviders(),
+
+    async hasInstanceAccountHomeClaim(companyId: string, accountHomeDir: string): Promise<boolean> {
+      try {
+        const rows = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "instance"), ne(companySecrets.status, "deleted")));
+        for (const row of rows) {
+          if (!row.ownerAgentId || !row.ownerPluginId) return true;
+          const resolved = await resolveSecretValueInternal(companyId, row.id, "latest", {
+            instanceOwner: { agentId: row.ownerAgentId, pluginId: row.ownerPluginId },
+            accessContext: { consumerType: "system", consumerId: DEVICE_LOGIN_SECRET_CHECK_CONSUMER_ID,
+              actorType: "system", actorId: null },
+          });
+          if (resolved.value === accountHomeDir) return true;
+        }
+        return false;
+      } catch { return true; }
+    },
+
+    agentInstance: {
+      async read(scope: { companyId: string; agentId: string; pluginId: string }): Promise<Record<string, string>> {
+        const rows = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, scope.companyId),
+          eq(companySecrets.scope, "instance"), eq(companySecrets.ownerAgentId, scope.agentId),
+          eq(companySecrets.ownerPluginId, scope.pluginId), ne(companySecrets.status, "deleted")));
+        const values: Record<string, string> = Object.create(null);
+        for (const row of rows) {
+          const resolved = await resolveSecretValueInternal(scope.companyId, row.id, "latest", {
+            instanceOwner: scope, accessContext: { consumerType: "plugin_worker", consumerId: scope.pluginId,
+              actorType: "plugin", actorId: scope.pluginId, pluginId: scope.pluginId },
+          });
+          values[row.name] = resolved.value;
+        }
+        return values;
+      },
+      async set(scope: { companyId: string; agentId: string; pluginId: string }, key: string, value: string | null) {
+        return withAccountHomeSecretMutationLock(undefined, scope.companyId, async () => {
+          if (value) await assertAccountHomeCacheDirStillValid(undefined, scope.companyId, value);
+          const normalizedKey = normalizeSecretKey(key);
+          const [existing] = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, scope.companyId),
+            eq(companySecrets.scope, "instance"), eq(companySecrets.ownerAgentId, scope.agentId),
+            eq(companySecrets.ownerPluginId, scope.pluginId), eq(companySecrets.key, normalizedKey), ne(companySecrets.status, "deleted")));
+          if (value === null) {
+            if (existing) await removeSecretUnlocked(existing.id);
+          } else if (existing) {
+            await rotateUnlocked(existing.id, { value, expectedLatestVersion: existing.latestVersion });
+          } else {
+            await createSecretUnlocked(scope.companyId, { name: key, key, provider: "local_encrypted", value }, undefined, scope);
+          }
+        });
+      },
+    },
 
     checkProviders: () => checkSecretProviders(),
 
@@ -4580,6 +4649,8 @@ export function secretService(db: Db | DbTransaction) {
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
         expectedLatestVersion?: number;
+      /** Internal authenticated refresh write-back only; never accepted by HTTP schemas. */
+      preserveAiSessionEpoch?: boolean;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {

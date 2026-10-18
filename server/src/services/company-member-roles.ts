@@ -55,6 +55,7 @@ export function grantsForHumanRole(
         { permissionKey: "tools:admin", scope: null },
       ];
     case "operator":
+<<<<<<< ours
       // `agents:configure` lets an operator attach their own AI connection to
       // an agent. Without it `assertAiConnectionCreateAccess` rejects the save
       // with "You cannot configure this agent", so an operator can reach the
@@ -63,6 +64,25 @@ export function grantsForHumanRole(
         { permissionKey: "tasks:assign", scope: null },
         { permissionKey: "agents:configure", scope: null },
         { permissionKey: "tools:manage_connections", scope: null },
+||||||| base
+      return [{ permissionKey: "tasks:assign", scope: null }];
+=======
+      return [
+        { permissionKey: "agents:create", scope: null },
+        { permissionKey: "agents:configure", scope: null },
+        { permissionKey: "skills:create", scope: null },
+        { permissionKey: "environments:manage", scope: null },
+        { permissionKey: "users:invite", scope: null },
+        { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "pipelines:write", scope: null },
+        { permissionKey: "tools:manage_connections", scope: null },
+        { permissionKey: "tools:manage_profiles", scope: null },
+        { permissionKey: "tools:manage_runtime", scope: null },
+        { permissionKey: "tools:use", scope: null },
+        { permissionKey: "tools:admin", scope: null },
+        { permissionKey: "tools:view_audit", scope: null },
+        { permissionKey: "audit:view_agent_actions", scope: null },
+>>>>>>> theirs
       ];
     case "viewer":
       return [];

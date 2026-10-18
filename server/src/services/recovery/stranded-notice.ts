@@ -47,6 +47,14 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
+const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
+  workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
+  workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
+  workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
+  workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
+  workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Inspect why workspace preparation was cancelled before retrying the task." },
+};
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
@@ -105,6 +113,38 @@ export function sandboxProviderPluginRemedy(pluginStatus: string): string {
 export function buildConfigurationIncompleteRecoveryNoticeSeed(
   configurationIncomplete?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_base_ref_unresolved") {
+    return {
+      title: "Workspace base ref unavailable",
+      body: "Paperclip stopped before the agent started because the configured workspace base ref could not be resolved to a Git commit. The task is blocked until its workspace configuration or repository access is repaired.",
+      nextAction: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "shared_realization_unsupported") {
+    if (configurationIncomplete?.holderStale === true) {
+      return {
+        title: "Shared workspace still held",
+        body: "Paperclip stopped before the agent started because another run still holds this task's shared workspace but has produced no output for more than an hour, and this execution environment cannot place concurrent agents in one physical shared folder.",
+        nextAction: "Check whether the other run is still working and stop it if it is stuck, or select an isolated task workspace, then retry the task.",
+        tone: "danger",
+      };
+    }
+    return {
+      title: "Shared workspace unavailable",
+      body: "Paperclip stopped before the agent started because this task allows concurrent agents in a shared workspace that another live run is using, and this execution environment cannot place concurrent agents in one physical shared folder.",
+      nextAction: "Select an isolated task workspace, use a local or SSH environment, or change shared workspace concurrency from `allow` so the task waits for the other run.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_source_restricted") {
+    return {
+      title: "Workspace source restricted",
+      body: "Paperclip stopped before the agent started because this task's workspace uses a shared project checkout that also holds another task's workspace, and this run cannot read that task. Paperclip does not copy a shared checkout with restricted files.",
+      nextAction: "Push any unpublished work from this task's workspace, then select a new workspace for the task. Alternatively, have an owner grant access to the restricted task. Then retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",
@@ -175,11 +215,17 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     errorSummary?: string | null;
   } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
+  const workspaceScan = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
+  const seed = workspaceScan ? {
+    ...workspaceScan,
+    body: `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
+    tone: "danger" as const,
+  } : input.seed;
   const fallbackBody = input.fallbackBody?.trim();
-  const body = input.seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
+  const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
   const title =
     STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
-    input.seed?.title ??
+    seed?.title ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??
     DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE;
 
@@ -193,7 +239,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
         ),
     keyValueRow(
       "Next action",
-      input.seed?.nextAction ?? (input.recoveryOwner
+      seed?.nextAction ?? (input.recoveryOwner
         ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
         : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution"),
     ),
@@ -215,7 +261,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
 
   return {
     body,
-    presentation: systemNoticePresentation({ tone: input.seed?.tone ?? "danger", title }),
+    presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
       sourceRunId: input.sourceRun?.id ?? null,

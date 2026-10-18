@@ -14,6 +14,8 @@ describe("provider notification authority", () => {
   it.each([
     ["warning", { message: "buffered before replacement rejection" }, "root"],
     ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "provider.notice.recorded" }, "root"],
+    ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "auth.credentials.updated" }, "root"],
+    ["paperclip/canonicalProviderEvent", { threadId: "child", eventType: "auth.credentials.updated" }, "invalid_authority"],
     ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "tool.execution.started" }, "invalid_authority"],
     ["item/started", { threadId: "root", turnId: "active" }, "root"],
     ["turn/completed", { threadId: "root", turnId: "old" }, "stale_turn"],
@@ -42,6 +44,9 @@ describe("provider notification authority", () => {
       { threadId: "unrelated" },
       "unrelated_information",
     ],
+    ["mcpServer/startupStatus/updated", { threadId: "not-yet-known-child", status: "starting" }, "unrelated_information"],
+    ["mcpServer/startupStatus/updated", { threadId: "child", status: "ready" }, "descendant"],
+    ["mcpServer/startupStatus/updated", { threadId: "child", thread: { id: "different" } }, "invalid_authority"],
     ["paperclip/runResult", { threadId: "child" }, "invalid_authority"],
     ["turn/completed", { threadId: "unrelated" }, "invalid_authority"],
     ["item/started", { threadId: 5 }, "invalid_authority"],

@@ -117,6 +117,12 @@ vi.mock("./PropertiesPanel", () => ({
   PropertiesPanel: () => null,
 }));
 
+// Overlay account/company lifecycle has its own integration test. These tests
+// exercise route navigation with intentionally minimal context providers.
+vi.mock("./PluginAppShellOverlays", () => ({
+  PluginAppShellOverlays: () => null,
+}));
+
 vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
 }));
@@ -289,6 +295,14 @@ async function flushReact() {
   });
 }
 
+function renderLayoutView(root: ReturnType<typeof createRoot>, queryClient: QueryClient) {
+  root.render(
+    <QueryClientProvider client={queryClient}>
+      <Layout />
+    </QueryClientProvider>,
+  );
+}
+
 describe("Layout", () => {
   let container: HTMLDivElement;
 
@@ -312,7 +326,7 @@ describe("Layout", () => {
       version: "1.2.3",
     });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
+      censorUsernameInLogs: false,
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,
@@ -340,11 +354,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -376,11 +386,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -420,11 +426,7 @@ describe("Layout", () => {
 
     const renderLayout = async () => {
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
     };
@@ -483,11 +485,7 @@ describe("Layout", () => {
       defaultOptions: { queries: { retry: false } },
     });
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
 
@@ -548,11 +546,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -583,11 +577,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -611,11 +601,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -650,11 +636,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -679,11 +661,7 @@ describe("Layout", () => {
       });
 
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -705,11 +683,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -734,11 +708,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -762,11 +732,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -787,11 +753,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -816,11 +778,7 @@ describe("Layout", () => {
       });
 
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -847,11 +805,7 @@ describe("Layout", () => {
       });
 
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -874,11 +828,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -902,11 +852,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -931,11 +877,7 @@ describe("Layout", () => {
       });
 
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -991,11 +933,7 @@ describe("Layout", () => {
       });
 
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -1024,11 +962,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1055,11 +989,7 @@ describe("Layout", () => {
       });
 
       await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <Layout />
-          </QueryClientProvider>,
-        );
+        renderLayoutView(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -1107,11 +1037,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1163,11 +1089,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1230,11 +1152,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1302,11 +1220,7 @@ describe("Layout", () => {
     });
 
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1328,11 +1242,7 @@ describe("Layout", () => {
       defaultOptions: { queries: { retry: false } },
     });
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
+      renderLayoutView(root, queryClient);
     });
     await flushReact();
     const rootEl = container.firstElementChild as HTMLElement;

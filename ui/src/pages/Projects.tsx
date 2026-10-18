@@ -25,7 +25,14 @@ import {
 } from "../hooks/useResourceMemberships";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+<<<<<<< ours
 import { ArrowUpDown, Check, Hexagon, Plus, Tags } from "lucide-react";
+||||||| base
+import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+=======
+import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { Lock } from "lucide-react";
+>>>>>>> theirs
 import { Card } from "@/components/ui/card";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
@@ -345,6 +352,7 @@ export function Projects() {
                     {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
                   </span>
                 </div>
+<<<<<<< ours
                 {isCategoryAdmin && categories.length > 0 ? (
                   <div className="space-y-3">
                     {groupProjectsByCategory(sectionProjects, categories).map((group) => (
@@ -363,6 +371,156 @@ export function Projects() {
                     {sectionProjects.map((project) => renderProjectRow(project))}
                   </Card>
                 )}
+||||||| base
+                <Card className="block py-0 overflow-hidden divide-y divide-border">
+                  {sectionProjects.map((project) => {
+                    const state = resourceMembershipState(membershipsQuery.data, "project", project.id);
+                    const pending = membershipMutation.isPending &&
+                      membershipMutation.variables?.resourceType === "project" &&
+                      membershipMutation.variables.resourceId === project.id;
+                    const starPending = pending && membershipMutation.variables?.starred !== undefined;
+                    const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+                    const starred = isStarred(membershipsQuery.data, "project", project.id);
+                    return (
+                      <EntityRow
+                        key={project.id}
+                        leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
+                        title={project.name}
+                        subtitle={project.description ?? undefined}
+                        reserveSubtitleSpace
+                        to={projectUrl(project)}
+                        className={state === "left" ? "group text-foreground/55" : "group"}
+                        trailing={
+                          <div className="flex items-center gap-3">
+                            <span
+                              className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
+                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+                            >
+                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+                            </span>
+                            {project.budget && (
+                              <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
+                                {formatProjectBudget(project.budget)}
+                              </span>
+                            )}
+                            {project.targetDate && (
+                              <span className="hidden text-xs text-muted-foreground md:inline">
+                                {formatDate(project.targetDate)}
+                              </span>
+                            )}
+                            <StatusBadge status={project.status} />
+                            <MembershipAction
+                              state={state}
+                              pending={joinLeavePending}
+                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                              resourceName={project.name}
+                              onJoin={() => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                state: "joined",
+                              })}
+                              onLeave={() => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                state: "left",
+                              })}
+                            />
+                            <StarToggle
+                              size="row"
+                              starred={starred}
+                              pending={starPending}
+                              resourceName={project.name}
+                              onToggle={(next) => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                starred: next,
+                              })}
+                            />
+                          </div>
+                        }
+                      />
+                    );
+                  })}
+                </Card>
+=======
+                <Card className="block py-0 overflow-hidden divide-y divide-border">
+                  {sectionProjects.map((project) => {
+                    const state = resourceMembershipState(membershipsQuery.data, "project", project.id);
+                    const pending = membershipMutation.isPending &&
+                      membershipMutation.variables?.resourceType === "project" &&
+                      membershipMutation.variables.resourceId === project.id;
+                    const starPending = pending && membershipMutation.variables?.starred !== undefined;
+                    const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+                    const starred = isStarred(membershipsQuery.data, "project", project.id);
+                    return (
+                      <EntityRow
+                        key={project.id}
+                        leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
+                        title={project.name}
+                        subtitle={project.description ?? undefined}
+                        reserveSubtitleSpace
+                        to={projectUrl(project)}
+                        className={state === "left" ? "group text-foreground/55" : "group"}
+                        trailing={
+                          <div className="flex items-center gap-3">
+                            {project.visibility === "private" ? <Lock className="size-4 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
+                            <span
+                              className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
+                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+                            >
+                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+                            </span>
+                            {project.budget && (
+                              <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
+                                {formatProjectBudget(project.budget)}
+                              </span>
+                            )}
+                            {project.targetDate && (
+                              <span className="hidden text-xs text-muted-foreground md:inline">
+                                {formatDate(project.targetDate)}
+                              </span>
+                            )}
+                            <StatusBadge status={project.status} />
+                            <MembershipAction
+                              state={state}
+                              pending={joinLeavePending}
+                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                              resourceName={project.name}
+                              onJoin={() => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                state: "joined",
+                              })}
+                              onLeave={() => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                state: "left",
+                              })}
+                            />
+                            <StarToggle
+                              size="row"
+                              starred={starred}
+                              pending={starPending}
+                              resourceName={project.name}
+                              onToggle={(next) => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                starred: next,
+                              })}
+                            />
+                          </div>
+                        }
+                      />
+                    );
+                  })}
+                </Card>
+>>>>>>> theirs
               </section>
             );
           })}
