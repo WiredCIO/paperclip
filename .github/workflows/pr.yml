@@ -11,5 +11,8 @@ permissions:
 jobs:
   ci:
     # Master requires CODEOWNERS review for .github/**, including this workflow.
-    # The AWS runner group permits pr-trusted.yml@refs/heads/master.
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@master
+    # WiredCIO fork: call the fork's own pr-trusted.yml from its reviewed master.
+    # Upstream's copy (paperclipai/paperclip@master) moves ahead of the fork and
+    # runs steps whose scripts the fork does not have yet; its AWS runner routing
+    # fails closed outside paperclipai/paperclip, so the fork gains nothing from it.
+    uses: WiredCIO/paperclip/.github/workflows/pr-trusted.yml@master

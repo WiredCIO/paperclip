@@ -26,6 +26,15 @@ GitHub Actions owns `pnpm-lock.yaml`.
 ## Trusted PR Workflow
 
 The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+
+WiredCIO fork: `pr.yml` calls `WiredCIO/paperclip/.github/workflows/pr-trusted.yml@master`
+instead. Upstream's copy at upstream `master` runs ahead of the fork and calls scripts
+and test groups the fork does not have yet, so every fork PR failed `ci / Build`,
+`ci / Docker context integrity` and `ci / General tests (workspaces-c)` regardless of
+its code. The AWS routing below never applies to the fork, because the gate fails
+closed outside `paperclipai/paperclip` and uses `ubuntu-latest`. When rebasing onto
+upstream, keep the fork caller.
+
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
 New workflow versions merged into master then receive runner access without a
