@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 // PR #13470 uses the code-owner-reviewed default branch for this first-party workflow.
 const ordinaryPrTrustedWorkflowRevision = "master";
+// The WiredCIO fork calls its own copy so fork CI cannot drift ahead of fork code.
+const ordinaryPrTrustedWorkflowPath =
+  "WiredCIO/paperclip/.github/workflows/pr-trusted.yml";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -20,14 +23,12 @@ describe("public repository paid workflow security", () => {
     );
     const trustedWorkflowCalls = [
       ...ordinaryPrWorkflow.matchAll(
-        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([^\s#]+)$/gmu,
+        /^\s+uses:\s+([\w.-]+\/[\w.-]+\/\.github\/workflows\/pr-trusted\.yml)@([^\s#]+)$/gmu,
       ),
     ];
 
     expect(trustedWorkflowCalls).toHaveLength(1);
-    expect(trustedWorkflowCalls[0]?.[1]).toBe(
-      "paperclipai/paperclip/.github/workflows/pr-trusted.yml",
-    );
+    expect(trustedWorkflowCalls[0]?.[1]).toBe(ordinaryPrTrustedWorkflowPath);
     expect(trustedWorkflowCalls[0]?.[2]).toBe(
       ordinaryPrTrustedWorkflowRevision,
     );
