@@ -89,6 +89,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.thread_interaction_expired": "expired the request on",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on",
   "issue.stalled_review_decided": "recorded a review verdict on",
+  "issue.execution_stage_released": "released the review stage on",
   "project.created": "created",
   "project.updated": "updated",
   "project.deleted": "deleted",
@@ -183,6 +184,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.thread_interaction_expired": "expired the request",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on the request",
   "issue.stalled_review_decided": "recorded a review verdict",
+  "issue.execution_stage_released": "handed the issue back to an agent to close",
 };
 
 /**

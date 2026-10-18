@@ -93,6 +93,8 @@ import {
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   stalledReviewDecisionSchema,
+  releaseExecutionStageSchema,
+  bulkReleaseExecutionStageSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
@@ -283,6 +285,7 @@ import {
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
+import { executionStageReleaseService } from "../services/execution-stage-release.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -12737,6 +12740,140 @@ export function issueRoutes(
         comment: result.comment,
         wakeQueued,
       });
+    },
+  );
+
+  // WIR-1354: the active human reviewer/approver hands a pending stage back to
+  // an agent so the agent can close the issue. Board-only; the service rejects
+  // anyone who is not the stage's current participant.
+  async function assertActiveNonViewerMember(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (req.actor.source === "local_implicit") return;
+    const userId = req.actor.userId?.trim();
+    const membership = userId
+      ? await db
+          .select({ membershipRole: companyMemberships.membershipRole })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, userId),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (!membership?.membershipRole || membership.membershipRole === "viewer") {
+      throw forbidden("Active non-viewer company membership required");
+    }
+  }
+
+  async function releaseExecutionStageAndWake(
+    req: Request,
+    input: { issueId: string; companyId: string; comment: string; assigneeAgentId?: string | null },
+  ) {
+    const actor = getActorInfo(req);
+    const result = await executionStageReleaseService(db).release({
+      ...input,
+      actor: { userId: actor.actorId, runId: actor.runId },
+    });
+    try {
+      await issueReferencesSvc.syncComment(result.comment.id);
+      await externalObjectsSvc.syncCommentSafely(result.comment.id);
+    } catch (err) {
+      logger.warn(
+        { err, issueId: result.issue.id, commentId: result.comment.id },
+        "failed to sync execution-stage release comment",
+      );
+    }
+    // Best-effort, as for stalled-review decisions: the issue is already
+    // `in_progress` and assigned, which the liveness sweep picks up.
+    let wakeQueued = false;
+    if (result.issue.assigneeAgentId) {
+      try {
+        const wake = await enqueueStalledReviewDecisionWakeup(result.issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          idempotencyKey: `execution-stage-release:${result.decisionId}`,
+          requestedByActorType: "user",
+          requestedByActorId: actor.actorId,
+          payload: {
+            issueId: result.issue.id,
+            mutation: "execution_stage_released",
+            resumeIntent: true,
+            userAuthoredNote: { commentId: result.comment.id, authorUserId: actor.actorId },
+          },
+          contextSnapshot: {
+            issueId: result.issue.id,
+            taskId: result.issue.id,
+            source: "issue.execution_stage_released",
+            wakeReason: "issue_status_changed",
+            resumeIntent: true,
+          },
+        });
+        wakeQueued = wake !== null;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: result.issue.id, agentId: result.issue.assigneeAgentId },
+          "failed to enqueue execution-stage release wake",
+        );
+      }
+    }
+    return { issue: result.issue, comment: result.comment, wakeQueued };
+  }
+
+  router.post(
+    "/issues/:id/execution-stage/release",
+    validate(releaseExecutionStageSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      await assertActiveNonViewerMember(req, issue.companyId);
+      res.json(
+        await releaseExecutionStageAndWake(req, {
+          issueId: issue.id,
+          companyId: issue.companyId,
+          comment: req.body.comment,
+          assigneeAgentId: req.body.assigneeAgentId ?? null,
+        }),
+      );
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/issues/execution-stage/release",
+    validate(bulkReleaseExecutionStageSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertActiveNonViewerMember(req, companyId);
+      // Each issue releases in its own transaction: one issue the caller is
+      // not the approver on must not hold back the rest of the batch.
+      const results: Array<{ issueId: string; ok: boolean; status: number; error?: string; wakeQueued?: boolean }> = [];
+      for (const issueId of req.body.issueIds as string[]) {
+        try {
+          const released = await releaseExecutionStageAndWake(req, {
+            issueId,
+            companyId,
+            comment: req.body.comment,
+            assigneeAgentId: req.body.assigneeAgentId ?? null,
+          });
+          results.push({ issueId, ok: true, status: 200, wakeQueued: released.wakeQueued });
+        } catch (err) {
+          // Earlier issues in the batch have already committed, so report every
+          // failure per issue rather than failing the whole response.
+          if (err instanceof HttpError) {
+            results.push({ issueId, ok: false, status: err.status, error: err.message });
+          } else {
+            logger.error({ err, issueId, companyId }, "execution-stage release failed");
+            results.push({ issueId, ok: false, status: 500, error: "Internal error" });
+          }
+        }
+      }
+      res.json({ results });
     },
   );
 

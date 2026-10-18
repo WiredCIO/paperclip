@@ -39,6 +39,8 @@ import {
   createIssueSchema,
   updateIssueSchema,
   stalledReviewDecisionSchema,
+  releaseExecutionStageSchema,
+  bulkReleaseExecutionStageSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
@@ -3667,6 +3669,42 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/execution-stage/release",
+  tags: ["issues"],
+  summary: "Hand a pending review/approval stage back to an agent to close (active human participant only)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(releaseExecutionStageSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/execution-stage/release",
+  tags: ["issues"],
+  summary: "Hand several pending review/approval stages back to an agent; per-issue results",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(bulkReleaseExecutionStageSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
   },
 });
 
