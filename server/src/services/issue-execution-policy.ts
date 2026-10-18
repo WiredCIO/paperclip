@@ -11,7 +11,7 @@ import type {
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -1223,4 +1223,67 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
+}
+
+/**
+ * The active human reviewer/approver releases their pending stage back to an
+ * agent so the agent can close the issue itself (WIR-1354). The stage is
+ * recorded as `released` — not `approved` — and only the stage's current human
+ * participant can do it; agents never can, whoever they are.
+ *
+ * Later stages, if any, stay pending: the agent's next `done` starts them.
+ */
+export function buildIssueExecutionStageReleasePatch(input: {
+  issue: IssueLike;
+  actor: ActorLike;
+  handBackTo: IssueExecutionStagePrincipal;
+  commentBody: string | null | undefined;
+}): TransitionResult {
+  const actor = actorPrincipal(input.actor);
+  if (!actor || actor.type !== "user") {
+    throw forbidden("Only the active human reviewer or approver can release the current execution stage");
+  }
+  const policy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const activeStage =
+    policy && existingState?.status === PENDING_STATUS
+      ? findStageById(policy, existingState.currentStageId)
+      : null;
+  if (!policy || !existingState || !activeStage) {
+    throw unprocessable("Issue has no pending review or approval stage to release");
+  }
+  if (!principalsEqual(existingState.currentParticipant, actor)) {
+    throw forbidden("Only the active reviewer or approver can release the current execution stage");
+  }
+  if (input.handBackTo.type !== "agent" || !input.handBackTo.agentId) {
+    throw unprocessable("A released stage must be handed back to an agent");
+  }
+  const body = input.commentBody?.trim();
+  if (!body) {
+    throw unprocessable("Releasing a review or approval stage requires a comment");
+  }
+
+  const completed = buildCompletedState(existingState, activeStage);
+  const hasLaterStage = nextPendingStageAfter(policy, activeStage, completed) !== null;
+  const releasedState: IssueExecutionState = {
+    ...completed,
+    // With later stages still to run, the workflow is not finished: `idle`
+    // lets the agent's next `done` start the next stage instead of skipping it.
+    status: hasLaterStage ? "idle" : COMPLETED_STATUS,
+    lastDecisionOutcome: "released",
+  };
+  return {
+    patch: {
+      status: "in_progress",
+      ...patchForPrincipal(input.handBackTo),
+      executionState: releasedState,
+    },
+    decision: {
+      stageId: activeStage.id,
+      stageType: activeStage.type,
+      outcome: "released",
+      body,
+    },
+    workflowControlledAssignment: true,
+  };
 }

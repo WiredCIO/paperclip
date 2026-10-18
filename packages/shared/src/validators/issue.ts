@@ -892,6 +892,32 @@ export const stalledReviewDecisionSchema = z
 
 export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
 
+/** WIR-1354: the active human approver hands a pending stage back to an agent. */
+export const releaseExecutionStageSchema = z
+  .object({
+    comment: multilineTextSchema.pipe(z.string().min(1)),
+    assigneeAgentId: z.string().uuid().optional().nullable(),
+  })
+  .strict();
+
+export type ReleaseExecutionStage = z.infer<typeof releaseExecutionStageSchema>;
+
+export const bulkReleaseExecutionStageSchema = z
+  .object({
+    issueIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(50)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: "Issue ids must be unique",
+      }),
+    comment: multilineTextSchema.pipe(z.string().min(1)),
+    assigneeAgentId: z.string().uuid().optional().nullable(),
+  })
+  .strict();
+
+export type BulkReleaseExecutionStage = z.infer<typeof bulkReleaseExecutionStageSchema>;
+
 export const checkoutIssueSchema = z.object({
   agentId: z.string().guid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
