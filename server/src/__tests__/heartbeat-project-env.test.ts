@@ -23,7 +23,7 @@ import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 describe("resolveExecutionRunAdapterConfig", () => {
   it("does not preflight or resolve legacy GitHub token bindings for managed executions", async () => {
     const assertNoGitHubBinding = (env: Record<string, unknown>) => {
-      for (const key of Object.keys(env)) if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN)$/.test(key)) {
+      for (const key of Object.keys(env)) if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|[A-Z][A-Z0-9_]*_GH_TOKEN)$/.test(key)) {
         throw new Error("Unavailable legacy GitHub secret must not be resolved at startup");
       }
     };
@@ -31,9 +31,10 @@ describe("resolveExecutionRunAdapterConfig", () => {
     const result = await resolveExecutionRunAdapterConfig({
       companyId: "company-1", agentId: "agent-1", environmentId: "environment-1",
       projectId: "project-1", routineId: "routine-1", managedGitHubCredentials: true,
-      executionRunConfig: { env: { GH_TOKEN: missing, AGENT_VALUE: "ok" } },
+      // Named identities (<NAME>_GH_TOKEN) are resolved per operation by the broker.
+      executionRunConfig: { env: { GH_TOKEN: missing, APPDEV_GH_TOKEN: missing, REVIEW_GH_TOKEN: missing, AGENT_VALUE: "ok" } },
       environmentEnv: { GITHUB_TOKEN: missing, ENVIRONMENT_VALUE: "ok" },
-      projectEnv: { GH_ENTERPRISE_TOKEN: missing, PROJECT_VALUE: "ok" },
+      projectEnv: { GH_ENTERPRISE_TOKEN: missing, REVIEW_GH_TOKEN: missing, PROJECT_VALUE: "ok" },
       routineEnv: { GITHUB_ENTERPRISE_TOKEN: missing, PAPERCLIP_GIT_TOKEN: missing, ROUTINE_VALUE: "ok" },
       secretsSvc: {
         collectMissingRuntimeBindings: vi.fn(async (_companyId, env) => { assertNoGitHubBinding(env); return []; }),

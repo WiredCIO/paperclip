@@ -48,7 +48,10 @@ import {
   unadmittedChatWakeupCondition,
   type DurableChatWakeupRequest,
 } from "./durable-chat-wakeup.js";
-import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
+import {
+  githubBrokerEnvironment,
+  isGitHubIdentityEnvKey,
+} from "@paperclipai/adapter-utils/github-launcher";
 import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
@@ -1516,7 +1519,10 @@ function stripForbiddenEnvBindings(
     Object.entries(record).filter(
       ([key]) =>
         !FORBIDDEN_ENV_BINDING_KEYS.has(key) &&
-        !(managedGitHubCredentials && MANAGED_GITHUB_TOKEN_KEYS.has(key)),
+        !(
+          managedGitHubCredentials &&
+          (MANAGED_GITHUB_TOKEN_KEYS.has(key) || isGitHubIdentityEnvKey(key))
+        ),
     ),
   );
   return Object.keys(filtered).length > 0 ? filtered : null;

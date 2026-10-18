@@ -46,6 +46,15 @@ const vault = vi.hoisted(() => ({
     }),
   ),
   resolveSecretValue: vi.fn(async () => "test-dedicated-token"),
+  resolveEnvBindings: vi.fn(
+    async (_company: string, env: Record<string, { secretId: string }>) => ({
+      env: Object.fromEntries(
+        Object.entries(env).map(([key, binding]) => [key, `resolved-${binding.secretId}`]),
+      ),
+      secretKeys: new Set(Object.keys(env)),
+      manifest: [],
+    }),
+  ),
 }));
 vi.mock("../services/secrets.js", () => ({ secretService: () => vault }));
 const support = await getEmbeddedPostgresTestSupport();
@@ -924,6 +933,96 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(
         (await post().set("Authorization", `Bearer ${token}`)).status,
       ).toBe(403);
+    });
+    describe("named agent GitHub identities", () => {
+      const reviewBinding = { type: "secret_ref", secretId: "review-secret", version: "latest" };
+      it("resolves the agent's <NAME>_GH_TOKEN binding for one operation without touching the run identity", async () => {
+        const input = await seed();
+        await grant(input, "A");
+        await db
+          .update(agents)
+          .set({ adapterConfig: { env: { REVIEW_GH_TOKEN: reviewBinding } } })
+          .where(eq(agents.id, input.agentId));
+        const managed = await resolveGitHubOperationCredentials(db, input);
+        expect(managed.env.GH_TOKEN).toBe("test-token-A");
+        const before = await db
+          .select({ github: runIdentityContexts.github })
+          .from(runIdentityContexts)
+          .where(eq(runIdentityContexts.runId, input.runId));
+        const named = await resolveGitHubOperationCredentials(db, { ...input, identity: "review" });
+        expect(named).toMatchObject({ status: "available", authenticationMode: "managed" });
+        expect(named.env.GH_TOKEN).toBe("resolved-review-secret");
+        expect(named.env.GITHUB_TOKEN).toBe("resolved-review-secret");
+        expect(vault.resolveEnvBindings).toHaveBeenLastCalledWith(
+          input.companyId,
+          { REVIEW_GH_TOKEN: reviewBinding },
+          expect.objectContaining({
+            consumerType: "agent",
+            consumerId: input.agentId,
+            heartbeatRunId: input.runId,
+          }),
+        );
+        const after = await db
+          .select({ github: runIdentityContexts.github })
+          .from(runIdentityContexts)
+          .where(eq(runIdentityContexts.runId, input.runId));
+        expect(after).toEqual(before);
+        expect(JSON.stringify(after)).not.toContain("resolved-review-secret");
+      });
+      it("falls back to the run's project binding", async () => {
+        const input = await seed();
+        const projectId = randomUUID();
+        await db.insert(projects).values({
+          id: projectId,
+          companyId: input.companyId,
+          name: "Bullpen",
+          env: { REVIEW_GH_TOKEN: reviewBinding },
+        });
+        await db.update(issues).set({ projectId }).where(eq(issues.id, input.issueId));
+        const named = await resolveGitHubOperationCredentials(db, { ...input, identity: "REVIEW" });
+        expect(named.env.GH_TOKEN).toBe("resolved-review-secret");
+        expect(vault.resolveEnvBindings).toHaveBeenLastCalledWith(
+          input.companyId,
+          { REVIEW_GH_TOKEN: reviewBinding },
+          expect.objectContaining({ consumerType: "project", consumerId: projectId }),
+        );
+      });
+      it("returns no credential for a missing binding or an invalid name", async () => {
+        const input = await seed();
+        await expect(
+          resolveGitHubOperationCredentials(db, { ...input, identity: "review" }),
+        ).resolves.toMatchObject({ status: "absent", env: {} });
+        await expect(
+          resolveGitHubOperationCredentials(db, { ...input, identity: "../GH_TOKEN" }),
+        ).resolves.toMatchObject({ status: "unavailable", env: {} });
+      });
+      it("keeps the low-trust gate ahead of named identities", async () => {
+        const input = await seed();
+        await db
+          .update(agents)
+          .set({ adapterConfig: { env: { REVIEW_GH_TOKEN: reviewBinding } } })
+          .where(eq(agents.id, input.agentId));
+        await db
+          .update(issues)
+          .set({
+            executionPolicy: {
+              authorizationPolicy: {
+                trustPreset: LOW_TRUST_REVIEW_PRESET,
+                trustBoundary: {
+                  mode: LOW_TRUST_REVIEW_PRESET,
+                  companyId: input.companyId,
+                  rootIssueId: input.issueId,
+                  issueIds: [input.issueId],
+                  allowedAgentIds: [input.agentId],
+                  allowedToolClasses: ["git.read", "github.pr.read"],
+                },
+              },
+            },
+          })
+          .where(eq(issues.id, input.issueId));
+        const named = await resolveGitHubOperationCredentials(db, { ...input, identity: "review" });
+        expect(named).toMatchObject({ status: "unavailable", env: {} });
+      });
     });
   },
 );
