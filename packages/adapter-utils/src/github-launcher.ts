@@ -17,7 +17,20 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// A captured token reaches only this one process. Refuse the gh subcommands
+// whose purpose is to print it, so a run cannot read it back out.
+function printsCredential(args) {
+  const words = args.filter(arg => !arg.startsWith('-'));
+  if (words[0] !== 'auth') return false;
+  if (words[1] === 'token' || words[1] === 'git-credential') return true;
+  return words[1] === 'status' && args.some(arg => arg === '-t' || arg === '--show-token');
+}
 async function main() {
+  if (program === 'gh' && printsCredential(process.argv.slice(2))) {
+    process.stderr.write('Paperclip: gh commands that print a credential are disabled in agent runs.\n');
+    process.exitCode = 2;
+    return;
+  }
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
@@ -34,7 +47,7 @@ async function main() {
   } catch { diagnostic('configuration_directory_unavailable'); }
   {
     for (const key of Object.keys(env)) {
-      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
+      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*|[A-Z][A-Z0-9_]*_GH_TOKEN)$/.test(key)) delete env[key];
     }
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
@@ -47,6 +60,11 @@ async function main() {
       GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
+    // PAPERCLIP_GITHUB_IDENTITY=review selects the agent's REVIEW_GH_TOKEN binding
+    // for this one command instead of the run's managed identity.
+    const requested = (env.PAPERCLIP_GITHUB_IDENTITY || '').trim().toLowerCase();
+    const identity = /^[a-z][a-z0-9_]{0,62}$/.test(requested) ? requested : '';
+    if (requested && !identity) process.stderr.write('Paperclip: ignoring invalid PAPERCLIP_GITHUB_IDENTITY.\n');
     try {
     let response;
     if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
@@ -56,7 +74,7 @@ async function main() {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
           headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
             'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
-          body: '{}',
+          body: identity ? JSON.stringify({ identity }) : '{}',
         });
         if (response.status !== 409) break;
         await response.arrayBuffer();
@@ -117,4 +135,22 @@ export function githubBrokerEnvironment(input: Record<string, unknown>, broker: 
   env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
   env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
   return env;
+}
+
+/**
+ * An agent env binding named `<NAME>_GH_TOKEN` is a named GitHub identity. In
+ * managed runs it never enters the run environment; the broker resolves it for a
+ * single command run with `PAPERCLIP_GITHUB_IDENTITY=<name>`.
+ */
+export const GITHUB_IDENTITY_ENV_KEY_PATTERN = /^[A-Z][A-Z0-9_]*_GH_TOKEN$/;
+
+export function isGitHubIdentityEnvKey(key: string): boolean {
+  return GITHUB_IDENTITY_ENV_KEY_PATTERN.test(key);
+}
+
+/** `review` -> `REVIEW_GH_TOKEN`; null when the name is not a valid identity. */
+export function githubIdentityEnvKey(identity: string): string | null {
+  const name = identity.trim().toLowerCase();
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(name)) return null;
+  return `${name.toUpperCase()}_GH_TOKEN`;
 }

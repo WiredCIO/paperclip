@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { githubBrokerEnvironment, githubLauncherSource } from "./github-launcher.js";
+import { githubBrokerEnvironment, githubIdentityEnvKey, githubLauncherSource, isGitHubIdentityEnvKey } from "./github-launcher.js";
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -113,5 +113,51 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
+  });
+  it("maps identity names to <NAME>_GH_TOKEN bindings", () => {
+    expect(githubIdentityEnvKey("review")).toBe("REVIEW_GH_TOKEN");
+    expect(githubIdentityEnvKey(" AppDev ")).toBe("APPDEV_GH_TOKEN");
+    expect(githubIdentityEnvKey("../GH")).toBeNull();
+    expect(githubIdentityEnvKey("")).toBeNull();
+    expect(isGitHubIdentityEnvKey("REVIEW_GH_TOKEN")).toBe(true);
+    expect(isGitHubIdentityEnvKey("GH_TOKEN")).toBe(false);
+    expect(isGitHubIdentityEnvKey("review_gh_token")).toBe(false);
+  });
+
+  it("requests a named identity, strips stray identity tokens, and refuses to print credentials", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-identity-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({token:process.env.GH_TOKEN ?? null, stray:process.env.REVIEW_GH_TOKEN ?? null}));', { mode: 0o700 });
+    const bodies: unknown[] = [];
+    const server = createServer((req, res) => {
+      let raw = "";
+      req.on("data", chunk => { raw += chunk; });
+      req.on("end", () => {
+        const body = JSON.parse(raw) as { identity?: string };
+        bodies.push(body);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: body.identity ? `token-${body.identity}` : "token-managed" } }));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      REVIEW_GH_TOKEN: "stray-plaintext", PATH: `${bin}:${realBin}:${process.env.PATH}` };
+    const gh = async (extra: Record<string, string>, ...args: string[]) =>
+      JSON.parse((await exec(path.join(bin, "gh"), args, { env: { ...env, ...extra } })).stdout);
+    expect(await gh({})).toEqual({ token: "token-managed", stray: null });
+    expect(await gh({ PAPERCLIP_GITHUB_IDENTITY: "Review" })).toEqual({ token: "token-review", stray: null });
+    expect(bodies).toEqual([{}, { identity: "review" }]);
+    for (const args of [["auth", "token"], ["auth", "status", "--show-token"], ["auth", "status", "-t"], ["auth", "git-credential", "get"]]) {
+      const refused = await exec(path.join(bin, "gh"), args, { env: { ...env, PAPERCLIP_GITHUB_IDENTITY: "review" } }).catch(error => error);
+      expect(refused.code).toBe(2);
+      expect(refused.stderr).toContain("print a credential are disabled");
+      expect(refused.stdout).toBe("");
+    }
+    expect(bodies).toHaveLength(2); // refused commands never fetch a credential
   });
 });
