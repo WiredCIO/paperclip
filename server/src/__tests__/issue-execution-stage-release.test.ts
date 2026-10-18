@@ -123,6 +123,39 @@ describe("buildIssueExecutionStageReleasePatch", () => {
     });
   });
 
+  it("never makes the hand-back agent a participant of a later stage it then closes", () => {
+    const reviewThenApproval = normalizeIssueExecutionPolicy({
+      stages: [
+        { type: "approval", participants: [{ type: "user", userId: approverUserId }] },
+        { type: "review", participants: [
+          { type: "agent", agentId: builderAgentId },
+          { type: "agent", agentId: qaAgentId },
+        ] },
+      ],
+    })!;
+    const released = buildIssueExecutionStageReleasePatch({
+      issue: pendingApproval(reviewThenApproval),
+      actor: { userId: approverUserId },
+      handBackTo,
+      commentBody: "Released",
+    });
+    expect(released.patch.executionState).toMatchObject({ returnAssignee: handBackTo });
+
+    const close = applyIssueExecutionPolicyTransition({
+      issue: { ...pendingApproval(reviewThenApproval), ...released.patch } as ReturnType<typeof pendingApproval>,
+      policy: reviewThenApproval,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: builderAgentId },
+      commentBody: "Done",
+    });
+    expect(close.patch).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: qaAgentId,
+      executionState: { currentParticipant: { type: "agent", agentId: qaAgentId } },
+    });
+  });
+
   it("rejects an agent, even the return assignee", () => {
     for (const agentId of [builderAgentId, retiredReviewerAgentId]) {
       expect(() =>

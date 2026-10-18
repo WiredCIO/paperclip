@@ -12863,8 +12863,14 @@ export function issueRoutes(
           });
           results.push({ issueId, ok: true, status: 200, wakeQueued: released.wakeQueued });
         } catch (err) {
-          if (!(err instanceof HttpError)) throw err;
-          results.push({ issueId, ok: false, status: err.status, error: err.message });
+          // Earlier issues in the batch have already committed, so report every
+          // failure per issue rather than failing the whole response.
+          if (err instanceof HttpError) {
+            results.push({ issueId, ok: false, status: err.status, error: err.message });
+          } else {
+            logger.error({ err, issueId, companyId }, "execution-stage release failed");
+            results.push({ issueId, ok: false, status: 500, error: "Internal error" });
+          }
         }
       }
       res.json({ results });

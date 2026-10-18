@@ -1264,12 +1264,15 @@ export function buildIssueExecutionStageReleasePatch(input: {
   }
 
   const completed = buildCompletedState(existingState, activeStage);
-  const hasLaterStage = nextPendingStageAfter(policy, activeStage, completed) !== null;
+  // Same scan the agent's next `done` uses, so `idle` means exactly "a stage
+  // will start" and `completed` means "the close goes straight through".
+  const hasRemainingStage = nextPendingStage(policy, completed) !== null;
   const releasedState: IssueExecutionState = {
     ...completed,
-    // With later stages still to run, the workflow is not finished: `idle`
-    // lets the agent's next `done` start the next stage instead of skipping it.
-    status: hasLaterStage ? "idle" : COMPLETED_STATUS,
+    status: hasRemainingStage ? "idle" : COMPLETED_STATUS,
+    // The hand-back agent is now the implementer: it must be excluded from
+    // any later stage, so it can never review or approve its own close.
+    returnAssignee: input.handBackTo,
     lastDecisionOutcome: "released",
   };
   return {

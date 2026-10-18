@@ -26,7 +26,10 @@ export function ReleaseExecutionStageAction({ issue, agents, currentUserId }: Re
   );
   const returnAgentId = state?.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : null;
   const defaultAgentId = activeAgents.some((agent) => agent.id === returnAgentId) ? returnAgentId : null;
-  const [agentId, setAgentId] = useState<string>(defaultAgentId ?? "");
+  const [chosenAgentId, setAgentId] = useState<string>("");
+  // The agent list can arrive after first render; fall back to the return
+  // assignee until the human picks someone.
+  const agentId = chosenAgentId || defaultAgentId || "";
 
   const release = useMutation({
     mutationFn: () => {
@@ -39,6 +42,7 @@ export function ReleaseExecutionStageAction({ issue, agents, currentUserId }: Re
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issue.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(issue.companyId) });
       pushToast({ title: "Handed back to the agent to close.", tone: "success" });
     },
     onError: (error) => {
