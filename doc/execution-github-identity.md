@@ -38,6 +38,20 @@ discovery stops startup instead of silently falling back to a minimal path.
 
 Scripts that previously read a persistent `GH_TOKEN` must use managed `git`, `gh`, or GitHub gateway tools. Managed execution skips legacy GitHub token bindings in agent, environment, project, and routine configuration before secret preflight. Configure personal or dedicated access through the GitHub connection instead. Directly invoking an unmanaged executable or retaining a token obtained during an earlier invocation is outside the managed invocation contract.
 
+### Named agent identities
+
+An agent can hold more than one GitHub account. For example, it can hold one account that authors pull requests and a second account that reviews them. Bind each additional account token to an env key named `<NAME>_GH_TOKEN`, for example `REVIEW_GH_TOKEN`. Bind it on the agent, or on the project of the run.
+
+Managed executions do not receive `<NAME>_GH_TOKEN` bindings in the run environment. Launchers also remove a stray value from each command. To use the account for one command, set `PAPERCLIP_GITHUB_IDENTITY=<name>`:
+
+```sh
+PAPERCLIP_GITHUB_IDENTITY=review gh pr review 85 --approve --body "..."
+```
+
+The launcher sends the name to the broker. The broker applies the same trust checks as the managed identity. Then it resolves the agent binding, or the project binding when the agent has none. It returns the token only to that command. The run identity record does not change, and the token is not persisted. An unknown name, a missing binding, or a low-trust execution returns no credential.
+
+Managed launchers refuse `gh auth token`, `gh auth git-credential`, and `gh auth status --show-token` for every identity. These commands print a credential. This is a guard, not a sandbox boundary: a command that receives a token can still expose it, for example through a Git alias.
+
 ## Legacy hosts and networking
 
 When no managed GitHub connection is installed for an agent, standard-trust
