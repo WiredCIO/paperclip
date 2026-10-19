@@ -665,6 +665,22 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       });
     }
 
+    // Each probe again with the hidden id swapped for an unknown one: the
+    // response must not reveal which of the two the caller sent, and nothing
+    // is written for either.
+    for (const { name, probe, error, status = 404 } of moves.filter((move) => move.error !== "Project not found")) {
+      it(`${name}: an unknown id gets the same response and nothing is written`, async () => {
+        const app = await createApp("operator");
+        mockIssueService.getById.mockImplementation(async (id: string) =>
+          id === VISIBLE_ISSUE_ID ? { ...hiddenIssue, id, projectId: null } : null,
+        );
+        const res = await probe(app);
+        expect(res.status).toBe(status);
+        expect(res.body).toEqual({ error });
+        expect(mockIssueService.create).not.toHaveBeenCalled();
+      });
+    }
+
     it("a hidden blocker someone else set may be resubmitted unchanged", async () => {
       mockIssueService.getRelationSummaries.mockResolvedValue({
         blockedBy: [{ id: HIDDEN_ISSUE_ID }],
@@ -674,6 +690,13 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
         .patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
         .send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] });
       expect(res.body?.error).not.toBe(blockerError);
+      // The gate never evaluates the blocker that was already there.
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "issue:read",
+          resource: expect.objectContaining({ issueId: HIDDEN_ISSUE_ID }),
+        }),
+      );
     });
   });
 
@@ -682,6 +705,16 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     const app = await createApp("operator");
     await request(app).post(`/api/issues/${HIDDEN_ISSUE_ID}/documents/plan/lock`);
     await request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/children`).send({ title: "Child", projectId: DELIVERY_PROJECT_ID });
+    await request(app).post(`/api/companies/${COMPANY_ID}/issues`).send({
+      title: "New",
+      inheritExecutionWorkspaceFromIssueId: HIDDEN_ISSUE_ID,
+      blockedByIssueIds: [HIDDEN_ISSUE_ID],
+    });
+    await request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`).send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] });
+    await request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/accepted-plan-decompositions`).send({
+      acceptedPlanRevisionId: RANDOM_ID,
+      children: [{ title: "Child", projectId: DELIVERY_PROJECT_ID, blockedByIssueIds: [HIDDEN_ISSUE_ID] }],
+    });
     expect(mockAccessService.decide).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "issue:read" }),
     );

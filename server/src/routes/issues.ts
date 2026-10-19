@@ -4946,8 +4946,9 @@ export function issueRoutes(
   }
 
   // Board writes may not reference an issue the actor cannot see (a workspace
-  // inheritance source, a new blocker): a hidden id fails exactly as an
-  // unknown one does.
+  // inheritance source, a new blocker). Unknown, cross-company and hidden ids
+  // all fail here, before any other check, so the response cannot tell them
+  // apart.
   async function assertBoardReferencedIssuesVisible(
     req: Request,
     companyId: string,
@@ -4961,8 +4962,8 @@ export function issueRoutes(
     for (const id of ids) {
       const referenced = await svc.getById(id);
       if (
-        referenced &&
-        referenced.companyId === companyId &&
+        !referenced ||
+        referenced.companyId !== companyId ||
         (await isIssueHiddenByProjectVisibility(req, access, referenced))
       ) {
         throw hiddenError();
@@ -11848,11 +11849,12 @@ export function issueRoutes(
         createBody.parentId &&
         projectAccessMode() !== "off"
       ) {
-        // Board callers skip the agent-only parent load above.
+        // Board callers skip the agent-only parent load above. Unknown,
+        // cross-company and hidden parents get the same 404, as agents do.
         const boardParent = await svc.getById(createBody.parentId);
         if (
-          boardParent &&
-          boardParent.companyId === companyId &&
+          !boardParent ||
+          boardParent.companyId !== companyId ||
           (await isIssueHiddenByProjectVisibility(req, access, boardParent))
         ) {
           res.status(404).json({ error: "Parent issue not found" });
@@ -13154,8 +13156,8 @@ export function issueRoutes(
       ) {
         const nextParent = await svc.getById(updateFields.parentId);
         if (
-          nextParent &&
-          nextParent.companyId === existing.companyId &&
+          !nextParent ||
+          nextParent.companyId !== existing.companyId ||
           (await isIssueHiddenByProjectVisibility(req, access, nextParent))
         ) {
           throw notFound("Parent issue not found");
