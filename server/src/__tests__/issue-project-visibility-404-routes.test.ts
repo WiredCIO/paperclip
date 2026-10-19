@@ -70,6 +70,7 @@ const mockIssueService = vi.hoisted(() => ({
   removeAttachment: vi.fn(),
   createAttachment: vi.fn(),
   getConversation: vi.fn(),
+  getRelationSummaries: vi.fn(),
   create: vi.fn(),
 }));
 const mockWorkProductService = vi.hoisted(() => ({
@@ -286,6 +287,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.removeAttachment.mockResolvedValue(hiddenAttachment);
     mockIssueService.getConversation.mockResolvedValue(null);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.create.mockResolvedValue({ ...hiddenIssue, projectId: null, conversationAgentId: DELIVERY_AGENT_ID });
     mockIssueService.createAttachment.mockResolvedValue({ ...hiddenAttachment, artifactWorkProductId: null });
     mockWorkProductService.getById.mockImplementation(async (id: string) =>
@@ -565,7 +567,13 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
   });
 
   describe("placing an issue in a hidden project (WIR-1187)", () => {
-    const moves: Array<{ name: string; probe: (app: express.Express) => request.Test; error: string }> = [
+    const blockerError = "Blocked-by issues must belong to the same company";
+    const moves: Array<{
+      name: string;
+      probe: (app: express.Express) => request.Test;
+      error: string;
+      status?: number;
+    }> = [
       {
         name: "POST /companies/:companyId/issues into a hidden project",
         probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
@@ -596,12 +604,58 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
           .send({ parentId: HIDDEN_ISSUE_ID }),
         error: "Parent issue not found",
       },
+      {
+        name: "POST /companies/:companyId/issues inheriting a hidden issue's workspace",
+        probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", inheritExecutionWorkspaceFromIssueId: HIDDEN_ISSUE_ID }),
+        error: "Workspace inheritance issue not found",
+      },
+      {
+        name: "POST /companies/:companyId/issues blocked by a hidden issue",
+        probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", blockedByIssueIds: [HIDDEN_ISSUE_ID] }),
+        error: blockerError,
+        status: 422,
+      },
+      {
+        name: "POST /issues/:id/children blocked by a hidden issue",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/children`)
+          .send({ title: "Child", blockedByIssueIds: [HIDDEN_ISSUE_ID] }),
+        error: blockerError,
+        status: 422,
+      },
+      {
+        name: "POST /issues/:id/accepted-plan-decompositions with a child in a hidden project",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/accepted-plan-decompositions`)
+          .send({
+            acceptedPlanRevisionId: RANDOM_ID,
+            children: [{ title: "Child", projectId: DELIVERY_PROJECT_ID }],
+          }),
+        error: "Project not found",
+      },
+      {
+        name: "POST /issues/:id/accepted-plan-decompositions with a child blocked by a hidden issue",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/accepted-plan-decompositions`)
+          .send({
+            acceptedPlanRevisionId: RANDOM_ID,
+            children: [{ title: "Child", blockedByIssueIds: [HIDDEN_ISSUE_ID] }],
+          }),
+        error: blockerError,
+        status: 422,
+      },
+      {
+        name: "PATCH /issues/:id adding a hidden blocker",
+        probe: (app) => request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+          .send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] }),
+        error: blockerError,
+        status: 422,
+      },
     ];
 
-    for (const { name, probe, error } of moves) {
-      it(`${name}: Sales-only operator gets 404`, async () => {
+    for (const { name, probe, error, status = 404 } of moves) {
+      it(`${name}: Sales-only operator gets ${status}`, async () => {
         const res = await probe(await createApp("operator"));
-        expect(res.status).toBe(404);
+        expect(res.status).toBe(status);
         expect(res.body).toEqual({ error });
       });
 
@@ -610,6 +664,17 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
         expect(res.body?.error).not.toBe(error);
       });
     }
+
+    it("a hidden blocker someone else set may be resubmitted unchanged", async () => {
+      mockIssueService.getRelationSummaries.mockResolvedValue({
+        blockedBy: [{ id: HIDDEN_ISSUE_ID }],
+        blocks: [],
+      });
+      const res = await request(await createApp("operator"))
+        .patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+        .send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] });
+      expect(res.body?.error).not.toBe(blockerError);
+    });
   });
 
   it("write routes make no visibility decisions when the mode is off", async () => {

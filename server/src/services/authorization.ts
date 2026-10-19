@@ -2460,8 +2460,8 @@ export function authorizationService(db: Db | DbTransaction) {
 
   /**
    * Project visibility of an agent's responsible user for an issue write.
-   * Fills a missing projectId from the scope, the issue row or the parent
-   * issue, so an incomplete resource cannot skip the check. Reads are left to
+   * Fills a missing or null projectId from the scope, the issue row or the
+   * parent issue, so an incomplete resource cannot skip the check. Reads are left to
    * decideBase; `off` makes no query.
    */
   async function decideResponsibleUserIssueVisibility(
@@ -2484,11 +2484,16 @@ export function authorizationService(db: Db | DbTransaction) {
     let projectId = input.resource.projectId !== undefined
       ? input.resource.projectId
       : input.scope && input.scope.projectId === null ? null : scopeString("projectId");
-    if (projectId === undefined && !issueId) {
+    // A null projectId is not trusted here: the stored issue row, or for a
+    // create the parent it inherits from, decides the project.
+    if (!projectId && issueId) {
+      const issue = await loadIssue(issueId);
+      if (issue && issue.companyId === companyId && issue.projectId) projectId = issue.projectId;
+    } else if (!projectId) {
       const parentIssueId = input.resource.parentIssueId ?? scopeString("parentIssueId");
       if (parentIssueId) {
         const parent = await loadIssue(parentIssueId);
-        projectId = parent && parent.companyId === companyId ? parent.projectId : null;
+        if (parent && parent.companyId === companyId && parent.projectId) projectId = parent.projectId;
       }
     }
     return decideProjectVisibility({

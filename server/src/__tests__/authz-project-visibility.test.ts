@@ -394,6 +394,10 @@ describeEmbeddedPostgres("project visibility in decideBase", () => {
           [companyIssue(), { issueId: fixture.deliveryIssue.id }],
           [companyIssue(), { projectId: fixture.deliveryProject.id }],
           [{ ...companyIssue(), parentIssueId: fixture.deliveryIssue.id }, undefined],
+          // An explicit null projectId is not trusted over the stored row.
+          [{ ...companyIssue(), issueId: fixture.deliveryIssue.id, projectId: null }, undefined],
+          [companyIssue(), { issueId: fixture.deliveryIssue.id, projectId: null }],
+          [{ ...companyIssue(), projectId: null, parentIssueId: fixture.deliveryIssue.id }, undefined],
         ] as Array<[AuthorizationResource, Record<string, unknown> | undefined]>) {
           await expect(decideFor(fixture.salesOperatorId, action, resource, scope)).resolves.toMatchObject({
             allowed: false,

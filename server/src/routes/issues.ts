@@ -4945,6 +4945,34 @@ export function issueRoutes(
     }
   }
 
+  // Board writes may not reference an issue the actor cannot see (a workspace
+  // inheritance source, a new blocker): a hidden id fails exactly as an
+  // unknown one does.
+  async function assertBoardReferencedIssuesVisible(
+    req: Request,
+    companyId: string,
+    issueIds: ReadonlyArray<string | null | undefined> | null | undefined,
+    hiddenError: () => Error,
+  ) {
+    if (req.actor.type !== "board" || projectAccessMode() === "off" || !issueIds) return;
+    const ids = new Set(
+      issueIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+    for (const id of ids) {
+      const referenced = await svc.getById(id);
+      if (
+        referenced &&
+        referenced.companyId === companyId &&
+        (await isIssueHiddenByProjectVisibility(req, access, referenced))
+      ) {
+        throw hiddenError();
+      }
+    }
+  }
+
+  const hiddenBlockerError = () =>
+    unprocessable("Blocked-by issues must belong to the same company");
+
   async function assertCanAssignTasks(
     req: Request,
     companyId: string,
@@ -11836,6 +11864,18 @@ export function issueRoutes(
         companyId,
         createAssignmentScope.projectId,
       );
+      await assertBoardReferencedIssuesVisible(
+        req,
+        companyId,
+        [createBody.inheritExecutionWorkspaceFromIssueId],
+        () => notFound("Workspace inheritance issue not found"),
+      );
+      await assertBoardReferencedIssuesVisible(
+        req,
+        companyId,
+        createBody.blockedByIssueIds,
+        hiddenBlockerError,
+      );
       await assertTaskBridgeCreateAllowed(
         req,
         companyId,
@@ -12183,6 +12223,12 @@ export function issueRoutes(
         parent.companyId,
         childAssignmentScope.projectId,
       );
+      await assertBoardReferencedIssuesVisible(
+        req,
+        parent.companyId,
+        createBody.blockedByIssueIds,
+        hiddenBlockerError,
+      );
       await assertTaskBridgeCreateAllowed(
         req,
         parent.companyId,
@@ -12406,6 +12452,17 @@ export function issueRoutes(
             : {}),
         };
         requestedChildren.push(childBody);
+        await assertBoardIssueProjectVisible(
+          req,
+          sourceIssue.companyId,
+          childBody.projectId ?? sourceIssue.projectId ?? null,
+        );
+        await assertBoardReferencedIssuesVisible(
+          req,
+          sourceIssue.companyId,
+          childBody.blockedByIssueIds,
+          hiddenBlockerError,
+        );
         assertNoAgentHostWorkspaceCommandMutation(
           req,
           collectIssueWorkspaceCommandPaths(childBody),
@@ -13072,6 +13129,21 @@ export function issueRoutes(
           req,
           existing.companyId,
           updateFields.projectId as string | null,
+        );
+      }
+      if (existingRelations) {
+        // Only newly added blockers: a hidden blocker someone else set may
+        // be resubmitted unchanged.
+        const currentBlockerIds = new Set(
+          existingRelations.blockedBy.map((relation) => relation.id),
+        );
+        await assertBoardReferencedIssuesVisible(
+          req,
+          existing.companyId,
+          (req.body.blockedByIssueIds as string[]).filter(
+            (id) => !currentBlockerIds.has(id),
+          ),
+          hiddenBlockerError,
         );
       }
       if (
