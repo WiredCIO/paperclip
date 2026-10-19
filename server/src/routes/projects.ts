@@ -25,7 +25,14 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+  getVisibleProject,
+  hasCompanyOwnerOrAdminMembership,
+} from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -193,7 +200,7 @@ export function projectRoutes(db: Db) {
 
   router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
     assertBoard(req);
-    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    const project = await getVisibleProject(req, res, access, svc.getById(req.params.id as string), "Project not found");
     if (!project) return;
     const repositories = await selectedRepositories(req, project.companyId, req.body.repositoryIds, project.workspaces);
     const updated = await svc.replaceRepositories(project.id, repositories);
@@ -326,7 +333,7 @@ export function projectRoutes(db: Db) {
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     if ("categoryId" in req.body && !hasCompanyOwnerOrAdminMembership(req, existing.companyId)) {
       throw forbidden("Only company owners or admins can change a project's category");
@@ -393,7 +400,7 @@ export function projectRoutes(db: Db) {
 
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -432,7 +439,7 @@ export function projectRoutes(db: Db) {
     async (req, res) => {
       const id = req.params.id as string;
       const workspaceId = req.params.workspaceId as string;
-      const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
       if (!existing) return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
@@ -478,7 +485,7 @@ export function projectRoutes(db: Db) {
       return;
     }
 
-    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const project = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!project) return;
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
@@ -752,7 +759,7 @@ export function projectRoutes(db: Db) {
   router.delete("/projects/:id/workspaces/:workspaceId", async (req, res) => {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
@@ -780,7 +787,7 @@ export function projectRoutes(db: Db) {
 
   router.delete("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     const project = await svc.remove(id);
     if (!project) {
