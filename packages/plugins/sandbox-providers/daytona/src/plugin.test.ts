@@ -1918,6 +1918,63 @@ describe("Daytona sandbox provider plugin", () => {
       expect(result!.stderr).toMatch(/timed out/);
     });
 
+    // The SDK maps an HTTP 504 from the Daytona gateway to DaytonaTimeoutError.
+    const gateway504 = () =>
+      Object.assign(new MockDaytonaTimeoutError("<html><head><title>504 Gateway Time-out</title></head></html>"), {
+        statusCode: 504,
+      });
+
+    it("retries a gateway 504 on the poll path instead of ending the command as timed out", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      sandbox.process.getSessionCommandLogs.mockImplementation(
+        async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+          if (onStdout) throw new Error("socket error");
+          return { stdout: "after-blip", stderr: "" };
+        },
+      );
+      sandbox.process.getSessionCommand
+        .mockResolvedValueOnce({ id: "cmd-1", command: "", exitCode: undefined })
+        .mockRejectedValueOnce(gateway504())
+        .mockResolvedValue({ id: "cmd-1", command: "", exitCode: 3 });
+      mockGet.mockResolvedValue(sandbox);
+
+      const result = await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+
+      expect(result).toMatchObject({ exitCode: 3, timedOut: false, stdout: "after-blip" });
+    });
+
+    it("retries a gateway 504 on the exit-code read after the log stream ends", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      sandbox.process.getSessionCommandLogs.mockImplementation(
+        async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+          onStdout?.("streamed");
+        },
+      );
+      sandbox.process.getSessionCommand
+        .mockRejectedValueOnce(gateway504())
+        .mockResolvedValue({ id: "cmd-1", command: "", exitCode: 0 });
+      mockGet.mockResolvedValue(sandbox);
+
+      const result = await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+
+      expect(result).toMatchObject({ exitCode: 0, timedOut: false, stdout: "streamed" });
+    });
+
+    it("reports a one-shot gateway 504 as a provider failure, not a command timeout", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      sandbox.process.executeCommand.mockRejectedValue(gateway504());
+      mockGet.mockResolvedValue(sandbox);
+
+      const result = await plugin.definition.onEnvironmentExecute?.(sessionExecParams({ bypassSession: true }));
+
+      expect(result).toMatchObject({ exitCode: null, timedOut: false });
+      expect(result!.stderr).toMatch(/Daytona gateway returned HTTP 504/);
+      expect(result!.stderr).not.toMatch(/<html>/);
+    });
+
     describe("log stream (default)", () => {
       // A session command tries the log stream first. It streams stdout and
       // stderr from the callback log form instead of the 50-ms poll, and falls
