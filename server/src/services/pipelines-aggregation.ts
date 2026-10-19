@@ -14,6 +14,52 @@ import {
 import { notFound } from "../errors.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
+/** The issue fields a project-visibility check needs. */
+export type PipelineIssueVisibilityRef = {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  status: string;
+};
+
+/**
+ * Per-request check for whether the caller may see a linked issue under
+ * project visibility. Callers pass `undefined` when nothing can be hidden
+ * (`PAPERCLIP_PROJECT_ACCESS_MODE=off`), so no visibility checks or extra
+ * queries run.
+ */
+export type PipelineIssueVisibility = (issue: PipelineIssueVisibilityRef) => Promise<boolean>;
+
+const issueVisibilityRefColumns = {
+  issueCompanyId: issues.companyId,
+  issueProjectId: issues.projectId,
+  issueParentId: issues.parentId,
+  issueAssigneeUserId: issues.assigneeUserId,
+};
+
+function issueVisibilityRef(row: {
+  issueId: string;
+  issueCompanyId: string;
+  issueProjectId: string | null;
+  issueParentId: string | null;
+  issueAssigneeUserId: string | null;
+  agentId?: string | null;
+  status: string;
+}): PipelineIssueVisibilityRef {
+  return {
+    id: row.issueId,
+    companyId: row.issueCompanyId,
+    projectId: row.issueProjectId,
+    parentId: row.issueParentId,
+    assigneeAgentId: row.agentId ?? null,
+    assigneeUserId: row.issueAssigneeUserId,
+    status: row.status,
+  };
+}
+
 export const PIPELINE_ATTENTION_DEFAULT_LIMIT = 50;
 export const PIPELINE_ATTENTION_MAX_LIMIT = 100;
 export const COMPANY_CASE_EVENTS_DEFAULT_LIMIT = 50;
@@ -106,7 +152,7 @@ function stageAutomationFromConfig(stage: typeof pipelineStages.$inferSelect) {
 
 export async function listPipelineAttention(
   db: Db,
-  input: { companyId: string; caller: AttentionCaller; limit?: number },
+  input: { companyId: string; caller: AttentionCaller; limit?: number; isIssueVisible?: PipelineIssueVisibility },
 ) {
   const limit = boundedLimit(input.limit, PIPELINE_ATTENTION_DEFAULT_LIMIT, PIPELINE_ATTENTION_MAX_LIMIT);
 
@@ -228,8 +274,8 @@ export async function listPipelineAttention(
     .filter((value): value is string => typeof value === "string"))];
 
   const [activeWorkByCase, workIssuesByCase, upstreamCases] = await Promise.all([
-    loadActiveWorkForCases(db, input.companyId, driftCaseIds),
-    loadOpenWorkIssuesForCases(db, input.companyId, driftCaseIds),
+    loadActiveWorkForCases(db, input.companyId, driftCaseIds, input.isIssueVisible),
+    loadOpenWorkIssuesForCases(db, input.companyId, driftCaseIds, input.isIssueVisible),
     upstreamCaseIds.length === 0
       ? Promise.resolve([] as Array<{ case: CaseRow; pipeline: PipelineRow }>)
       : db
@@ -277,6 +323,147 @@ export async function listPipelineAttention(
     headsUp,
     counts: { suggestions: suggestions.length, reviews: reviews.length, headsUp: headsUp.length },
   };
+}
+
+type CaseEventIssueRedactable = {
+  payload: unknown;
+  automation?: { issue: { id: string } | null } | undefined;
+};
+
+/**
+ * Removes references to issues the caller cannot see from case events:
+ * `payload.issueId` becomes null, `payload.*IssueIds` arrays drop hidden ids,
+ * and `automation.issue` becomes null. The event itself stays, so paging is
+ * unchanged. A no-op when `isIssueVisible` is undefined.
+ */
+export async function redactHiddenIssuesFromCaseEvents<T extends CaseEventIssueRedactable>(
+  db: Db,
+  companyId: string,
+  events: T[],
+  isIssueVisible: PipelineIssueVisibility | undefined,
+): Promise<T[]> {
+  if (!isIssueVisible || events.length === 0) return events;
+  const isIssueIdList = (key: string, value: unknown): value is unknown[] =>
+    key.endsWith("IssueIds") && Array.isArray(value);
+  const referencedIds = new Set<string>();
+  for (const event of events) {
+    const payload = event.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === "issueId" && typeof value === "string") referencedIds.add(value);
+      if (isIssueIdList(key, value)) {
+        for (const id of value) if (typeof id === "string") referencedIds.add(id);
+      }
+    }
+    if (event.automation?.issue) referencedIds.add(event.automation.issue.id);
+  }
+  if (referencedIds.size === 0) return events;
+  const referencedIssues = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      parentId: issues.parentId,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...referencedIds])));
+  const hidden = new Set<string>();
+  await Promise.all(referencedIssues.map(async (issue) => {
+    if (!(await isIssueVisible(issue))) hidden.add(issue.id);
+  }));
+  if (hidden.size === 0) return events;
+  return events.map((event) => {
+    const payload = event.payload;
+    let redactedPayload = payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      redactedPayload = Object.fromEntries(Object.entries(payload).map(([key, value]) => {
+        if (key === "issueId" && typeof value === "string" && hidden.has(value)) return [key, null];
+        if (isIssueIdList(key, value)) {
+          return [key, value.filter((id) => !(typeof id === "string" && hidden.has(id)))];
+        }
+        return [key, value];
+      }));
+    }
+    const automation = event.automation?.issue && hidden.has(event.automation.issue.id)
+      ? { ...event.automation, issue: null }
+      : event.automation;
+    return { ...event, payload: redactedPayload, ...(event.automation !== undefined ? { automation } : {}) };
+  });
+}
+
+const AUTOMATION_ISSUE_REF_MAX_DEPTH = 8;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Removes issues hidden from the caller by project visibility from pipeline
+ * automation results (transition, ingest, review, breakdown, retry plans and
+ * retries). Walks the result and rewrites the two shapes that name issues:
+ * `executionIssueId` on automation execution rows becomes null, and any
+ * `issueIds` list (retry blockers, `retired.issueIds`) drops hidden ids.
+ * A no-op when `isIssueVisible` is undefined.
+ */
+export async function redactHiddenAutomationIssueRefs<T>(
+  db: Db,
+  companyId: string,
+  result: T,
+  isIssueVisible: PipelineIssueVisibility | undefined,
+): Promise<T> {
+  if (!isIssueVisible) return result;
+  const referencedIds = new Set<string>();
+  const collect = (value: unknown, depth: number) => {
+    if (depth > AUTOMATION_ISSUE_REF_MAX_DEPTH) return;
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, depth + 1);
+      return;
+    }
+    if (!isPlainObject(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "executionIssueId" && typeof child === "string") referencedIds.add(child);
+      else if (key === "issueIds" && Array.isArray(child)) {
+        for (const id of child) if (typeof id === "string") referencedIds.add(id);
+      } else collect(child, depth + 1);
+    }
+  };
+  collect(result, 0);
+  if (referencedIds.size === 0) return result;
+  const referencedIssues = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      parentId: issues.parentId,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...referencedIds])));
+  const hidden = new Set<string>();
+  await Promise.all(referencedIssues.map(async (issue) => {
+    if (!(await isIssueVisible(issue))) hidden.add(issue.id);
+  }));
+  if (hidden.size === 0) return result;
+  const redact = (value: unknown, depth: number): unknown => {
+    if (depth > AUTOMATION_ISSUE_REF_MAX_DEPTH) return value;
+    if (Array.isArray(value)) return value.map((item) => redact(item, depth + 1));
+    if (!isPlainObject(value)) return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+      if (key === "executionIssueId" && typeof child === "string") return [key, hidden.has(child) ? null : child];
+      if (key === "issueIds" && Array.isArray(child)) {
+        return [key, child.filter((id) => !(typeof id === "string" && hidden.has(id)))];
+      }
+      return [key, redact(child, depth + 1)];
+    }));
+  };
+  return redact(result, 0) as T;
 }
 
 export async function listCompanyCaseEvents(
@@ -546,6 +733,7 @@ export async function loadActiveWorkForCases(
   db: Db,
   companyId: string,
   caseIds: string[],
+  isIssueVisible?: PipelineIssueVisibility,
 ): Promise<Map<string, ActiveWork | null>> {
   const map = new Map<string, ActiveWork | null>(caseIds.map((id) => [id, null]));
   if (caseIds.length === 0) return map;
@@ -560,6 +748,8 @@ export async function loadActiveWorkForCases(
       agentName: agents.name,
       startedAt: issues.startedAt,
       issueUpdatedAt: issues.updatedAt,
+      status: issues.status,
+      ...issueVisibilityRefColumns,
     })
     .from(pipelineCaseIssueLinks)
     .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
@@ -575,6 +765,8 @@ export async function loadActiveWorkForCases(
     .orderBy(desc(issues.updatedAt));
   for (const row of rows) {
     if (map.get(row.caseId)) continue;
+    // A hidden issue falls through to the case's next visible in-progress one.
+    if (isIssueVisible && !(await isIssueVisible(issueVisibilityRef(row)))) continue;
     map.set(row.caseId, {
       issueId: row.issueId,
       issueIdentifier: row.issueIdentifier,
@@ -702,7 +894,12 @@ export async function loadPipelineDescendantActiveWorkCounts(
   return map;
 }
 
-async function loadOpenWorkIssuesForCases(db: Db, companyId: string, caseIds: string[]) {
+async function loadOpenWorkIssuesForCases(
+  db: Db,
+  companyId: string,
+  caseIds: string[],
+  isIssueVisible?: PipelineIssueVisibility,
+) {
   const map = new Map<string, { issueId: string; issueIdentifier: string | null; title: string; status: string }>();
   if (caseIds.length === 0) return map;
   const rows = await db
@@ -712,6 +909,8 @@ async function loadOpenWorkIssuesForCases(db: Db, companyId: string, caseIds: st
       issueIdentifier: issues.identifier,
       title: issues.title,
       status: issues.status,
+      agentId: issues.assigneeAgentId,
+      ...issueVisibilityRefColumns,
     })
     .from(pipelineCaseIssueLinks)
     .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
@@ -727,6 +926,7 @@ async function loadOpenWorkIssuesForCases(db: Db, companyId: string, caseIds: st
     .orderBy(desc(issues.updatedAt));
   for (const row of rows) {
     if (map.has(row.caseId)) continue;
+    if (isIssueVisible && !(await isIssueVisible(issueVisibilityRef(row)))) continue;
     map.set(row.caseId, {
       issueId: row.issueId,
       issueIdentifier: row.issueIdentifier,
