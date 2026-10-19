@@ -73,7 +73,7 @@ describe("company extract-search route", () => {
       scope: "comments",
       limit: 200,
       matchesPerIssue: 200,
-    }));
+    }), { projectVisibility: undefined });
     expect(response.body).toMatchObject({ kind: "url", scope: "comments", truncated: false });
   });
 
