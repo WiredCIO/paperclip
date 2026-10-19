@@ -8201,6 +8201,7 @@ export function issueService(db: Db) {
       companyId: string,
       userId: string,
       status?: string | readonly string[],
+      projectVisibility?: ProjectVisibilityResolution,
     ) => {
       const conditions = [
         eq(issues.companyId, companyId),
@@ -8208,6 +8209,9 @@ export function issueService(db: Db) {
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
+      const projectVisibilityCondition =
+        projectVisibilityIssueCondition(projectVisibility);
+      if (projectVisibilityCondition) conditions.push(projectVisibilityCondition);
       const statuses = parseStatusFilter(status);
       if (statuses.length === 1) {
         conditions.push(eq(issues.status, statuses[0]));
