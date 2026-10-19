@@ -375,6 +375,37 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     });
   }
 
+  // WIR-971: the core board write routes load the issue through the same
+  // visibility-aware helper, so a hidden issue cannot be mutated, commented
+  // on or deleted by id.
+  const writeProbes: Array<{ name: string; probe: Probe }> = [
+    {
+      name: "PATCH /issues/:id",
+      probe: (app, id) => request(app).patch(`/api/issues/${id}`).send({ title: "Renamed" }),
+    },
+    {
+      name: "POST /issues/:id/comments",
+      probe: (app, id) => request(app).post(`/api/issues/${id}/comments`).send({ body: "hello" }),
+    },
+    {
+      name: "DELETE /issues/:id",
+      probe: (app, id) => request(app).delete(`/api/issues/${id}`),
+    },
+  ];
+
+  for (const { name, probe } of writeProbes) {
+    it(`${name}: Sales-only operator gets the random-id 404 byte for byte`, async () => {
+      const app = await createApp("operator");
+      await expectIndistinguishable(app, probe, HIDDEN_ISSUE_ID);
+    });
+
+    it(`${name}: owner is not stopped by the visibility gate`, async () => {
+      const app = await createApp("owner");
+      const res = await probe(app, HIDDEN_ISSUE_ID);
+      expect(res.status).not.toBe(404);
+    });
+  }
+
   it("attachment upload answers a cross-company issue with the random-id 404, not 422", async () => {
     const app = await createApp("owner");
     const probe: Probe = (target, id) =>
