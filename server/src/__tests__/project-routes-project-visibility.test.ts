@@ -186,5 +186,6 @@ describeEmbeddedPostgres("project routes honour project visibility", () => {
 
     const summary = await request(app(outsider)).get(`/api/projects/${fixture.salesProject.id}/external-object-summary`);
     expect(summary.status, summary.text).toBe(403);
+    expect(summary.body).toEqual({ error: "Project is outside this actor's authorization boundary" });
   });
 });
