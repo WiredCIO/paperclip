@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   companies,
   companyMemberships,
   createDb,
@@ -39,6 +41,7 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    await db.delete(activityLog);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(projects);
@@ -50,11 +53,16 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
     await tempDb?.cleanup();
   });
 
-  function actorFor(companyId: string, userId: string, membershipRole: string): Express.Request["actor"] {
+  function actorFor(
+    companyId: string,
+    userId: string,
+    membershipRole: string,
+    source = "session",
+  ): Express.Request["actor"] {
     return {
       type: "board",
       userId,
-      source: "session",
+      source,
       isInstanceAdmin: false,
       companyIds: [companyId],
       memberships: [{ companyId, status: "active", membershipRole }],
@@ -106,6 +114,7 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
     const [delivery] = await db.insert(projectCategories).values({ companyId, name: "Delivery" }).returning();
     const [salesAcme] = await db.insert(projects).values({ companyId, name: "Acme", categoryId: sales!.id }).returning();
     const [deliveryAcme] = await db.insert(projects).values({ companyId, name: "Acme", categoryId: delivery!.id }).returning();
+    await db.insert(projects).values({ companyId, name: "Delivery only", categoryId: delivery!.id });
 
     const ownerId = `user-${randomUUID()}`;
     const salesOperatorId = `user-${randomUUID()}`;
@@ -126,6 +135,7 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
       companyId,
       owner: actorFor(companyId, ownerId, "owner"),
       salesOperator: actorFor(companyId, salesOperatorId, "operator"),
+      cloudTenantOperator: actorFor(companyId, salesOperatorId, "operator", "cloud_tenant"),
       salesAcme: salesAcme!,
       deliveryAcme: deliveryAcme!,
     };
@@ -139,6 +149,42 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
 
     expect(res.status, res.text).toBe(200);
     expect(res.body.id).toBe(fixture.salesAcme.id);
+  });
+
+  it("resolves to the visible project for a cloud tenant operator too", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+
+    const res = await request(app(fixture.cloudTenantOperator)).get(`/api/projects/acme?companyId=${fixture.companyId}`);
+
+    expect(res.status, res.text).toBe(200);
+    expect(res.body.id).toBe(fixture.salesAcme.id);
+  });
+
+  it("targets the visible project on a mutation route", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+
+    const res = await request(app(fixture.salesOperator))
+      .patch(`/api/projects/acme?companyId=${fixture.companyId}`)
+      .send({ description: "Updated by shortname" });
+
+    expect(res.status, res.text).toBe(200);
+    expect(res.body.id).toBe(fixture.salesAcme.id);
+    const [delivery] = await db.select().from(projects).where(eq(projects.id, fixture.deliveryAcme.id));
+    expect(delivery!.description).toBeNull();
+  });
+
+  it("answers a shortname only a hidden project has exactly like an unknown shortname", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+    const client = request(app(fixture.salesOperator));
+
+    const hidden = await client.get(`/api/projects/delivery-only?companyId=${fixture.companyId}`);
+    const missing = await client.get(`/api/projects/no-such-project?companyId=${fixture.companyId}`);
+
+    expect(hidden.status, hidden.text).toBe(missing.status);
+    expect(hidden.body).toEqual(missing.body);
   });
 
   it("still 409s an ambiguous shortname for an owner under enforce", async () => {
@@ -178,8 +224,10 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
     const fixture = await seed();
     const recorder = tableRecordingDb();
 
-    await request(app(fixture.salesOperator, recorder.db)).get(`/api/projects/acme?companyId=${fixture.companyId}`);
+    const res = await request(app(fixture.salesOperator, recorder.db))
+      .get(`/api/projects/acme?companyId=${fixture.companyId}`);
 
+    expect(res.status, res.text).toBe(200);
     expect(recorder.tables).toContain(principalPermissionGrants);
   });
 });

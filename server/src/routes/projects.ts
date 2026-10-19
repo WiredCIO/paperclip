@@ -25,7 +25,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership, issueListProjectVisibility } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -44,6 +44,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import { projectAccessMode } from "../services/project-visibility.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -135,12 +136,17 @@ export function projectRoutes(db: Db) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
     if (!companyId) return rawId;
-    // Only `enforce` narrows, and only for a restricted board user, so a
-    // hidden namesake cannot turn a visible shortname into a 409. Owner,
-    // shadow and off resolve across every project; off makes no query.
-    const visibility = await issueListProjectVisibility(req, db, companyId);
+    // Under `enforce`, only projects the actor can read are candidates, so a
+    // hidden namesake cannot turn a visible shortname into a 409. Shadow and
+    // off resolve across every project; off makes no extra query.
     const resolved = await svc.resolveByReference(companyId, rawId, {
-      visibleProjectIds: visibility?.kind === "restricted" ? visibility.projectIds : undefined,
+      canSee: projectAccessMode() === "enforce"
+        ? async (projectId) => (await access.decide({
+          actor: req.actor,
+          action: "project:read",
+          resource: { type: "project", companyId, projectId },
+        })).allowed
+        : undefined,
     });
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
