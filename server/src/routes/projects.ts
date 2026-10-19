@@ -25,7 +25,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership, issueListProjectVisibility } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -135,7 +135,13 @@ export function projectRoutes(db: Db) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
     if (!companyId) return rawId;
-    const resolved = await svc.resolveByReference(companyId, rawId);
+    // Only `enforce` narrows, and only for a restricted board user, so a
+    // hidden namesake cannot turn a visible shortname into a 409. Owner,
+    // shadow and off resolve across every project; off makes no query.
+    const visibility = await issueListProjectVisibility(req, db, companyId);
+    const resolved = await svc.resolveByReference(companyId, rawId, {
+      visibleProjectIds: visibility?.kind === "restricted" ? visibility.projectIds : undefined,
+    });
     if (resolved.ambiguous) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }

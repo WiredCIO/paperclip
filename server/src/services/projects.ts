@@ -1276,7 +1276,16 @@ export function projectService(db: Db) {
       return removed ? toWorkspace(removed) : null;
     },
 
-    resolveByReference: async (companyId: string, reference: string) => {
+    /**
+     * `visibleProjectIds`, when given, limits shortname matching to those
+     * projects, so a hidden namesake neither makes the reference ambiguous
+     * nor resolves. It does not apply to a UUID reference.
+     */
+    resolveByReference: async (
+      companyId: string,
+      reference: string,
+      options: { visibleProjectIds?: ReadonlySet<string> } = {},
+    ) => {
       const raw = reference.trim();
       if (raw.length === 0) {
         return { project: null, ambiguous: false } as const;
@@ -1304,7 +1313,10 @@ export function projectService(db: Db) {
         .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
         .from(projects)
         .where(eq(projects.companyId, companyId));
-      const matches = rows.filter((row) => deriveProjectUrlKey(row.name, row.id) === urlKey);
+      const matches = rows.filter((row) =>
+        deriveProjectUrlKey(row.name, row.id) === urlKey &&
+        (!options.visibleProjectIds || options.visibleProjectIds.has(row.id))
+      );
       if (matches.length === 1) {
         const match = matches[0]!;
         return {
