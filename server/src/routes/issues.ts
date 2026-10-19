@@ -12987,14 +12987,18 @@ export function issueRoutes(
       // Each issue releases in its own transaction: one issue the caller is
       // not the approver on must not hold back the rest of the batch.
       const results: Array<{ issueId: string; ok: boolean; status: number; error?: string; wakeQueued?: boolean }> = [];
-      const isVisible = issueVisibilityForRequest(req, access);
+      const visibilityApplies = issueVisibilityForRequest(req, access) !== undefined;
       for (const issueId of req.body.issueIds as string[]) {
         try {
           // A project-hidden issue reports the same 404 the release service
           // gives an id that does not exist.
-          if (isVisible) {
+          if (visibilityApplies) {
             const issue = await svc.getById(issueId);
-            if (issue && issue.companyId === companyId && !(await isVisible(issue))) {
+            if (
+              issue &&
+              issue.companyId === companyId &&
+              (await isIssueHiddenByProjectVisibility(req, access, issue))
+            ) {
               results.push({ issueId, ok: false, status: 404, error: "Issue not found" });
               continue;
             }
