@@ -167,6 +167,12 @@ describe("isClaudeModelNotFoundError", () => {
 });
 
 describe("isClaudeTransientUpstreamError", () => {
+  it("classifies the org monthly spend limit rejection as provider quota, not transient", () => {
+    const message = "Claude run failed: subtype=success: You've hit your org's monthly spend limit · ask your admin to raise it";
+    expect(isClaudeProviderQuotaError({ errorMessage: message })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage: message })).toBe(false);
+  });
+
   it("classifies the 'out of extra usage' subscription window failure as provider quota", () => {
     expect(
       isClaudeProviderQuotaError({

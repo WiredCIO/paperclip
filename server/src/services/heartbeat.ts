@@ -59,6 +59,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
+import { PROVIDER_QUOTA_HOLD_SOURCES, getProviderQuotaHold } from "./provider-quota-hold.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import type { RateLimitInfo } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
@@ -26352,6 +26353,20 @@ export function heartbeatService(
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    if (source && PROVIDER_QUOTA_HOLD_SOURCES.has(source)) {
+      const quotaHold = await getProviderQuotaHold(db, agentId, new Date());
+      if (quotaHold) {
+        await writeSkippedHeartbeatRequest("heartbeat.provider_quota_hold", {
+          reason: "Provider allowance is exhausted; skipping scheduled wakes until the hold lapses.",
+          holdUntil: quotaHold.until.toISOString(),
+          consecutiveFailures: quotaHold.consecutiveFailures,
+          lastError: quotaHold.reason,
+        });
+        await markTimerHeartbeatChecked(agentId, source);
+        return null;
+      }
     }
 
     if (issueId) {
