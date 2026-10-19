@@ -1634,6 +1634,10 @@ async function executeOneShot(
       metadata: { durationMs },
     };
   } catch (error) {
+    // A gateway 504 also arrives as `DaytonaTimeoutError`; report it as the
+    // provider failure it is, before the real-timeout branch below.
+    const gatewayFailure = gatewayFailureResult(error, execStart);
+    if (gatewayFailure) return gatewayFailure;
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
@@ -1664,8 +1668,63 @@ async function executeOneShot(
 // poll responsive without a busy loop.
 const SESSION_POLL_INTERVAL_MS = 50;
 
+// The poll interval doubles up to this cap. A long agent run (hours) would
+// otherwise send about 20 status requests a second for its whole life, and any
+// one of them hitting a transient gateway error used to end the run.
+const SESSION_POLL_MAX_INTERVAL_MS = 2_000;
+
+// HTTP statuses the Daytona proxy returns when the toolbox behind it is briefly
+// unreachable. The SDK maps 504 to `DaytonaTimeoutError`, so without this check
+// a single gateway blip on a status read looked like the command timing out.
+const TRANSIENT_GATEWAY_STATUS_CODES = new Set([502, 503, 504]);
+
+// How long a run keeps retrying through consecutive gateway errors before it
+// gives up, and the delay between those retries.
+const SESSION_GATEWAY_RETRY_WINDOW_MS = 120_000;
+const SESSION_GATEWAY_RETRY_DELAY_MS = 500;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function gatewayStatusCode(error: unknown): number | null {
+  const status = (error as { statusCode?: unknown } | null)?.statusCode;
+  return typeof status === "number" && TRANSIENT_GATEWAY_STATUS_CODES.has(status) ? status : null;
+}
+
+// Run one short Daytona API read, retrying through transient gateway errors
+// until `deadlineMs`. Any other error, or a gateway error past the deadline,
+// propagates to the caller.
+async function withGatewayRetry<T>(op: () => Promise<T>, deadlineMs: number): Promise<T> {
+  while (true) {
+    try {
+      return await op();
+    } catch (error) {
+      if (gatewayStatusCode(error) == null || Date.now() >= deadlineMs) throw error;
+      await sleep(SESSION_GATEWAY_RETRY_DELAY_MS);
+    }
+  }
+}
+
+// The result for a command whose outcome is unknown because the Daytona gateway
+// kept failing. It is a provider failure, not a command timeout, so it reports
+// `timedOut: false` and says what happened instead of echoing the gateway's
+// HTML error page.
+function gatewayFailureResult(
+  error: unknown,
+  execStart: number | null,
+): PluginEnvironmentExecuteResult | null {
+  const status = gatewayStatusCode(error);
+  if (status == null) return null;
+  const durationMs = execStart != null ? timingNow() - execStart : undefined;
+  const after = durationMs != null ? ` after ${Math.round(durationMs / 1000)} s` : "";
+  return {
+    exitCode: null,
+    timedOut: false,
+    stdout: "",
+    stderr: `Daytona gateway returned HTTP ${status}${after}, so the command's result is unknown. This is a sandbox provider error, not a command timeout.\n`,
+    ...(durationMs != null ? { metadata: { durationMs } } : {}),
+  };
 }
 
 // Backoff delays for the exit-code read after the log stream ends. The live
@@ -1787,13 +1846,16 @@ async function readSessionExitCode(
   sessionId: string,
   commandId: string,
 ): Promise<number | null> {
-  const first = await sandbox.process.getSessionCommand(sessionId, commandId);
+  const gatewayDeadlineMs = Date.now() + SESSION_GATEWAY_RETRY_WINDOW_MS;
+  const read = () =>
+    withGatewayRetry(() => sandbox.process.getSessionCommand(sessionId, commandId), gatewayDeadlineMs);
+  const first = await read();
   if (typeof first.exitCode === "number") {
     return first.exitCode;
   }
   for (const delayMs of SESSION_EXIT_CODE_RETRY_DELAYS_MS) {
     await sleep(delayMs);
-    const status = await sandbox.process.getSessionCommand(sessionId, commandId);
+    const status = await read();
     if (typeof status.exitCode === "number") {
       return status.exitCode;
     }
@@ -1893,9 +1955,22 @@ async function executeInSession(
     // fails.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
     let exitCode: number | null = null;
+    let pollIntervalMs = SESSION_POLL_INTERVAL_MS;
+    // When the current run of consecutive gateway errors began, or null. A
+    // gateway error is retried; only an unbroken run of them longer than the
+    // retry window ends the command, and then as a provider failure.
+    let gatewayErrorsSince: number | null = null;
     while (true) {
-      const status = await sandbox.process.getSessionCommand(sessionId, commandId);
-      if (typeof status.exitCode === "number") {
+      let status: { exitCode?: number | null } | null = null;
+      try {
+        status = await sandbox.process.getSessionCommand(sessionId, commandId);
+        gatewayErrorsSince = null;
+      } catch (error) {
+        if (gatewayStatusCode(error) == null) throw error;
+        if (gatewayErrorsSince == null) gatewayErrorsSince = Date.now();
+        if (Date.now() - gatewayErrorsSince >= SESSION_GATEWAY_RETRY_WINDOW_MS) throw error;
+      }
+      if (typeof status?.exitCode === "number") {
         exitCode = status.exitCode;
         break;
       }
@@ -1912,13 +1987,17 @@ async function executeInSession(
           metadata: { durationMs },
         };
       }
-      await sleep(SESSION_POLL_INTERVAL_MS);
+      await sleep(gatewayErrorsSince != null ? SESSION_GATEWAY_RETRY_DELAY_MS : pollIntervalMs);
+      pollIntervalMs = Math.min(SESSION_POLL_MAX_INTERVAL_MS, pollIntervalMs * 2);
     }
 
     // Read true, separated stdout and stderr from the logs endpoint. The
     // synchronous dispatch response fields are optional, so the logs endpoint is
     // the source of truth.
-    const logs = await sandbox.process.getSessionCommandLogs(sessionId, commandId);
+    const logs = await withGatewayRetry(
+      () => sandbox.process.getSessionCommandLogs(sessionId, commandId),
+      Date.now() + SESSION_GATEWAY_RETRY_WINDOW_MS,
+    );
     const durationMs = timingNow() - execStart;
     return {
       exitCode,
@@ -1928,6 +2007,10 @@ async function executeInSession(
       metadata: { durationMs },
     };
   } catch (error) {
+    // A gateway 504 also arrives as `DaytonaTimeoutError`; report it as the
+    // provider failure it is, before the real-timeout branch below.
+    const gatewayFailure = gatewayFailureResult(error, execStart);
+    if (gatewayFailure) return gatewayFailure;
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
