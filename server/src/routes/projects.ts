@@ -149,6 +149,12 @@ export function projectRoutes(db: Db) {
     return resolved.project?.id ?? rawId;
   }
 
+  // An unresolved shortname stays a non-UUID string. Treat it as missing so it
+  // answers the same 404 as a shortname of a project hidden by visibility.
+  function getReadableProjectById(id: string) {
+    return isUuidLike(id) ? svc.getById(id) : null;
+  }
+
   async function assertProjectReadAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
     const decision = await access.decide({
       actor: req.actor,
@@ -228,7 +234,7 @@ export function projectRoutes(db: Db) {
 
   router.get("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
-    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const project = await getAccessibleResource(req, res, getReadableProjectById(id), "Project not found");
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     res.json(project);
@@ -236,7 +242,7 @@ export function projectRoutes(db: Db) {
 
   router.get("/projects/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const project = await getAccessibleResource(req, res, getReadableProjectById(id), "Project not found");
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     const summary = await externalObjectsSvc.getProjectSummary(project.id);

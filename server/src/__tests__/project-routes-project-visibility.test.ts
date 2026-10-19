@@ -128,6 +128,25 @@ describeEmbeddedPostgres("project routes honour project visibility", () => {
     }
   });
 
+  it("404s a Delivery project's shortname exactly like an unknown shortname", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+    const client = request(app(fixture.salesOperator));
+    const query = `?companyId=${fixture.companyId}`;
+
+    for (const suffix of ["", "/external-object-summary"]) {
+      const hidden = await client.get(`/api/projects/delivery-project${suffix}${query}`);
+      const missing = await client.get(`/api/projects/no-such-project${suffix}${query}`);
+      expect(hidden.status, hidden.text).toBe(404);
+      expect(missing.status, missing.text).toBe(404);
+      expect(hidden.body).toEqual({ error: "Project not found" });
+      expect(missing.body).toEqual(hidden.body);
+
+      const visible = await client.get(`/api/projects/sales-project${suffix}${query}`);
+      expect(visible.status, visible.text).toBe(200);
+    }
+  });
+
   it("keeps visible projects readable and omits only the Delivery project from the list", async () => {
     vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
     const fixture = await seed();
