@@ -6251,7 +6251,10 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       }
     }
   },
-  30_000,
+  // WiredCIO fork only: the lost-ack case is flaky (5 of 47 CI runs, 2026-10-10..19,
+  // `retired.committedEvents` sometimes lacks the held event). Retry until upstream
+  // paperclipai/paperclip fixes it, then drop `retry` and restore the bare 30_000.
+  { timeout: 30_000, retry: 2 },
 );
 
 it.each([false, true])(
