@@ -498,6 +498,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     ["POST", `interactions/${ID}/cancel`, {}],
     ["DELETE", `comments/${ID}`],
     ["POST", "feedback-votes", { targetType: "issue_comment", targetId: ID, vote: "up" }],
+    ["POST", "execution-stage/release", { comment: "go" }],
   ].map(([method, path, body]) => ({
     name: `${method} /issues/:id/${String(path).replaceAll(ID, ":x")}`,
     probe: (app, id) => {
@@ -525,6 +526,43 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       expect(hidden.text).not.toBe(random.text);
     });
   }
+
+  describe("bulk execution-stage release (WIR-1187)", () => {
+    const release = vi.fn();
+
+    async function bulkRelease(role: Role) {
+      release.mockReset();
+      // The non-viewer membership check is the only db read on this route.
+      candidateIssueRows.rows = [{ membershipRole: role }];
+      release.mockImplementation(async () => {
+        throw Object.assign(new Error("released"), { status: 409 });
+      });
+      vi.doMock("../services/execution-stage-release.js", () => ({
+        executionStageReleaseService: () => ({ release }),
+      }));
+      const app = await createApp(role);
+      return request(app)
+        .post(`/api/companies/${COMPANY_ID}/issues/execution-stage/release`)
+        .send({ issueIds: [HIDDEN_ISSUE_ID, RANDOM_ID], comment: "go" });
+    }
+
+    it("reports a hidden issue as not found and never releases it", async () => {
+      const res = await bulkRelease("operator");
+      expect(res.status).toBe(200);
+      expect(res.body.results[0]).toEqual({
+        issueId: HIDDEN_ISSUE_ID,
+        ok: false,
+        status: 404,
+        error: "Issue not found",
+      });
+      expect(release.mock.calls.map(([input]) => input.issueId)).toEqual([RANDOM_ID]);
+    });
+
+    it("owner still reaches the release service for the same issue", async () => {
+      await bulkRelease("owner");
+      expect(release.mock.calls.map(([input]) => input.issueId)).toEqual([HIDDEN_ISSUE_ID, RANDOM_ID]);
+    });
+  });
 
   describe("placing an issue in a hidden project (WIR-1187)", () => {
     const moves: Array<{ name: string; probe: (app: express.Express) => request.Test; error: string }> = [

@@ -233,6 +233,7 @@ import {
   getVisibleIssue,
   isIssueHiddenByProjectVisibility,
   issueListProjectVisibility,
+  issueVisibilityForRequest,
   isProjectHiddenByProjectVisibility,
   isProjectVisibilityDenial,
 } from "./authz.js";
@@ -12904,7 +12905,7 @@ export function issueRoutes(
     validate(releaseExecutionStageSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      const issue = await getVisibleIssue(req, res, access, svc.getById(id), "Issue not found");
       if (!issue) return;
       await assertActiveNonViewerMember(req, issue.companyId);
       res.json(
@@ -12927,8 +12928,18 @@ export function issueRoutes(
       // Each issue releases in its own transaction: one issue the caller is
       // not the approver on must not hold back the rest of the batch.
       const results: Array<{ issueId: string; ok: boolean; status: number; error?: string; wakeQueued?: boolean }> = [];
+      const isVisible = issueVisibilityForRequest(req, access);
       for (const issueId of req.body.issueIds as string[]) {
         try {
+          // A project-hidden issue reports the same 404 the release service
+          // gives an id that does not exist.
+          if (isVisible) {
+            const issue = await svc.getById(issueId);
+            if (issue && issue.companyId === companyId && !(await isVisible(issue))) {
+              results.push({ issueId, ok: false, status: 404, error: "Issue not found" });
+              continue;
+            }
+          }
           const released = await releaseExecutionStageAndWake(req, {
             issueId,
             companyId,
