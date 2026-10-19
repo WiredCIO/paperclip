@@ -32,6 +32,7 @@ import {
   getActorInfo,
   getVisibleProject,
   hasCompanyOwnerOrAdminMembership,
+  isProjectVisibilityDenial,
 } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -168,6 +169,11 @@ export function projectRoutes(db: Db) {
       resource: { type: "project", companyId: project.companyId, projectId: project.id },
     });
     if (decision.allowed) return true;
+    // A project hidden by project visibility must look exactly like a missing one.
+    if (isProjectVisibilityDenial(decision)) {
+      res.status(404).json({ error: "Project not found" });
+      return false;
+    }
     res.status(403).json({ error: "Project is outside this actor's authorization boundary" });
     return false;
   }
@@ -245,6 +251,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
     const summary = await externalObjectsSvc.getProjectSummary(project.id);
     res.json(summary);
   });
