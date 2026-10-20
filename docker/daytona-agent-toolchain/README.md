@@ -17,7 +17,7 @@ a sandbox is not also a silent toolchain upgrade.
 | Tool | Version | Build arg |
 | --- | --- | --- |
 | Grok Build CLI | 1.0.40 | `GROK_VERSION` |
-| Claude Code | 2.1.282 | `CLAUDE_CODE_VERSION` |
+| Claude Code | 2.1.303 | `CLAUDE_CODE_VERSION` |
 | .NET SDK | 10.0.401 | `DOTNET_SDK_VERSION` |
 | Power Platform CLI | 2.12.2 | `PAC_VERSION` |
 | Node | from the base image (>= 22 asserted) | — |
