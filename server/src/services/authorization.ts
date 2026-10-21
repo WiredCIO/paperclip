@@ -2458,6 +2458,53 @@ export function authorizationService(db: Db | DbTransaction) {
     });
   }
 
+  /**
+   * Project visibility of an agent's responsible user for an issue write.
+   * Fills a missing or null projectId from the scope, the issue row or the
+   * parent issue, so an incomplete resource cannot skip the check. Reads are left to
+   * decideBase; `off` makes no query.
+   */
+  async function decideResponsibleUserIssueVisibility(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    },
+    companyId: string,
+    responsibleUserId: string,
+  ): Promise<AuthorizationDecision | null> {
+    if (input.resource.type !== "issue" || input.action === "issue:read") return null;
+    if (projectAccessMode() === "off") return null;
+    const scopeString = (key: string) => {
+      const value = input.scope?.[key];
+      return typeof value === "string" && value.length > 0 ? value : undefined;
+    };
+    const issueId = input.resource.issueId ?? scopeString("issueId");
+    let projectId = input.resource.projectId !== undefined
+      ? input.resource.projectId
+      : input.scope && input.scope.projectId === null ? null : scopeString("projectId");
+    // A null projectId is not trusted here: the stored issue row, or for a
+    // create the parent it inherits from, decides the project.
+    if (!projectId && issueId) {
+      const issue = await loadIssue(issueId);
+      if (issue && issue.companyId === companyId && issue.projectId) projectId = issue.projectId;
+    } else if (!projectId) {
+      const parentIssueId = input.resource.parentIssueId ?? scopeString("parentIssueId");
+      if (parentIssueId) {
+        const parent = await loadIssue(parentIssueId);
+        if (parent && parent.companyId === companyId && parent.projectId) projectId = parent.projectId;
+      }
+    }
+    return decideProjectVisibility({
+      actor: input.actor,
+      action: input.action,
+      resource: { ...input.resource, issueId: issueId ?? null, projectId },
+      companyId,
+      userId: responsibleUserId,
+    });
+  }
+
   async function applyResponsibleUserIntersection(
     input: {
       actor: AuthorizationActor;
@@ -2503,7 +2550,7 @@ export function authorizationService(db: Db | DbTransaction) {
       return agentDecision;
     }
 
-    const userDecision = snapshot.userExists && snapshot.activeMembership
+    let userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
           ...input,
           actor: {
@@ -2523,14 +2570,19 @@ export function authorizationService(db: Db | DbTransaction) {
         });
 
     if (
-      !userDecision.allowed &&
-      userDecision.reason === "deny_unsupported_action" &&
-      activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+      userDecision.allowed ||
+      (
+        userDecision.reason === "deny_unsupported_action" &&
+        activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+      )
     ) {
-      return agentDecision;
+      // Neither the fallback nor every allow path checks project visibility,
+      // and a route may pass an issue resource without its projectId. Check
+      // the responsible user's visibility against the completed resource.
+      const visibilityDeny = await decideResponsibleUserIssueVisibility(input, companyId, responsibleUserId);
+      if (!visibilityDeny) return agentDecision;
+      userDecision = visibilityDeny;
     }
-
-    if (userDecision.allowed) return agentDecision;
 
     const denied = deny({
       action: input.action,

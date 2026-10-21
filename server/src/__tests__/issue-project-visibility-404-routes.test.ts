@@ -12,13 +12,14 @@ import type { StorageService } from "../storage/types.js";
  */
 
 const COMPANY_ID = "company-1";
-const DELIVERY_PROJECT_ID = "project-delivery";
+const DELIVERY_PROJECT_ID = "77777777-7777-4777-8777-777777777777";
 const DELIVERY_AGENT_ID = "agent-delivery";
 const HIDDEN_ISSUE_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_COMPANY_ISSUE_ID = "22222222-2222-4222-8222-222222222222";
 const HIDDEN_ATTACHMENT_ID = "33333333-3333-4333-8333-333333333333";
 const HIDDEN_WORK_PRODUCT_ID = "44444444-4444-4444-8444-444444444444";
 const RANDOM_ID = "99999999-9999-4999-8999-999999999999";
+const VISIBLE_ISSUE_ID = "66666666-6666-4666-8666-666666666666";
 
 const hiddenIssue = {
   id: HIDDEN_ISSUE_ID,
@@ -69,6 +70,7 @@ const mockIssueService = vi.hoisted(() => ({
   removeAttachment: vi.fn(),
   createAttachment: vi.fn(),
   getConversation: vi.fn(),
+  getRelationSummaries: vi.fn(),
   create: vi.fn(),
 }));
 const mockWorkProductService = vi.hoisted(() => ({
@@ -261,6 +263,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       const restricted = input.actor?.userId === "user-sales";
       const hidden =
         (input.resource.type === "issue" && input.resource.projectId === DELIVERY_PROJECT_ID) ||
+        (input.resource.type === "project" && input.resource.projectId === DELIVERY_PROJECT_ID) ||
         (input.resource.type === "agent" && input.resource.agentId === DELIVERY_AGENT_ID);
       if (restricted && hidden) {
         return {
@@ -274,6 +277,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     });
     mockIssueService.getById.mockImplementation(async (id: string) => {
       if (id === HIDDEN_ISSUE_ID) return hiddenIssue;
+      if (id === VISIBLE_ISSUE_ID) return { ...hiddenIssue, id, projectId: null };
       if (id === OTHER_COMPANY_ISSUE_ID) return { ...hiddenIssue, id, companyId: "company-2", projectId: null };
       return null;
     });
@@ -283,6 +287,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.removeAttachment.mockResolvedValue(hiddenAttachment);
     mockIssueService.getConversation.mockResolvedValue(null);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.create.mockResolvedValue({ ...hiddenIssue, projectId: null, conversationAgentId: DELIVERY_AGENT_ID });
     mockIssueService.createAttachment.mockResolvedValue({ ...hiddenAttachment, artifactWorkProductId: null });
     mockWorkProductService.getById.mockImplementation(async (id: string) =>
@@ -435,6 +440,287 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       .post(`/api/companies/${COMPANY_ID}/issues/external-object-summaries`)
       .send({ issueIds: [HIDDEN_ISSUE_ID] });
     expect(owner.body.summaries).toHaveProperty(HIDDEN_ISSUE_ID);
+  });
+
+  // WIR-1187 (T5c): every board-reachable issue write route answers a hidden
+  // issue exactly like an id that does not exist.
+  const ID = "55555555-5555-4555-8555-555555555555";
+  const queue = { queueId: "queue-1", revision: "rev-1" };
+  const subRouteWriteProbes: Array<{ name: string; probe: Probe }> = [
+    ["POST", "runner-goal/actions", { requestId: "r-1", agentId: ID, expectedRevision: 0, action: "pause" }],
+    ["PUT", "watchdog", { agentId: ID }],
+    ["DELETE", "watchdog"],
+    ["POST", "recovery-actions/resolve", { outcome: "restored", sourceIssueStatus: "todo" }],
+    ["POST", "external-objects/refresh", {}],
+    ["POST", "documents/plan/annotations", {
+      baseRevisionId: ID,
+      baseRevisionNumber: 1,
+      selector: {
+        quote: { exact: "x" },
+        position: { normalizedStart: 0, normalizedEnd: 1, markdownStart: 0, markdownEnd: 1 },
+      },
+      body: "note",
+    }],
+    ["POST", `documents/plan/annotations/${ID}/comments`, { body: "note" }],
+    ["PATCH", `documents/plan/annotations/${ID}`, { status: "resolved" }],
+    ["PUT", "documents/plan", { format: "markdown", body: "x" }],
+    ["POST", "documents/plan/lock"],
+    ["POST", "documents/plan/unlock"],
+    ["POST", `documents/plan/revisions/${ID}/restore`, {}],
+    ["DELETE", "documents/plan"],
+    ["POST", "work-products", { type: "pull_request", provider: "github", title: "PR" }],
+    ["POST", `work-products/${ID}/review-document`],
+    ["POST", "low-trust/promotions", { sourceArtifactKind: "issue", sourceArtifactId: ID, title: "t", summary: "s" }],
+    ["POST", "read"],
+    ["DELETE", "read"],
+    ["POST", "inbox-archive", {}],
+    ["DELETE", "inbox-archive", {}],
+    ["POST", "approvals", { approvalId: ID }],
+    ["DELETE", `approvals/${ID}`],
+    ["POST", "children", { title: "Child" }],
+    ["POST", "accepted-plan-decompositions", { acceptedPlanRevisionId: ID, children: [{ title: "Child" }] }],
+    ["POST", "monitor/check-now"],
+    ["POST", "scheduled-retry/retry-now"],
+    ["POST", "stalled-review-decision", { action: "approve" }],
+    ["POST", "checkout", { agentId: ID, expectedStatuses: ["todo"] }],
+    ["POST", "release"],
+    ["POST", "admin/force-release"],
+    ["PATCH", `queued-comments/${ID}`, { ...queue, body: "edited" }],
+    ["PUT", "queued-comments/order", { ...queue, orderedCommentIds: [] }],
+    ["POST", "queued-comments/interrupt", { ...queue, targetRunId: null }],
+    ["POST", `queued-comments/${ID}/steer`, { ...queue, targetRunId: "run-1" }],
+    ["DELETE", `queued-comments/${ID}`, queue],
+    ["POST", "interactions", { kind: "request_confirmation", payload: { version: 1, prompt: "Proceed?" } }],
+    ["POST", `interactions/${ID}/accept`, {}],
+    ["POST", `interactions/${ID}/reject`, {}],
+    ["POST", `interactions/${ID}/respond`, { answers: [] }],
+    ["POST", `interactions/${ID}/verdicts`, { verdicts: [{ id: "item-1", verdict: "approve" }] }],
+    ["POST", `interactions/${ID}/withdraw`, {}],
+    ["POST", `interactions/${ID}/skip`, {}],
+    ["POST", `interactions/${ID}/cancel`, {}],
+    ["DELETE", `comments/${ID}`],
+    ["POST", "feedback-votes", { targetType: "issue_comment", targetId: ID, vote: "up" }],
+    ["POST", "execution-stage/release", { comment: "go" }],
+  ].map(([method, path, body]) => ({
+    name: `${method} /issues/:id/${String(path).replaceAll(ID, ":x")}`,
+    probe: (app, id) => {
+      const url = `/api/issues/${id}/${path}`;
+      const req = method === "POST" ? request(app).post(url)
+        : method === "PUT" ? request(app).put(url)
+        : method === "PATCH" ? request(app).patch(url)
+        : request(app).delete(url);
+      return body === undefined ? req : req.send(body as object);
+    },
+  }));
+
+  for (const { name, probe } of subRouteWriteProbes) {
+    it(`${name}: Sales-only operator gets the random-id 404 byte for byte`, async () => {
+      const app = await createApp("operator");
+      await expectIndistinguishable(app, probe, HIDDEN_ISSUE_ID);
+    });
+  }
+
+  for (const { name, probe } of subRouteWriteProbes) {
+    it(`${name}: owner is not turned away by project visibility`, async () => {
+      const app = await createApp("owner");
+      const hidden = await probe(app, HIDDEN_ISSUE_ID);
+      const random = await probe(app, RANDOM_ID);
+      expect(hidden.text).not.toBe(random.text);
+    });
+  }
+
+  describe("bulk execution-stage release (WIR-1187)", () => {
+    const release = vi.fn();
+
+    async function bulkRelease(role: Role) {
+      release.mockReset();
+      // The non-viewer membership check is the only db read on this route.
+      candidateIssueRows.rows = [{ membershipRole: role }];
+      release.mockImplementation(async () => {
+        throw Object.assign(new Error("released"), { status: 409 });
+      });
+      vi.doMock("../services/execution-stage-release.js", () => ({
+        executionStageReleaseService: () => ({ release }),
+      }));
+      const app = await createApp(role);
+      return request(app)
+        .post(`/api/companies/${COMPANY_ID}/issues/execution-stage/release`)
+        .send({ issueIds: [HIDDEN_ISSUE_ID, RANDOM_ID], comment: "go" });
+    }
+
+    it("reports a hidden issue as not found and never releases it", async () => {
+      const res = await bulkRelease("operator");
+      expect(res.status).toBe(200);
+      expect(res.body.results[0]).toEqual({
+        issueId: HIDDEN_ISSUE_ID,
+        ok: false,
+        status: 404,
+        error: "Issue not found",
+      });
+      expect(release.mock.calls.map(([input]) => input.issueId)).toEqual([RANDOM_ID]);
+    });
+
+    it("owner still reaches the release service for the same issue", async () => {
+      await bulkRelease("owner");
+      expect(release.mock.calls.map(([input]) => input.issueId)).toEqual([HIDDEN_ISSUE_ID, RANDOM_ID]);
+    });
+  });
+
+  describe("placing an issue in a hidden project (WIR-1187)", () => {
+    const blockerError = "Blocked-by issues must belong to the same company";
+    const moves: Array<{
+      name: string;
+      probe: (app: express.Express) => request.Test;
+      error: string;
+      status?: number;
+    }> = [
+      {
+        name: "POST /companies/:companyId/issues into a hidden project",
+        probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", projectId: DELIVERY_PROJECT_ID }),
+        error: "Project not found",
+      },
+      {
+        name: "POST /companies/:companyId/issues under a hidden parent",
+        probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", parentId: HIDDEN_ISSUE_ID }),
+        error: "Parent issue not found",
+      },
+      {
+        name: "POST /issues/:id/children into a hidden project",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/children`)
+          .send({ title: "Child", projectId: DELIVERY_PROJECT_ID }),
+        error: "Project not found",
+      },
+      {
+        name: "PATCH /issues/:id projectId into a hidden project",
+        probe: (app) => request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+          .send({ projectId: DELIVERY_PROJECT_ID }),
+        error: "Project not found",
+      },
+      {
+        name: "PATCH /issues/:id parentId under a hidden parent",
+        probe: (app) => request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+          .send({ parentId: HIDDEN_ISSUE_ID }),
+        error: "Parent issue not found",
+      },
+      {
+        name: "POST /companies/:companyId/issues inheriting a hidden issue's workspace",
+        probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", inheritExecutionWorkspaceFromIssueId: HIDDEN_ISSUE_ID }),
+        error: "Workspace inheritance issue not found",
+      },
+      {
+        name: "POST /companies/:companyId/issues blocked by a hidden issue",
+        probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", blockedByIssueIds: [HIDDEN_ISSUE_ID] }),
+        error: blockerError,
+        status: 422,
+      },
+      {
+        name: "POST /issues/:id/children blocked by a hidden issue",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/children`)
+          .send({ title: "Child", blockedByIssueIds: [HIDDEN_ISSUE_ID] }),
+        error: blockerError,
+        status: 422,
+      },
+      {
+        name: "POST /issues/:id/accepted-plan-decompositions with a child in a hidden project",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/accepted-plan-decompositions`)
+          .send({
+            acceptedPlanRevisionId: RANDOM_ID,
+            children: [{ title: "Child", projectId: DELIVERY_PROJECT_ID }],
+          }),
+        error: "Project not found",
+      },
+      {
+        name: "POST /issues/:id/accepted-plan-decompositions with a child blocked by a hidden issue",
+        probe: (app) => request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/accepted-plan-decompositions`)
+          .send({
+            acceptedPlanRevisionId: RANDOM_ID,
+            children: [{ title: "Child", blockedByIssueIds: [HIDDEN_ISSUE_ID] }],
+          }),
+        error: blockerError,
+        status: 422,
+      },
+      {
+        name: "PATCH /issues/:id adding a hidden blocker",
+        probe: (app) => request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+          .send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] }),
+        error: blockerError,
+        status: 422,
+      },
+    ];
+
+    for (const { name, probe, error, status = 404 } of moves) {
+      it(`${name}: Sales-only operator gets ${status}`, async () => {
+        const res = await probe(await createApp("operator"));
+        expect(res.status).toBe(status);
+        expect(res.body).toEqual({ error });
+      });
+
+      it(`${name}: owner is not refused for visibility`, async () => {
+        const res = await probe(await createApp("owner"));
+        expect(res.body?.error).not.toBe(error);
+      });
+    }
+
+    // Each probe again with the hidden id swapped for an unknown one: the
+    // response must not reveal which of the two the caller sent, and nothing
+    // is written for either.
+    for (const { name, probe, error, status = 404 } of moves.filter((move) => move.error !== "Project not found")) {
+      it(`${name}: an unknown id gets the same response and nothing is written`, async () => {
+        const app = await createApp("operator");
+        mockIssueService.getById.mockImplementation(async (id: string) =>
+          id === VISIBLE_ISSUE_ID ? { ...hiddenIssue, id, projectId: null } : null,
+        );
+        const res = await probe(app);
+        expect(res.status).toBe(status);
+        expect(res.body).toEqual({ error });
+        expect(mockIssueService.create).not.toHaveBeenCalled();
+      });
+    }
+
+    it("a hidden blocker someone else set may be resubmitted unchanged", async () => {
+      mockIssueService.getRelationSummaries.mockResolvedValue({
+        blockedBy: [{ id: HIDDEN_ISSUE_ID }],
+        blocks: [],
+      });
+      const res = await request(await createApp("operator"))
+        .patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+        .send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] });
+      expect(res.body?.error).not.toBe(blockerError);
+      // The gate never evaluates the blocker that was already there.
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "issue:read",
+          resource: expect.objectContaining({ issueId: HIDDEN_ISSUE_ID }),
+        }),
+      );
+    });
+  });
+
+  it("write routes make no visibility decisions when the mode is off", async () => {
+    process.env.PAPERCLIP_PROJECT_ACCESS_MODE = "off";
+    const app = await createApp("operator");
+    await request(app).post(`/api/issues/${HIDDEN_ISSUE_ID}/documents/plan/lock`);
+    await request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/children`).send({ title: "Child", projectId: DELIVERY_PROJECT_ID });
+    await request(app).post(`/api/companies/${COMPANY_ID}/issues`).send({
+      title: "New",
+      inheritExecutionWorkspaceFromIssueId: HIDDEN_ISSUE_ID,
+      blockedByIssueIds: [HIDDEN_ISSUE_ID],
+    });
+    await request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`).send({ blockedByIssueIds: [HIDDEN_ISSUE_ID] });
+    await request(app).post(`/api/issues/${VISIBLE_ISSUE_ID}/accepted-plan-decompositions`).send({
+      acceptedPlanRevisionId: RANDOM_ID,
+      children: [{ title: "Child", projectId: DELIVERY_PROJECT_ID, blockedByIssueIds: [HIDDEN_ISSUE_ID] }],
+    });
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "issue:read" }),
+    );
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "project:read" }),
+    );
   });
 
   it("makes no visibility decisions when the mode is off", async () => {
