@@ -298,14 +298,8 @@ function canonicalizeEnvRecord(
   if (!isPlainObject(envValue)) return {};
   const canonicalEnv: Record<string, EffectiveRunConfigCanonicalValue> = {};
   for (const key of Object.keys(envValue).sort()) {
-<<<<<<< ours
-    if (GENERATED_RUNTIME_ENV_KEY_RE.test(key)) continue;
-    if (ENV_HOST_PATH_NOISE_KEYS.has(key)) continue;
-||||||| base
-    if (GENERATED_RUNTIME_ENV_KEY_RE.test(key)) continue;
-=======
     if (GENERATED_RUNTIME_ENVIRONMENT_KEYS.has(key)) continue;
->>>>>>> theirs
+    if (ENV_HOST_PATH_NOISE_KEYS.has(key)) continue;
     const manifestEntry = context.secrets.byConfigPath.get(`env.${key}`) ?? context.secrets.byEnvKey.get(key);
     if (manifestEntry) {
       canonicalEnv[key] = canonicalSecretMetadata(manifestEntry);

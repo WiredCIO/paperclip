@@ -432,16 +432,6 @@ warnings and errors remain visible.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
-<<<<<<< ours
-Bounded retry exhaustion writes one lifecycle receipt per run, retry reason,
-scheduled attempt, and retry limit. Repeated or concurrent recovery checks reuse
-that receipt, including receipts from earlier builds, without advancing the event
-sequence or publishing another live event. Attention reads select the latest
-matching receipt in PostgreSQL and project only the run's issue/task identifiers
-from its context, so historical duplicate receipts cannot multiply run contexts
-in server memory. Existing duplicate events do not require deletion or migration.
-||||||| base
-=======
 An unstarted legacy conversation retry waiting for execution cleanup retains
 `resultJson.executionWait` with the issue, blocking run, and
 `execution_owner_active` cause. A local lifecycle event records the wait and the
@@ -521,7 +511,6 @@ exit/OS codes and recognized Git messages produce a specific classification.
 No command arguments, stderr, filenames, repository URLs, or ref names are saved.
 The same closed fields persist in `workspaceRestoreDiagnostic` and are
 revalidated before projection into an enabled Sentry failure report.
->>>>>>> theirs
 
 ## Codex resume usage snapshot
 

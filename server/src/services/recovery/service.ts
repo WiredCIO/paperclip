@@ -177,9 +177,8 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "cancelled",
   "timed_out",
 ] as const;
-<<<<<<< ours
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 5 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 15 * 60 * 1000;
 // A "missing disposition" recovery action is Paperclip's catch-all for "a run
 // died and its cause could not be classified" (see successful-run-handoff.ts).
 // It is not a decision — most of the time it is a transient infra fault (bad
@@ -189,13 +188,6 @@ export const STALE_BLOCK_SWEEP_MIN_AGE_MS = Math.max(
   60 * 60 * 1000,
   Number(process.env.STALE_BLOCK_SWEEP_MIN_AGE_MS) || 4 * 60 * 60 * 1000,
 );
-||||||| base
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
-=======
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 5 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 15 * 60 * 1000;
->>>>>>> theirs
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 // Terminal, non-actionable issueWorkProducts.status values (see
 // issueWorkProductStatusSchema in packages/shared) that must not count as

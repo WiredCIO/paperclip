@@ -13,7 +13,7 @@ import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
@@ -40,7 +40,11 @@ import type { BudgetServiceHooks } from "../budgets.js";
 import type { providerTraceStore } from "../provider-trace-store.js";
 import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
-import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionResult, RateLimitInfo } from "@paperclipai/adapter-utils";
+import {
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+} from "@paperclipai/adapter-utils/server-utils";
 import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
 import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
@@ -340,6 +344,63 @@ function controllerLeaseLossResultJson(signal: AbortSignal) {
     : {};
 }
 
+/**
+ * True when resultJson carries evidence that a background subagent was
+ * reaped at terminal_result_cleanup (SIGTERM/SIGKILL) after the adapter's
+ * own transcript already reached a terminal result. See WIR-192 and
+ * doc/background-subagents.md.
+ */
+function hasReapedBackgroundTaskEvidence(
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!resultJson) return false;
+  const evidence = resultJson.unmanagedBackgroundTask;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence))
+    return false;
+  const record = evidence as Record<string, unknown>;
+  return (
+    record.stopped === true &&
+    (record.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON ||
+      record.reason === UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON)
+  );
+}
+
+/**
+ * A run whose process exited cleanly is "succeeded". A run that was
+ * signal-killed is ordinarily "failed" — except when the only reason for the
+ * signal was cleanup of an orphaned background subagent after the adapter's
+ * own transcript already reported success (`is_error: false`, no error
+ * message/code). That reap is a runtime-lifecycle event, not an adapter
+ * failure: the run's own work completed. See WIR-192.
+ */
+export function resolveProcessAdapterRunOutcome(input: {
+  exitCode: number | null | undefined;
+  errorMessage: string | null | undefined;
+  errorCode: string | null | undefined;
+  signal: string | null | undefined;
+  resultJson: Record<string, unknown> | null | undefined;
+  cancellationFailed: boolean;
+}): "succeeded" | "failed" {
+  if (
+    (input.exitCode ?? 0) === 0 &&
+    !input.errorMessage &&
+    !input.signal &&
+    !input.cancellationFailed
+  ) {
+    return "succeeded";
+  }
+  if (
+    Boolean(input.signal) &&
+    !input.errorMessage &&
+    !input.errorCode &&
+    !input.cancellationFailed &&
+    hasReapedBackgroundTaskEvidence(input.resultJson)
+  ) {
+    return "succeeded";
+  }
+  return "failed";
+}
+
 export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunCompletionDependencies) {
   const {
     getRun,
@@ -407,15 +468,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       outcome = "timed_out";
     } else if (adapterResult.resultJson?.status === "cancelled") {
       outcome = "cancelled";
-    } else if (
-      (adapterResult.exitCode ?? 0) === 0 &&
-      !adapterResult.errorMessage &&
-      !adapterResult.signal &&
-      !processCancellation?.failed
-    ) {
-      outcome = "succeeded";
     } else {
-      outcome = "failed";
+      outcome = resolveProcessAdapterRunOutcome({
+        exitCode: adapterResult.exitCode,
+        errorMessage: adapterResult.errorMessage,
+        errorCode: adapterResult.errorCode,
+        signal: adapterResult.signal,
+        resultJson: adapterResult.resultJson,
+        cancellationFailed: Boolean(processCancellation?.failed),
+      });
     }
 
     const nextSessionState = resolveNextSessionState({
@@ -497,11 +558,37 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
 
     const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
       ? null : resolveCacheAdjustedCostUsd(adapterResult);
+    // A run that emits no rate_limit_event must not clobber the agent's
+    // last known usage window — carry the most recent prior value forward.
+    const rateLimit: RateLimitInfo | null =
+      adapterResult.rateLimit ??
+      (agent.adapterType === "claude_local"
+        ? await db
+            .select({ usageJson: heartbeatRuns.usageJson })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, run.companyId),
+                eq(heartbeatRuns.agentId, agent.id),
+                ne(heartbeatRuns.id, run.id),
+                isNotNull(heartbeatRuns.finishedAt),
+                sql`${heartbeatRuns.usageJson} -> 'rateLimit' is not null`,
+              ),
+            )
+            .orderBy(desc(heartbeatRuns.finishedAt))
+            .limit(1)
+            .then(
+              (rows) =>
+                ((rows[0]?.usageJson as Record<string, unknown> | undefined)
+                  ?.rateLimit as RateLimitInfo | undefined) ?? null,
+            )
+        : null);
     const usageJson: Record<string, unknown> = {
       accountingReceiptReady: adapterResult.usageComplete !== false,
       costUsdExact: adapterResult.costUsdExact ?? null,
       providerRequestId: adapterResult.providerRequestId ?? null,
       ...(normalizedUsage ?? {}),
+      ...(rateLimit ? { rateLimit } : {}),
       ...(adapterResult.usageByModel ? { usageByModel: adapterResult.usageByModel } : {}),
       ...(rawUsage
         ? {

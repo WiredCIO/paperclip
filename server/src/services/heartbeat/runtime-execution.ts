@@ -38,6 +38,8 @@ import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { registerAdapterExecutionControl } from "../adapter-execution-control.js";
 import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
+import { readAgentRuntimeLimits, resolveAgentRuntimeLimits } from "@paperclipai/shared";
+import { readPaperclipReachability, resolvePaperclipOrigin } from "../paperclip-reachability.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
@@ -127,6 +129,7 @@ export interface HeartbeatRuntimeExecutionInput {
     nativeWorkspaceSync: Selected["nativeWorkspaceSync"];
     workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3];
     remoteExecution: unknown;
+    selectedEnvironment?: { id: string; config?: unknown } | null;
   };
   config: Pick<Selection["config"], "runtimeConfig" | "resolvedConfig" | "managedAiRuntime"> & {
     resolvedInstanceSettings: { experimental: Pick<Awaited<ReturnType<ReturnType<typeof instanceSettingsService>["getExperimental"]>>, "enableWorkspaceBranchReconcileForward" | "enableWorkspaceDirtyQuarantineRepair"> };
@@ -174,7 +177,7 @@ export interface HeartbeatRuntimeExecutionInput {
     appendIdentityRedactedLog: AdapterExecutionContext["onLog"];
   };
   services: Pick<RunState, "upsertTaskSession" | "getRun"> &
-    Pick<Lifecycle, "persistRunProcessMetadata" | "recordCurrentHeartbeatRunRuntimeProgress"> &
+    Pick<Lifecycle, "persistRunProcessMetadata" | "recordCurrentHeartbeatRunRuntimeProgress" | "appendRunEvent"> &
     Pick<ReturnType<typeof createHeartbeatRunControl>, "cancelRunInternal"> &
     Pick<ReturnType<typeof createHeartbeatQueue>, "enqueueWakeup" | "dispatchPendingNativeStatusWakeups"> & {
     executionWorkspacesSvc: Pick<ReturnType<typeof executionWorkspaceService>, "getStoredById">;
@@ -226,7 +229,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { run, agent, options } = input;
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
-  const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
+  const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution, selectedEnvironment } = input.workspace;
   const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
@@ -237,7 +240,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     return measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
   };
   const { identityRedactor, appendIdentityRedactedLog, onLog, onAdapterEvent, onAdapterMeta } = input.output;
-  const { executionWorkspacesSvc, instanceSettings, envOrchestrator, upsertTaskSession, getRun, cancelRunInternal, enqueueWakeup, persistRunProcessMetadata, recordCurrentHeartbeatRunRuntimeProgress, dispatchPendingNativeStatusWakeups } = input.services;
+  const { executionWorkspacesSvc, instanceSettings, envOrchestrator, upsertTaskSession, getRun, cancelRunInternal, enqueueWakeup, persistRunProcessMetadata, recordCurrentHeartbeatRunRuntimeProgress, appendRunEvent, dispatchPendingNativeStatusWakeups } = input.services;
   const localAgentJwtScope =
     issueRef?.workMode === "skill_test"
       ? { kind: "skill_test" as const, issueId: issueRef.id }
@@ -739,11 +742,51 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             }
           : {}),
       };
+      // CH-17: one resolution of this run's bounds, layering the agent's
+      // typed `limits` over any legacy `adapterConfig.maxTurns`, then the
+      // built-in defaults. Adapters read `ctx.limits` and map it onto
+      // their own flags, instead of each reading `adapterConfig.maxTurns`
+      // where both unset and 0 meant uncapped.
+      //
+      // The company tier the issue describes (`companies.settings
+      // .runtimeDefaults`) is not wired: `companies` has no `settings`
+      // column yet, and adding one is a migration. `resolveAgentRuntimeLimits`
+      // already takes `company`, so that tier is a one-line change here
+      // once the column lands.
+      const resolvedRunLimits = resolveAgentRuntimeLimits({
+        agent: readAgentRuntimeLimits(agent.runtimeConfig),
+        company: null,
+        adapterConfig: agent.adapterConfig,
+      });
+      // CH-6: resolve the origin this run can reach before any MCP URL
+      // is built. A remote target cannot reach the host's loopback
+      // PAPERCLIP_API_URL, which is the whole Daytona failure.
+      const resolvedPaperclipOrigin = resolvePaperclipOrigin({
+        isRemoteTarget: executionTarget?.kind === "remote",
+        reachability: readPaperclipReachability(selectedEnvironment?.config),
+        loopbackOrigin: configuredPaperclipApiBaseUrl(),
+        publicOrigin: process.env.PAPERCLIP_PUBLIC_URL ?? null,
+      });
+      if (!resolvedPaperclipOrigin.origin && resolvedPaperclipOrigin.unresolvedReason) {
+        logger.warn(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            mode: resolvedPaperclipOrigin.mode,
+            reason: resolvedPaperclipOrigin.unresolvedReason,
+            environmentId: selectedEnvironment?.id ?? null,
+          },
+          "paperclip MCP origin could not be resolved for this run; runtime tools will be unavailable",
+        );
+      }
+      const mcpOrigin = resolvedPaperclipOrigin.origin;
       const runtimeTools = createAdapterRuntimeToolAccess({
         agentId: agent.id,
         companyId: agent.companyId,
         runId: run.id,
         responsibleUserId: run.responsibleUserId,
+        mcpOrigin,
       });
       if (!runtimeTools) {
         logger.warn(
@@ -759,6 +802,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         db,
         agent,
         runId: run.id,
+        mcpOrigin,
       });
       const runtimeToolDelivery =
         adapter.runtimeToolDelivery ?? "invocation_context";
@@ -771,7 +815,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         });
       }
       if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
-        runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+        runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${mcpOrigin ?? paperclipApiBaseUrl()}/api/mcp/project-tools`,
           token: authToken, connectionId: "paperclip-project-tools" });
       }
       const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
@@ -804,6 +848,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               executionContinuation: executionContinuation ?? null,
               runtimeCommandSpec:
                 adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+              // CH-17: resolved once here so every adapter enforces the
+              // same bounds, rather than each reading its own
+              // `adapterConfig.maxTurns` where unset meant uncapped.
+              limits: resolvedRunLimits,
               executionTarget,
               executionTransport: remoteExecution
                 ? {
@@ -876,6 +924,22 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         );
       if (!guardedDispatch.dispatched) return { dispatched: false };
       adapterResult = await guardedDispatch.resultPromise;
+      // CH-5: the adapter ran to completion without ever calling
+      // ctx.runtimeMcp.getServers(), so every Paperclip-managed MCP
+      // server built for this run was silently dropped.
+      if (runtimeMcpServers.length > 0 && !runtimeMcp?.wasConsumed()) {
+        await appendRunEvent(run, {
+          eventType: "runtime_mcp_not_delivered",
+          level: "warn",
+          message:
+            "This adapter did not read the Paperclip MCP servers prepared for it, so its run had no Paperclip tools.",
+          payload: {
+            adapter: adapter.type,
+            serverCount: runtimeMcpServers.length,
+            serverNames: runtimeMcpServers.map((server) => server.name),
+          },
+        });
+      }
     }
     adapterResult = identityRedactor.redact(adapterResult);
     if (run.runtimeMode === "legacy" && hasWorkspaceRestoreFailure(adapterResult.resultJson)

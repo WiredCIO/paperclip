@@ -104,6 +104,8 @@ import {
   redactQuarantinedBodyForHigherTrust,
   sanitizeQuarantinedCommentForHigherTrust,
 } from "../source-trust.js";
+import { isGitHubIdentityEnvKey } from "@paperclipai/adapter-utils/github-launcher";
+import { normalizePaperclipOrigin } from "../paperclip-reachability.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import {
@@ -253,7 +255,10 @@ function stripForbiddenEnvBindings(
     Object.entries(record).filter(
       ([key]) =>
         !FORBIDDEN_ENV_BINDING_KEYS.has(key.toUpperCase()) &&
-        !(managedGitHubCredentials && MANAGED_GITHUB_TOKEN_KEYS.has(key)),
+        !(
+          managedGitHubCredentials &&
+          (MANAGED_GITHUB_TOKEN_KEYS.has(key) || isGitHubIdentityEnvKey(key))
+        ),
     ),
   );
   return Object.keys(filtered).length > 0 ? filtered : null;
@@ -926,6 +931,12 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
+  /**
+   * CH-6: origin the *run* can reach, resolved from the execution target and
+   * the environment's `paperclipReachability`. Omitted keeps the host origin,
+   * which is correct for local targets and for every existing caller.
+   */
+  mcpOrigin?: string | null;
   expectedAssignmentDigest?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
@@ -1237,20 +1248,32 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: ASSIGNED_MCP_SERVER_NAME,
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${input.mcpOrigin ?? paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
   ];
 }
 
+/**
+ * CH-5: an adapter that never reads `ctx.runtimeMcp` silently gets no
+ * Paperclip tools — the `grok_local` bug fixed in 2ac6c290b, and the default
+ * failure mode for any new adapter. `wasConsumed()` lets the caller tell,
+ * after the adapter has run, whether it ever asked for the servers it was
+ * handed.
+ */
 export function createAdapterRuntimeMcpAccess(
   servers: AdapterRuntimeMcpServer[],
-): AdapterRuntimeMcpAccess | undefined {
+): (AdapterRuntimeMcpAccess & { wasConsumed(): boolean }) | undefined {
   if (servers.length === 0) return undefined;
   const snapshot = servers.map((server) => Object.freeze({ ...server }));
+  let consumed = false;
   return Object.freeze({
-    getServers: () => snapshot.map((server) => ({ ...server })),
+    getServers: () => {
+      consumed = true;
+      return snapshot.map((server) => ({ ...server }));
+    },
+    wasConsumed: () => consumed,
   });
 }
 
@@ -1259,6 +1282,8 @@ export function createAdapterRuntimeToolAccess(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string | null;
+  /** CH-6: run-reachable origin; see `buildPaperclipRuntimeMcpServers`. */
+  mcpOrigin?: string | null;
 }): AdapterRuntimeToolAccess | undefined {
   if (!input.responsibleUserId) return undefined;
   const minted = createRuntimeToolsToken({
@@ -1272,7 +1297,9 @@ export function createAdapterRuntimeToolAccess(input: {
   // tests invoke heartbeat execution without booting an HTTP server, however;
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
-  const baseUrl = configuredPaperclipApiBaseUrl();
+  // CH-6: a remote run needs an origin it can actually reach; the host's
+  // PAPERCLIP_API_URL is only right for local targets.
+  const baseUrl = normalizePaperclipOrigin(input.mcpOrigin) ?? configuredPaperclipApiBaseUrl();
   if (!baseUrl) return undefined;
   return Object.freeze({
     version: 1,
