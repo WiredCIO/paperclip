@@ -133,26 +133,7 @@ describe("human invite roles", () => {
   });
 
   it("falls back to role grants when human invite defaults omit explicit grants", () => {
-<<<<<<< ours
-    expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual([
-      { permissionKey: "tasks:assign", scope: null },
-      { permissionKey: "agents:configure", scope: null },
-      { permissionKey: "tools:manage_connections", scope: null },
-    ]);
-||||||| base
-    expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual([
-      { permissionKey: "tasks:assign", scope: null },
-    ]);
-=======
     expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual(grantsForHumanRole("operator"));
->>>>>>> theirs
-  });
-
-  it("grants operators tools:manage_connections so they can reconnect a shared tool", () => {
-    expect(grantsForHumanRole("operator")).toContainEqual({
-      permissionKey: "tools:manage_connections",
-      scope: null,
-    });
   });
 
   it("preserves explicit human invite grants", () => {

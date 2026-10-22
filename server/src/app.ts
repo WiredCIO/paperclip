@@ -659,14 +659,6 @@ export async function createApp(
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
-<<<<<<< ours
-  // Chat webhooks authenticate with provider-specific credentials (Microsoft
-  // Teams sends a Bot Framework JWT in Authorization). Hide that bearer from
-  // Paperclip's actorMiddleware so it is not mistaken for a board/agent token,
-  // then restore it immediately after so the provider SDK can verify it.
-  app.use(stripChatWebhookAuthorization);
-||||||| base
-=======
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   let lifecyclePluginsReady = false;
@@ -692,7 +684,11 @@ export async function createApp(
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
   app.use(voiceWebhookRoutes(db, chatChannels.voice));
->>>>>>> theirs
+  // Chat webhooks authenticate with provider-specific credentials (Microsoft
+  // Teams sends a Bot Framework JWT in Authorization). Hide that bearer from
+  // Paperclip's actorMiddleware so it is not mistaken for a board/agent token,
+  // then restore it immediately after so the provider SDK can verify it.
+  app.use(stripChatWebhookAuthorization);
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,

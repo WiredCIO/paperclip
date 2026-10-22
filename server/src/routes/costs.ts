@@ -31,7 +31,6 @@ import {
   heartbeatService,
   accessService,
 } from "../services/index.js";
-<<<<<<< ours
 import {
   assertBoard,
   assertCompanyAccess,
@@ -39,17 +38,8 @@ import {
   getActorInfo,
   isProjectVisibilityDenial,
 } from "./authz.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
-import { badRequest } from "../errors.js";
-||||||| base
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
-import { badRequest } from "../errors.js";
-=======
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { badRequest, forbidden } from "../errors.js";
->>>>>>> theirs
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const reportDateSchema = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);

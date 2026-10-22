@@ -1854,16 +1854,12 @@ export interface IssueFilters {
   includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
-<<<<<<< ours
   /**
    * Projects the caller can see. Applied in SQL so pagination and counts are
    * computed over visible issues only. Absent or unrestricted adds nothing.
    */
   projectVisibility?: ProjectVisibilityResolution;
-||||||| base
-=======
   readCondition?: SQL<boolean>;
->>>>>>> theirs
   q?: string;
   limit?: number;
   offset?: number;
@@ -8354,16 +8350,11 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
-<<<<<<< ours
-      if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
+      if (filters?.readCondition) conditions.push(filters.readCondition);
       const projectVisibilityCondition = projectVisibilityIssueCondition(
         filters?.projectVisibility,
       );
       if (projectVisibilityCondition) conditions.push(projectVisibilityCondition);
-||||||| base
-      if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
-=======
-      if (filters?.readCondition) conditions.push(filters.readCondition);
       const creationCondition = creationVisibilityCondition(companyId, filters);
       if (creationCondition) conditions.push(creationCondition);
       if (!filters?.q?.trim()) {
@@ -8372,7 +8363,6 @@ export function issueService(db: Db) {
           conditions.push(nonIdleSlackIssueCondition());
         }
       }
->>>>>>> theirs
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)
         conditions.push(eq(issues.status, statuses[0]!));

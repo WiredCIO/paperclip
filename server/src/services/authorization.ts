@@ -19,12 +19,8 @@ import {
   issueAccessGrants,
   issues,
   principalPermissionGrants,
-<<<<<<< ours
   projectBindings,
-||||||| base
-=======
   projectAccessMembers,
->>>>>>> theirs
   projects,
   userInboxAgentPolicies,
 } from "@paperclipai/db";
@@ -531,7 +527,6 @@ type ResponsibleUserActorWithMemo = AuthorizationActor & {
   __responsibleUserSnapshotMemo?: Map<string, Promise<ResponsibleUserSnapshot>>;
 };
 
-<<<<<<< ours
 // resolveProjectVisibility memoizes on the object it is handed, keyed only by
 // call name. Hand it one object per (request actor, company, user) so a single
 // request that authorizes across companies never reuses another company's set.
@@ -552,8 +547,6 @@ function projectVisibilityActorFor(actor: AuthorizationActor, companyId: string,
   return visibilityActor;
 }
 
-||||||| base
-=======
 const responsibleUserSnapshotCache = new Map<
   string,
   { expiresAt: number; promise: Promise<ResponsibleUserSnapshot> }
@@ -711,7 +704,6 @@ function responsibleUserSnapshotTtlMs() {
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5_000;
 }
->>>>>>> theirs
 export function responsibleUserAuthzShadowMode() {
   const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
   const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();

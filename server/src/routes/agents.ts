@@ -17,14 +17,7 @@ import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-s
 import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
-<<<<<<< ours
 import { deepMergeConfig } from "../services/deep-merge-config.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
-||||||| base
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
-=======
 import { withManagedAiProbe, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import {
   ADAPTER_AUTH_MISSING_CHECK_CODE,
@@ -32,7 +25,6 @@ import {
   aiRuntimeConnectionBindingSchema,
   type AiRuntimeConnectionBinding,
 } from "@paperclipai/shared";
->>>>>>> theirs
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
@@ -5386,7 +5378,6 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-<<<<<<< ours
     // CH-18: `runtimeConfig` deep-merges, the way `adapterConfig` above always
     // has. Assigning it wholesale meant a PATCH that set one limit erased every
     // other key — setting a turn cap wiped an agent's `heartbeat` block. An
@@ -5403,14 +5394,7 @@ export function agentRoutes(
       // including carrying `aiConnection` over an omitted key.
       requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     }
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
-||||||| base
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
-=======
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
->>>>>>> theirs
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);

@@ -472,13 +472,7 @@ describe("company portability routes", () => {
     );
   });
 
-<<<<<<< ours
-  it.sequential("allows owner/admin board users to export through legacy and CEO-safe bundle routes", async () => {
-||||||| base
-  it.sequential("allows board users to export through legacy and CEO-safe bundle routes", async () => {
-=======
-  it("allows board users to export through legacy and CEO-safe bundle routes", async () => {
->>>>>>> theirs
+  it("allows owner/admin board users to export through legacy and CEO-safe bundle routes", async () => {
     mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
     const app = await createApp({
       type: "board",
@@ -498,8 +492,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
   });
 
-<<<<<<< ours
-  it.sequential("rejects a board user without owner/admin membership from bulk export routes", async () => {
+  it("rejects a board user without owner/admin membership from bulk export routes", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -518,12 +511,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
   });
 
-  it.sequential("requires instance-admin access when a company export includes external instructions", async () => {
-||||||| base
-  it.sequential("requires instance-admin access when a company export includes external instructions", async () => {
-=======
   it("requires instance-admin access when a company export includes external instructions", async () => {
->>>>>>> theirs
     mockAgentService.list.mockResolvedValue([{
       id: "external-agent",
       companyId,

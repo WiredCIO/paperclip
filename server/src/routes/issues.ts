@@ -5174,15 +5174,6 @@ export function issueRoutes(
     return false as const;
   }
 
-<<<<<<< ours
-  /**
-   * `notFoundMessage` is the 404 copy for the resource named in the URL; a
-   * project-visibility denial must read exactly like that resource not existing.
-   */
-  async function assertIssueReadAllowed(
-||||||| base
-  async function assertIssueReadAllowed(
-=======
   async function canActorReadProject(req: Request, project: { id: string; companyId: string }) {
     return access.decide({
       actor: req.actor,
@@ -5200,46 +5191,12 @@ export function issueRoutes(
   }
 
   async function assertCanManageIssuePrivacy(
->>>>>>> theirs
     req: Request,
     res: Response,
-<<<<<<< ours
-    issue: Parameters<typeof decideIssueAccess>[1],
-    notFoundMessage = "Issue not found",
-||||||| base
-    issue: Parameters<typeof decideIssueAccess>[1],
-=======
     issue: { companyId: string; responsibleUserId: string | null; createdByUserId: string | null; assigneeUserId: string | null },
->>>>>>> theirs
   ) {
-<<<<<<< ours
-    const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
-    const value = memoizeIssueReadDecision(req, key, () =>
-      decideIssueAccess(req, issue, "issue:read"),
-    );
-    const decision = await value;
-    if (decision.allowed) return true;
-    if (isProjectVisibilityDenial(decision)) {
-      res.status(404).json({ error: notFoundMessage });
-      return false;
-    }
-    res
-      .status(403)
-      .json({ error: "Issue is outside this actor's authorization boundary" });
-||||||| base
-    const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
-    const value = memoizeIssueReadDecision(req, key, () =>
-      decideIssueAccess(req, issue, "issue:read"),
-    );
-    const decision = await value;
-    if (decision.allowed) return true;
-    res
-      .status(403)
-      .json({ error: "Issue is outside this actor's authorization boundary" });
-=======
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(403).json({ error: "Only a responsible user, issue owner, or administrator can manage issue privacy" });
->>>>>>> theirs
     return false;
     }
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
@@ -8574,19 +8531,11 @@ export function issueRoutes(
       allowTtlCache: compactView,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-<<<<<<< ours
         const rawResult = await svc.list(companyId, {
           ...listFilters,
           projectVisibility: await issueListProjectVisibility(req, db, companyId),
         });
-        const result = (await actorCanReadCompanyScope(req, companyId))
-||||||| base
-        const rawResult = await svc.list(companyId, listFilters);
-        const result = (await actorCanReadCompanyScope(req, companyId))
-=======
-        const rawResult = await svc.list(companyId, listFilters);
         const visibleRows = await actorCanReadCompanyScope(req, companyId)
->>>>>>> theirs
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
         const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
@@ -19586,7 +19535,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    if (!(await assertIssueReadAllowed(req, res, issue, "Attachment not found"))) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(

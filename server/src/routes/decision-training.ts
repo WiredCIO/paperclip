@@ -147,18 +147,8 @@ export function decisionTrainingRoutes(db: Db) {
 
   router.get("/companies/:companyId/decision-training/export.jsonl", async (req, res) => {
     const companyId = req.params.companyId as string;
-<<<<<<< ours
     assertBoardCompanyOwnerOrAdmin(req, companyId, "decision training export");
-    const rows = await svc.list(companyId);
-||||||| base
-    assertBoard(req);
-    assertCompanyAccess(req, companyId);
-    const rows = await svc.list(companyId);
-=======
-    assertBoard(req);
-    assertCompanyAccess(req, companyId);
     const rows = await svc.list(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) });
->>>>>>> theirs
     const body = rows
       .map(({ example }) => JSON.stringify({
         retentionPolicy: example.retentionPolicy,
