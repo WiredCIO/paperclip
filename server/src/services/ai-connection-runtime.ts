@@ -53,6 +53,26 @@ export const AI_AUTH_ENV_KEYS = [
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
 ] as const;
+/**
+ * The agent's own `CLAUDE_CONFIG_DIR`, read from its unstripped env bindings so a
+ * managed run can still copy the agent's subagents. Only a plain path counts; a
+ * secret reference is never resolved for this.
+ */
+export function readClaudeUserAgentsDir(env: unknown): string | undefined {
+  if (!env || typeof env !== "object") return undefined;
+  const binding = (env as Record<string, unknown>).CLAUDE_CONFIG_DIR;
+  const value =
+    typeof binding === "string"
+      ? binding
+      : binding &&
+          typeof binding === "object" &&
+          (binding as Record<string, unknown>).type === "plain"
+        ? (binding as Record<string, unknown>).value
+        : undefined;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
 export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
   const result = {
     ...(env && typeof env === "object" ? (env as Record<string, unknown>) : {}),
@@ -220,6 +240,8 @@ export async function prepareManagedAiRuntime(
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     config: Record<string, unknown>;
+    /** The agent's own Claude config dir, the source of its `agents/*.md`. */
+    claudeUserAgentsDir?: string;
   },
 ) {
   const configuredEnv =
@@ -295,7 +317,10 @@ export async function prepareManagedAiRuntime(
     // The connection replaces the agent's own CLAUDE_CONFIG_DIR, which also
     // holds its user-level subagents (`agents/*.md`). Carry those into the
     // per-run home so the run, local or sandboxed, can still dispatch them.
-    const configuredClaudeConfigDir = configuredEnv.CLAUDE_CONFIG_DIR;
+    // The heartbeat strips CLAUDE_CONFIG_DIR from `config.env` before this
+    // point, so it passes the agent's own dir as `claudeUserAgentsDir`.
+    const configuredClaudeConfigDir =
+      input.claudeUserAgentsDir ?? configuredEnv.CLAUDE_CONFIG_DIR;
     if (
       input.binding.provider === "anthropic" &&
       typeof configuredClaudeConfigDir === "string" &&

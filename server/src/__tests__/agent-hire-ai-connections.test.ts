@@ -14,7 +14,7 @@ import { errorHandler } from "../middleware/index.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
-import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, readClaudeUserAgentsDir, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { secretService } from "../services/secrets.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -287,6 +287,30 @@ describe("managed Claude runtime home", () => {
       await expect(readFile(path.join(runtimeConfigDir, "agents", "hostile-reviewer.md"), "utf8")).resolves.toBe("# hostile-reviewer subagent");
       await expect(readFile(path.join(runtimeConfigDir, ".credentials.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await runtime.cleanup(); }
+  });
+
+  it("copies subagents when the heartbeat has already stripped CLAUDE_CONFIG_DIR from the env", async () => {
+    const f = await fixture("anthropic", "subscription");
+    const seatDir = path.join(home, `seat-stripped-${f.agentId}`);
+    await mkdir(path.join(seatDir, "agents"), { recursive: true });
+    await writeFile(path.join(seatDir, "agents", "hostile-reviewer.md"), "# hostile-reviewer subagent");
+    // The heartbeat hands prepareManagedAiRuntime a config whose env went
+    // through stripAiAuthBindings, so the dir has to arrive separately.
+    const agentEnv = { CLAUDE_CONFIG_DIR: { type: "plain", value: seatDir } };
+    const runtime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { env: stripAiAuthBindings(agentEnv) }, claudeUserAgentsDir: readClaudeUserAgentsDir(agentEnv) });
+    try {
+      const runtimeConfigDir = String((runtime.config.env as Record<string, unknown>).CLAUDE_CONFIG_DIR);
+      expect(await readdir(path.join(runtimeConfigDir, "agents"))).toEqual(["hostile-reviewer.md"]);
+    } finally { await runtime.cleanup(); }
+  });
+
+  it("reads only a plain CLAUDE_CONFIG_DIR binding as the subagent source", () => {
+    expect(readClaudeUserAgentsDir({ CLAUDE_CONFIG_DIR: " /seat " })).toBe("/seat");
+    expect(readClaudeUserAgentsDir({ CLAUDE_CONFIG_DIR: { type: "plain", value: "/seat" } })).toBe("/seat");
+    expect(readClaudeUserAgentsDir({ CLAUDE_CONFIG_DIR: { type: "secret_ref", secretId: "s" } })).toBeUndefined();
+    expect(readClaudeUserAgentsDir({ CLAUDE_CONFIG_DIR: { type: "plain", value: "  " } })).toBeUndefined();
+    expect(readClaudeUserAgentsDir({})).toBeUndefined();
+    expect(readClaudeUserAgentsDir(null)).toBeUndefined();
   });
 
   it("still prepares the runtime when the configured Claude config dir is missing", async () => {
