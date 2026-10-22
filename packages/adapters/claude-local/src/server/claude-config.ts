@@ -129,8 +129,10 @@ export async function copyClaudeUserAgentDefinitions(
  * bundle reaches Claude via `--add-dir` (project-scope skills), but a managed
  * connection run passes `--setting-sources user`, which drops project sources,
  * so the skills are only visible if they also live in the user config dir.
- * Symlinked skills are dereferenced so a sandbox or remote copy stays valid.
- * Returns the copied skill names.
+ * Each skill entry is a symlink to its source dir, so only that top-level link
+ * is resolved; symlinks nested inside a skill are skipped so a skill can never
+ * pull an arbitrary host file into the config dir. A skill that fails to copy
+ * is removed rather than left half-written. Returns the copied skill names.
  */
 export async function copyClaudeBundleSkills(
   bundleDir: string,
@@ -145,13 +147,19 @@ export async function copyClaudeBundleSkills(
   const copied: string[] = [];
   for (const name of names) {
     const targetPath = path.join(configDir, "skills", name);
-    await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.rm(targetPath, { recursive: true, force: true });
-    const copiedOne = await fs
-      .cp(path.join(sourceDir, name), targetPath, { recursive: true, dereference: true })
-      .then(() => true)
-      .catch(() => false);
-    if (copiedOne) copied.push(name);
+    try {
+      const resolvedSource = await fs.realpath(path.join(sourceDir, name));
+      if (!(await fs.stat(resolvedSource)).isDirectory()) continue;
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.rm(targetPath, { recursive: true, force: true });
+      await fs.cp(resolvedSource, targetPath, {
+        recursive: true,
+        filter: async (source) => !(await fs.lstat(source)).isSymbolicLink(),
+      });
+      copied.push(name);
+    } catch {
+      await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
   return copied;
 }

@@ -222,7 +222,7 @@ describe("prepareClaudeConfigSeed", () => {
     await expect(copyClaudeUserAgentDefinitions(path.join(root, "missing"), targetDir)).resolves.toEqual([]);
   });
 
-  it("copies bundle skills, dereferencing symlinks, into a managed connection home", async () => {
+  it("copies bundle skills, resolving only the top-level link, into a managed connection home", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-skills-copy-"));
     cleanupDirs.push(root);
     const bundleDir = path.join(root, "bundle");
@@ -231,6 +231,8 @@ describe("prepareClaudeConfigSeed", () => {
     await fs.mkdir(path.join(skillSource, "refs"), { recursive: true });
     await fs.writeFile(path.join(skillSource, "SKILL.md"), "triage skill", "utf8");
     await fs.writeFile(path.join(skillSource, "refs", "a.md"), "ref", "utf8");
+    await fs.writeFile(path.join(root, "host-secret"), "secret", "utf8");
+    await fs.symlink(path.join(root, "host-secret"), path.join(skillSource, "leak"));
     await fs.mkdir(path.join(bundleDir, ".claude", "skills"), { recursive: true });
     await fs.symlink(skillSource, path.join(bundleDir, ".claude", "skills", "triage"));
     await fs.writeFile(path.join(bundleDir, ".claude", "skills", "stray.txt"), "x", "utf8");
@@ -241,6 +243,7 @@ describe("prepareClaudeConfigSeed", () => {
     expect((await fs.lstat(copied)).isSymbolicLink()).toBe(false);
     await expect(fs.readFile(path.join(copied, "SKILL.md"), "utf8")).resolves.toBe("triage skill");
     await expect(fs.readFile(path.join(copied, "refs", "a.md"), "utf8")).resolves.toBe("ref");
+    expect(await fs.readdir(copied)).not.toContain("leak");
     expect(await fs.readdir(path.join(configDir, "skills"))).toEqual(["triage"]);
 
     await expect(copyClaudeBundleSkills(path.join(root, "missing"), configDir)).resolves.toEqual([]);
