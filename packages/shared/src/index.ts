@@ -969,18 +969,14 @@ export type {
   SetupTokenTransportAdvisoryCode,
   AssetImage,
   Project,
-<<<<<<< ours
   ProjectCategory,
   ProjectBinding,
   ProjectAccessScope,
   ProjectAccessGrant,
-||||||| base
-=======
   ProjectAccessMember,
   ProjectAccessSubjectType,
   ProjectDiscoverySummary,
   ProjectDiscoveryPage,
->>>>>>> theirs
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
@@ -2846,10 +2842,6 @@ export * from "./validators/email.js";
 export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSetup } from "./railway-connection.js";
 export * from "./announcements.js";
 
-<<<<<<< ours
-export * from "./agent-runtime-limits.js";
-||||||| base
-=======
 export { REMOTE_MCP_CONNECTOR_METHODS, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod, type RemoteMcpConnectorId } from "./remote-mcp-connectors.js";
 
 export { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
@@ -2914,4 +2906,5 @@ export * from "./fast-response.js";
 export { HUMAN_TASK_ORIGIN_KINDS, isAgentCreatedIssue, type IssueCreationSourceFields } from "./issue-creation-source.js";
 
 export * from "./grok-bot.js";
->>>>>>> theirs
+
+export * from "./agent-runtime-limits.js";

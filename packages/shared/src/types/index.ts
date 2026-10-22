@@ -352,13 +352,12 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-<<<<<<< ours
-export type { Project, ProjectCategory, ProjectBinding, ProjectAccessScope, ProjectAccessGrant, ProjectRepository, ProjectRepositoryOptions, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace, ProjectBindingTargetType, OrgEdgeParticipantType } from "./project.js";
-||||||| base
-export type { Project, ProjectRepository, ProjectRepositoryOptions, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
-=======
 export type {
   Project,
+  ProjectCategory,
+  ProjectBinding,
+  ProjectAccessScope,
+  ProjectAccessGrant,
   ProjectRepository,
   ProjectRepositoryOptions,
   ProjectAccessMember,
@@ -372,8 +371,9 @@ export type {
   ProjectManagedByPlugin,
   ProjectVisibility,
   ProjectWorkspace,
+  ProjectBindingTargetType,
+  OrgEdgeParticipantType,
 } from "./project.js";
->>>>>>> theirs
 export type {
   CompanySearchCountType,
   CompanySearchExtractIssueResult,

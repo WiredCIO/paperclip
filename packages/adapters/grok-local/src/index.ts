@@ -36,17 +36,9 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Grok model id. Defaults to grok-build.
 - permissionMode (string, optional): Grok permission mode passed via \`--permission-mode\`. Unset by default: Grok >= 1.0 enforces \`dontAsk\` as deny-by-default and it overrides \`--always-approve\`, so unattended runs rely on \`--always-approve\` alone unless you explicitly need a mode
-<<<<<<< ours
-- reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
+- reasoningEffort (string, optional): Grok reasoning effort (low|medium|high; grok-4.7 and grok-4.6 also accept xhigh) passed via \`--reasoning-effort\`
 - maxTurns (number, optional): maximum agent turns for the run. Unset means uncapped — set it together with timeoutSec for unattended agents
 - disableWebSearch (boolean, optional): passes \`--disable-web-search\`. Defaults to false; only enable it for a deliberately offline workspace
-||||||| base
-- reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
-- maxTurns (number, optional): maximum agent turns for the run
-=======
-- reasoningEffort (string, optional): Grok reasoning effort (low|medium|high; grok-4.7 and grok-4.6 also accept xhigh) passed via \`--reasoning-effort\`
-- maxTurns (number, optional): maximum agent turns for the run
->>>>>>> theirs
 - command (string, optional): defaults to "grok"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

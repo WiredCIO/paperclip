@@ -23,6 +23,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import {
+  copyClaudeBundleSkills,
   copyClaudeUserAgentDefinitions,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
@@ -219,6 +220,30 @@ describe("prepareClaudeConfigSeed", () => {
     await expect(fs.readFile(path.join(targetDir, "agents", "deep-analyst.md"), "utf8")).resolves.toBe("analyst");
     expect(await fs.readdir(targetDir)).toEqual(["agents"]);
     await expect(copyClaudeUserAgentDefinitions(path.join(root, "missing"), targetDir)).resolves.toEqual([]);
+  });
+
+  it("copies bundle skills, dereferencing symlinks, into a managed connection home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-skills-copy-"));
+    cleanupDirs.push(root);
+    const bundleDir = path.join(root, "bundle");
+    const skillSource = path.join(root, "skill-source", "triage");
+    const configDir = path.join(root, "provider");
+    await fs.mkdir(path.join(skillSource, "refs"), { recursive: true });
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "triage skill", "utf8");
+    await fs.writeFile(path.join(skillSource, "refs", "a.md"), "ref", "utf8");
+    await fs.mkdir(path.join(bundleDir, ".claude", "skills"), { recursive: true });
+    await fs.symlink(skillSource, path.join(bundleDir, ".claude", "skills", "triage"));
+    await fs.writeFile(path.join(bundleDir, ".claude", "skills", "stray.txt"), "x", "utf8");
+    await fs.mkdir(configDir, { recursive: true });
+
+    await expect(copyClaudeBundleSkills(bundleDir, configDir)).resolves.toEqual(["triage"]);
+    const copied = path.join(configDir, "skills", "triage");
+    expect((await fs.lstat(copied)).isSymbolicLink()).toBe(false);
+    await expect(fs.readFile(path.join(copied, "SKILL.md"), "utf8")).resolves.toBe("triage skill");
+    await expect(fs.readFile(path.join(copied, "refs", "a.md"), "utf8")).resolves.toBe("ref");
+    expect(await fs.readdir(path.join(configDir, "skills"))).toEqual(["triage"]);
+
+    await expect(copyClaudeBundleSkills(path.join(root, "missing"), configDir)).resolves.toEqual([]);
   });
 });
 

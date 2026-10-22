@@ -124,6 +124,38 @@ export async function copyClaudeUserAgentDefinitions(
   return files.map((file) => file.name);
 }
 
+/**
+ * Copy the prompt bundle's `.claude/skills/*` into `<configDir>/skills`. The
+ * bundle reaches Claude via `--add-dir` (project-scope skills), but a managed
+ * connection run passes `--setting-sources user`, which drops project sources,
+ * so the skills are only visible if they also live in the user config dir.
+ * Symlinked skills are dereferenced so a sandbox or remote copy stays valid.
+ * Returns the copied skill names.
+ */
+export async function copyClaudeBundleSkills(
+  bundleDir: string,
+  configDir: string,
+): Promise<string[]> {
+  const sourceDir = path.join(bundleDir, ".claude", "skills");
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true }).catch(() => []);
+  const names = entries
+    .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+    .map((entry) => entry.name)
+    .sort();
+  const copied: string[] = [];
+  for (const name of names) {
+    const targetPath = path.join(configDir, "skills", name);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.rm(targetPath, { recursive: true, force: true });
+    const copiedOne = await fs
+      .cp(path.join(sourceDir, name), targetPath, { recursive: true, dereference: true })
+      .then(() => true)
+      .catch(() => false);
+    if (copiedOne) copied.push(name);
+  }
+  return copied;
+}
+
 async function buildSeedSnapshotKey(files: SeedFile[]): Promise<string> {
   if (files.length === 0) return "empty";
   const hash = createHash("sha256");

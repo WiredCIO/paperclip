@@ -175,19 +175,11 @@ export const updateAgentSchema = objectWithoutDefaults(
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
-<<<<<<< ours
     // CH-18: runtimeConfig deep-merges by default and an explicit null deletes
     // a key. This is the escape hatch back to wholesale replacement.
     replaceRuntimeConfig: z.boolean().optional(),
-    status: z.enum(AGENT_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
-||||||| base
-    status: z.enum(AGENT_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
-=======
     status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
->>>>>>> theirs
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;

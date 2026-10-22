@@ -75,13 +75,10 @@ export function createClaudeStreamParser() {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
-  const assistantTexts: string[] = [];
-<<<<<<< ours
   // rate_limit_event can fire more than once per run (e.g. once at startup,
   // again mid-run as usage climbs) — the last occurrence is the most current.
   let rateLimit: RateLimitInfo | null = null;
-||||||| base
-=======
+  const assistantTexts: string[] = [];
   const messageUsage = new Map<string, UsageSummary>();
   let anonymousMessage = 0;
   const observedTotals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
@@ -99,7 +96,6 @@ export function createClaudeStreamParser() {
         model = asString(event.model, model);
         continue;
       }
->>>>>>> theirs
 
       if (type === "assistant") {
         sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
@@ -133,27 +129,17 @@ export function createClaudeStreamParser() {
       if (type === "result") {
         finalResult = event;
         sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+        continue;
+      }
+
+      if (type === "rate_limit_event") {
+        const info = event.rate_limit_info;
+        if (typeof info === "object" && info !== null && !Array.isArray(info)) {
+          rateLimit = info as RateLimitInfo;
+        }
       }
     }
 
-<<<<<<< ours
-    if (type === "result") {
-      finalResult = event;
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-      continue;
-    }
-
-    if (type === "rate_limit_event") {
-      const info = event.rate_limit_info;
-      if (typeof info === "object" && info !== null && !Array.isArray(info)) {
-        rateLimit = info as RateLimitInfo;
-      }
-      continue;
-||||||| base
-    if (type === "result") {
-      finalResult = event;
-      sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
-=======
     if (!finalResult) {
       return {
         sessionId,
@@ -163,8 +149,8 @@ export function createClaudeStreamParser() {
         usageBasis: "per_run" as const,
         summary: assistantTexts.join("\n\n").trim(),
         resultJson: null as Record<string, unknown> | null,
+        rateLimit,
       };
->>>>>>> theirs
     }
 
     const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
@@ -181,20 +167,6 @@ export function createClaudeStreamParser() {
     return {
       sessionId,
       model,
-<<<<<<< ours
-      costUsd: null as number | null,
-      usage: null as UsageSummary | null,
-      usageBasis: null as "per_run" | null,
-      summary: assistantTexts.join("\n\n").trim(),
-      resultJson: null as Record<string, unknown> | null,
-      rateLimit,
-||||||| base
-      costUsd: null as number | null,
-      usage: null as UsageSummary | null,
-      usageBasis: null as "per_run" | null,
-      summary: assistantTexts.join("\n\n").trim(),
-      resultJson: null as Record<string, unknown> | null,
-=======
       costUsd,
       usage,
       // modelUsage covers exactly this CLI invocation, so mark it per-run to
@@ -202,59 +174,8 @@ export function createClaudeStreamParser() {
       usageBasis: "per_run" as const,
       summary,
       resultJson: finalResult,
->>>>>>> theirs
+      rateLimit,
     };
-<<<<<<< ours
-  }
-
-  const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
-  const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = modelUsageTotals ?? {
-    inputTokens: asNumber(usageObj.input_tokens, 0),
-    cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
-    outputTokens: asNumber(usageObj.output_tokens, 0),
-  };
-  const costRaw = finalResult.total_cost_usd;
-  const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
-  const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
-
-  return {
-    sessionId,
-    model,
-    costUsd,
-    usage,
-    // modelUsage covers exactly this CLI invocation, so mark it per-run to
-    // keep the server from applying its session-cumulative delta heuristic.
-    usageBasis: "per_run" as const,
-    summary,
-    resultJson: finalResult,
-    rateLimit,
-||||||| base
-  }
-
-  const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
-  const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = modelUsageTotals ?? {
-    inputTokens: asNumber(usageObj.input_tokens, 0),
-    cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
-    outputTokens: asNumber(usageObj.output_tokens, 0),
-  };
-  const costRaw = finalResult.total_cost_usd;
-  const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
-  const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();
-
-  return {
-    sessionId,
-    model,
-    costUsd,
-    usage,
-    // modelUsage covers exactly this CLI invocation, so mark it per-run to
-    // keep the server from applying its session-cumulative delta heuristic.
-    usageBasis: "per_run" as const,
-    summary,
-    resultJson: finalResult,
-=======
->>>>>>> theirs
   };
 }
 

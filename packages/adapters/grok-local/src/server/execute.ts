@@ -52,8 +52,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
-<<<<<<< ours
-import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import {
   DEFAULT_GROK_MCP_TOOL_TIMEOUT_SEC,
   GROK_PROJECT_CONFIG_DIRNAME,
@@ -66,11 +65,6 @@ import {
   sweepStaleRuntimeMcpTokens,
   withAgentsToolsSection,
 } from "@paperclipai/adapter-utils/runtime-mcp-staging";
-||||||| base
-import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
-=======
-import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
->>>>>>> theirs
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));

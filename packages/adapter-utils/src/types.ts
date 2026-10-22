@@ -5,18 +5,12 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
-<<<<<<< ours
+import type { AdapterExecutionPhaseSink } from "./execution-phase.js";
 import type {
   ExecutionContinuationEnvelope,
   NativeFinalizationResult,
   ResolvedAgentRuntimeLimits,
 } from "@paperclipai/shared";
-||||||| base
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
-=======
-import type { AdapterExecutionPhaseSink } from "./execution-phase.js";
-import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
->>>>>>> theirs
 
 export interface AdapterAgent {
   id: string;

@@ -568,7 +568,6 @@ describe("parseClaudeStreamJson usage extraction", () => {
   });
 });
 
-<<<<<<< ours
 describe("parseClaudeStreamJson rate_limit_event extraction", () => {
   const resultEvent = (extra: Record<string, unknown>) =>
     JSON.stringify({
@@ -626,8 +625,9 @@ describe("parseClaudeStreamJson rate_limit_event extraction", () => {
     const parsed = parseClaudeStreamJson(`${rateLimitEvent({})}\n`);
     expect(parsed.rateLimit?.status).toBe("allowed");
     expect(parsed.resultJson).toBeNull();
-||||||| base
-=======
+  });
+});
+
 describe("interrupted Claude accounting", () => {
   it("retains partial usage and replaces repeated message snapshots", () => {
     const events = [
@@ -639,6 +639,5 @@ describe("interrupted Claude accounting", () => {
     expect(parsed.usage).toEqual({ inputTokens: 35, cachedInputTokens: 40, outputTokens: 9 });
     expect(parsed.usageBasis).toBe("per_run");
     expect(parsed.costUsd).toBeNull();
->>>>>>> theirs
   });
 });

@@ -83,6 +83,7 @@ import {
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
+  copyClaudeBundleSkills,
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   resolveManagedClaudeRuntimeStateDir,
@@ -678,6 +679,13 @@ ${runtimeToolsSection.trim()}`
       });
   }
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
+  if (config.managedAiConnection && sharedClaudeConfigDir) {
+    // `--setting-sources user` (below) hides the bundle's project-scope skills.
+    const copiedSkills = await copyClaudeBundleSkills(promptBundle.addDir, sharedClaudeConfigDir);
+    if (copiedSkills.length > 0) {
+      await onLog("stdout", `[paperclip] Staged ${copiedSkills.length} company skill(s) into the managed Claude config.\n`);
+    }
+  }
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -965,7 +973,6 @@ ${runtimeToolsSection.trim()}`
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
       localProcessUid: process.getuid?.() ?? null,
-      mcpServerNames: Object.keys(buildPaperclipClaudeMcpServerEntries(runtimeMcpServers)),
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
@@ -1507,34 +1514,13 @@ ${runtimeToolsSection.trim()}`
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-<<<<<<< ours
-    // CH-22: remove the workspace-staged MCP config. It carries a per-run
-    // bearer token and belongs to this run only.
-    if (stagedRuntimeMcp) await stagedRuntimeMcp.cleanup();
-    if (runManifestPath) await fs.rm(runManifestPath, { force: true }).catch(() => undefined);
-    if (paperclipBridge) {
-      await paperclipBridge.stop();
-    }
-    if (restoreRemoteWorkspace) {
-      await onLog(
-        "stdout",
-        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-      );
-      await restoreRemoteWorkspace();
-||||||| base
-    if (paperclipBridge) {
-      await paperclipBridge.stop();
-    }
-    if (restoreRemoteWorkspace) {
-      await onLog(
-        "stdout",
-        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-      );
-      await restoreRemoteWorkspace();
-=======
     try {
       await providerStop.collectBeforeRestore();
     } finally {
+      // CH-22: remove the workspace-staged MCP config. It carries a per-run
+      // bearer token and belongs to this run only.
+      if (stagedRuntimeMcp) await stagedRuntimeMcp.cleanup();
+      if (runManifestPath) await fs.rm(runManifestPath, { force: true }).catch(() => undefined);
       if (paperclipBridge) {
         await paperclipBridge.stop();
       }
@@ -1545,7 +1531,6 @@ ${runtimeToolsSection.trim()}`
         );
         await restoreRemoteWorkspace();
       }
->>>>>>> theirs
     }
   }
 }
