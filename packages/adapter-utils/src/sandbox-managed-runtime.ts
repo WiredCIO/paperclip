@@ -57,6 +57,9 @@ const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
   ".next",
   ".turbo",
   ".cache",
+  // Claude Code worktrees: full checkouts git lists as one untracked entry each,
+  // so they ride along in the overlay and can exceed the sandbox disk.
+  ".claude/worktrees",
 ] as const;
 const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.flatMap((entry) => [
   entry,
