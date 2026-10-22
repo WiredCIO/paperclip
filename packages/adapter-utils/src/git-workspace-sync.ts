@@ -914,15 +914,50 @@ export async function integrateImportedGitHead(input: {
   throw new Error(`Failed to integrate concurrent remote git history for ${input.importedHead.slice(0, 12)} after multiple retries.`);
 }
 
+// Git holds index.lock for milliseconds. One older than this was left by a
+// git process that died, and would otherwise fail every later restore.
+export const STALE_GIT_INDEX_LOCK_MS = 10 * 60_000;
+
+function isIndexLockExistsError(error: unknown): boolean {
+  const text = error && typeof error === "object"
+    ? [(error as { message?: unknown }).message, (error as { stderr?: unknown }).stderr]
+      .filter((value): value is string => typeof value === "string").join("\n")
+    : String(error);
+  return /index\.lock'?: File exists/.test(text);
+}
+
+/** Removes the repository's index.lock when it is older than the stale threshold. */
+export async function removeStaleGitIndexLock(
+  localDir: string,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const lockPathResult = await runLocalGit(localDir, ["rev-parse", "--git-path", "index.lock"], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  });
+  const lockPath = path.resolve(localDir, lockPathResult.stdout.trim());
+  const stat = await fs.stat(lockPath).catch(() => null);
+  if (!stat || now - stat.mtimeMs < STALE_GIT_INDEX_LOCK_MS) return false;
+  await fs.rm(lockPath, { force: true });
+  return true;
+}
+
 export async function resetLocalGitIndexToHead(input: {
   localDir: string;
   checkWorkingTreeClean?: boolean;
 }): Promise<void> {
-  try {
-    await runLocalGit(input.localDir, ["reset", "--quiet", "HEAD", "--", "."], {
+  const reset = () =>
+    runLocalGit(input.localDir, ["reset", "--quiet", "HEAD", "--", "."], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+  try {
+    try {
+      await reset();
+    } catch (error) {
+      if (!isIndexLockExistsError(error) || !(await removeStaleGitIndexLock(input.localDir))) throw error;
+      await reset();
+    }
   } catch (error) {
     const detail = error && typeof error === "object"
       ? [

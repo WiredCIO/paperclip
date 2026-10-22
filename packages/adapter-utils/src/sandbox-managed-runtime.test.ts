@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
@@ -1082,6 +1082,29 @@ describe("sandbox managed runtime", () => {
     expect(await git(localWorkspaceDir, ["status", "--short"])).toContain("M kept.txt");
   });
 
+  it("clears a stale index.lock left by a dead git process, but not a fresh one", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-stale-lock-"));
+    cleanupDirs.push(rootDir);
+    const repoDir = path.join(rootDir, "repo");
+    await mkdir(repoDir, { recursive: true });
+    await git(repoDir, ["init"]);
+    await git(repoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(repoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(repoDir, "kept.txt"), "base\n", "utf8");
+    await git(repoDir, ["add", "kept.txt"]);
+    await git(repoDir, ["commit", "-m", "base"]);
+    const lockPath = path.join(repoDir, ".git", "index.lock");
+
+    await writeFile(lockPath, "", "utf8");
+    await expect(resetLocalGitIndexToHead({ localDir: repoDir })).rejects.toThrow(/index\.lock/);
+    await expect(readFile(lockPath, "utf8")).resolves.toBe("");
+
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    await utimes(lockPath, old, old);
+    await resetLocalGitIndexToHead({ localDir: repoDir });
+    await expect(readFile(lockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-unignored-deps-"));
     cleanupDirs.push(rootDir);
@@ -1109,6 +1132,9 @@ describe("sandbox managed runtime", () => {
       "utf8",
     );
     await writeFile(path.join(localWorkspaceDir, "src", "local-only.ts"), "export const local = true;\n", "utf8");
+    await mkdir(path.join(localWorkspaceDir, ".claude", "worktrees", "wir-1", "src"), { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, ".claude", "worktrees", "wir-1", "src", "copy.ts"), "worktree copy\n", "utf8");
+    await writeFile(path.join(localWorkspaceDir, ".claude", "settings.local.json"), "{}\n", "utf8");
 
     const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
     const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
@@ -1157,6 +1183,8 @@ describe("sandbox managed runtime", () => {
     expect(workspaceMembers).toContain("src/local-only.ts");
     expect(workspaceMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
     expect(workspaceMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
+    expect(workspaceMembers).toContain(".claude/settings.local.json");
+    expect(workspaceMembers.some((entry) => entry.startsWith(".claude/worktrees"))).toBe(false);
 
     await expect(readFile(path.join(remoteWorkspaceDir, "src", "local-only.ts"), "utf8")).resolves.toBe("export const local = true;\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "node_modules", "root-package", "cache.bin"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
