@@ -569,7 +569,6 @@ describe("hired agents sharing a subscription", () => {
   });
 });
 
-<<<<<<< ours
 describe("managed Claude runtime home", () => {
   it("carries the agent's user-level subagents into the per-run Claude config dir", async () => {
     const f = await fixture("anthropic", "subscription");
@@ -597,8 +596,5 @@ describe("managed Claude runtime home", () => {
     } finally { await runtime.cleanup(); }
   });
 });
-||||||| base
-=======
 
 enableRunFailureReporting();
->>>>>>> theirs

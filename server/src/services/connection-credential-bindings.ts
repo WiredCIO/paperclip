@@ -8,9 +8,9 @@ export async function syncConnectionCredentialBindings(
     connection: typeof toolConnections.$inferSelect,
     grantSecretRefs: ToolCredentialSecretRef[] = [],
     dbClient: Pick<Db, "select" | "insert" | "update" | "delete"> = db,
-  ) {
+  ): Promise<number> {
     const secrets = secretService(db);
-    await dbClient
+    const removed = await dbClient
       .delete(companySecretBindings)
       .where(
         and(
@@ -18,7 +18,8 @@ export async function syncConnectionCredentialBindings(
           eq(companySecretBindings.targetType, "tool_connection"),
           eq(companySecretBindings.targetId, connection.id),
         ),
-      );
+      )
+      .returning({ id: companySecretBindings.id });
     // A metadata edit or pause/resume must retain declarations for every
     // active personal/dedicated grant, not just connection-owned credentials.
     const activeGrants = await dbClient.select({ refs: connectionGrants.credentialSecretRefs })
@@ -97,7 +98,7 @@ export async function syncConnectionCredentialBindings(
       { replaceAll: true, db: dbClient },
     );
     const companyBindings = bindings.filter((ref) => secretById.get(ref.secretId)?.scope !== "user");
-    if (companyBindings.length === 0) return;
+    if (companyBindings.length === 0) return removed.length;
     await dbClient.insert(companySecretBindings).values(companyBindings.map((ref) => ({
       companyId: connection.companyId,
       secretId: ref.secretId,
@@ -109,5 +110,6 @@ export async function syncConnectionCredentialBindings(
       projectionClass: ref.projectionClass,
       projectionAllowlistKey: ref.projectionAllowlistKey,
     })));
+    return removed.length;
   }
 

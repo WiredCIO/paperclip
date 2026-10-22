@@ -1,37 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
-<<<<<<< ours
-const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
-// Keep the real credential helpers. CH-9 made this path depend on
-// parseClaudeOauthCredential / hasRenewableClaudeOauthValue /
-// serializeClaudeOauthCredential; a mock that omitted them left them
-// `undefined`, so the call threw a TypeError that the catch-all reported as a
-// generic "could not verify" — the renewability rule was never exercised and
-// the failure named the wrong cause. Only the two I/O functions are faked.
-vi.mock("@paperclipai/adapter-claude-local/server", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@paperclipai/adapter-claude-local/server")>()),
-  readClaudeToken: mocks.claude,
-  fetchClaudeQuota: mocks.claudeQuota,
-}));
-||||||| base
-const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
-vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, fetchClaudeQuota: mocks.claudeQuota }));
-=======
 const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
 vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain }));
->>>>>>> theirs
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
 describe("explicit local subscription import", () => {
   it("verifies Claude only from the selected isolated home, never the host account", async () => {
-    // CH-9: the stored value is now the whole renewable document, not the bare
-    // access token, so a run can refresh instead of dying when it expires.
-    const renewable = { accessToken: "isolated-claude", refreshToken: "isolated-refresh" };
-    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: renewable }));
-    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude"))
-      .resolves.toBe(JSON.stringify({ claudeAiOauth: renewable }));
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "isolated-claude" } }));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-claude");
     expect(mocks.credentialFile).toHaveBeenCalledWith("/isolated/claude/.credentials.json");
     expect(mocks.claude).not.toHaveBeenCalled();
   });
@@ -62,41 +40,11 @@ describe("explicit local subscription import", () => {
     expect(mocks.claudeIsolatedKeychain).not.toHaveBeenCalled();
   });
   it("tries the alternate Claude filename after malformed JSON", async () => {
-    const alternate = { accessToken: "alternate-token", refreshToken: "alternate-refresh" };
-    mocks.credentialFile.mockResolvedValueOnce("malformed").mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: alternate }));
-    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude"))
-      .resolves.toBe(JSON.stringify({ claudeAiOauth: alternate }));
+    mocks.credentialFile.mockResolvedValueOnce("malformed").mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "alternate-token" } }));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("alternate-token");
     expect(mocks.credentialFile).toHaveBeenLastCalledWith("/isolated/claude/credentials.json");
     expect(mocks.claude).not.toHaveBeenCalled();
   });
-<<<<<<< ours
-  it("refuses a Claude sign-in with no refresh token, and says why", async () => {
-    // `claude setup-token` mints exactly this: an access token and nothing to
-    // renew it with. It looks like a successful login and dies within hours,
-    // so it is rejected at import rather than stored as a doomed seat. The
-    // distinct code is what lets the UI tell this apart from "not signed in".
-    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "no-refresh" } }));
-    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude"))
-      .rejects.toHaveProperty("details.code", "ai_credential_not_renewable");
-    // Rejected before the quota probe: there is no point spending a call on a
-    // credential that cannot be kept.
-    expect(mocks.claudeQuota).not.toHaveBeenCalled();
-  });
-  it("verifies Claude's local credential, including explicit Keychain access", async () => {
-    mocks.claude.mockResolvedValue("fixture-claude");
-    await expect(readVerifiedLocalAiCredential("anthropic")).resolves.toBe("fixture-claude");
-    expect(mocks.claude).toHaveBeenCalledWith({ allowKeychain: true });
-    expect(mocks.claudeQuota).toHaveBeenCalledWith("fixture-claude");
-  });
-||||||| base
-  it("verifies Claude's local credential, including explicit Keychain access", async () => {
-    mocks.claude.mockResolvedValue("fixture-claude");
-    await expect(readVerifiedLocalAiCredential("anthropic")).resolves.toBe("fixture-claude");
-    expect(mocks.claude).toHaveBeenCalledWith({ allowKeychain: true });
-    expect(mocks.claudeQuota).toHaveBeenCalledWith("fixture-claude");
-  });
-=======
->>>>>>> theirs
   it("reads Codex refresh credentials only from the isolated login home", async () => {
     mocks.codex.mockResolvedValue({ accessToken: "access", refreshToken: "refresh", idToken: "identity", accountId: "account", lastRefresh: "date" });
     const result = JSON.parse(await readVerifiedLocalAiCredential("openai", "/isolated/login"));

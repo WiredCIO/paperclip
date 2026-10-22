@@ -15,12 +15,7 @@ import { AiProviderSetup } from "./AiProviderSetup";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
 import { Button } from "@/components/ui/button";
-<<<<<<< ours
-import { RadioCardGroup } from "@/components/ui/radio-card";
-||||||| base
-=======
 import { Checkbox } from "@/components/ui/checkbox";
->>>>>>> theirs
 import {
   Dialog,
   DialogContent,
@@ -77,21 +72,11 @@ export function AiConnectionField({
   const [adopting, setAdopting] = useState(false);
   const [pendingAdoption, setPendingAdoption] = useState<AiRuntimeConnectionBinding>();
   const [connecting, setConnecting] = useState(false);
-<<<<<<< ours
-  // Ownership is chosen per sign-in rather than remembered: a manager creating
-  // a company credential once should not silently make their next personal
-  // login shared too.
-  const [ownership, setOwnership] = useState<"personal" | "shared">("personal");
-  const changeBinding = (next: AiConnectionBinding) => {
-||||||| base
-  const changeBinding = (next: AiConnectionBinding) => {
-=======
   const [advancedSetup, setAdvancedSetup] = useState(false);
   const [reconnecting, setReconnecting] = useState<AiManagedConnectionSummary>();
   const [allAgents, setAllAgents] = useState(true);
   const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod }>();
   const changeBinding = (next: AiRuntimeConnectionBinding) => {
->>>>>>> theirs
     if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
   };
@@ -101,15 +86,6 @@ export function AiConnectionField({
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
     enabled: Boolean(provider),
   });
-<<<<<<< ours
-  // Server-decided, never inferred here: `tools:manage_connections` is not in
-  // any payload the client already holds, and the create route rejects a
-  // shared ownership without it.
-  const canShareConnections = accounts.data?.canShareConnections ?? false;
-  const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
-||||||| base
-  const method: AiAuthMethod = (value?.mode !== "responsible_user" ? value?.method : undefined)
-=======
   const personalDefault = accounts.data?.connections.find((account) => account.provider === provider && account.isDefault && account.ownership === "personal" && account.ownerUserId === accounts.data.currentUserId);
   const selectDefault = useMutation({
     mutationFn: async (result: NonNullable<typeof savedAccount>) => {
@@ -134,7 +110,6 @@ export function AiConnectionField({
     setConnecting(true);
   };
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
->>>>>>> theirs
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" || provider === "google" ? "api_key" : "subscription");
   const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && pool.members.some(member => isAiConnectionCompatible(member.binding, routerAdapterType ?? adapterType, member.profile.model, member.profile.provider, member.profile.acpxAgent))) ?? [] : [];
@@ -226,19 +201,7 @@ export function AiConnectionField({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-<<<<<<< ours
-      <Dialog
-        open={connecting}
-        onOpenChange={(open) => {
-          if (!open) setOwnership("personal");
-          setConnecting(open);
-        }}
-      >
-||||||| base
-      <Dialog open={connecting} onOpenChange={setConnecting}>
-=======
       <Dialog open={connecting} onOpenChange={(open) => { if (!selectDefault.isPending) setConnecting(open); }}>
->>>>>>> theirs
         <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>{reconnecting ? "Reconnect account" : "Connect account"}</DialogTitle>
@@ -246,36 +209,6 @@ export function AiConnectionField({
               {advancedSetup ? "Choose a provider connection for this agent." : reconnecting ? "Sign in again to repair your current default account. Its agent access stays the same." : "This account will become your default for this provider. Your tasks will use it; other users keep their own default."}
             </DialogDescription>
           </DialogHeader>
-<<<<<<< ours
-          {canShareConnections && (
-            <section className="space-y-2" aria-label="Who owns this account">
-              <h3 className="text-sm font-semibold">Who owns this account?</h3>
-              <RadioCardGroup
-                ariaLabel="Who owns this account"
-                className="sm:grid-cols-2"
-                value={ownership}
-                onValueChange={(value) =>
-                  setOwnership(value === "shared" ? "shared" : "personal")
-                }
-                options={[
-                  {
-                    value: "personal",
-                    title: "Personal",
-                    description:
-                      "Yours. Runs use your seat, and it leaves with you.",
-                  },
-                  {
-                    value: "shared",
-                    title: "Company shared",
-                    description:
-                      "The organization owns it and it outlives your account.",
-                  },
-                ]}
-              />
-            </section>
-          )}
-||||||| base
-=======
           {advancedSetup ? <AiProviderSetup
             companyId={companyId} agentId={agentId} environmentId={environmentId}
             advancedOnly={preferAdvanced}
@@ -297,25 +230,14 @@ export function AiConnectionField({
               <Button onClick={() => selectDefault.mutate(savedAccount)}>Retry default selection</Button>
             </> : <p role="status" className="text-sm text-muted-foreground">Selecting your default account…</p>}
           </div> :
->>>>>>> theirs
           <AiConnectionCredentialStep
             companyId={companyId}
             provider={provider}
-<<<<<<< ours
-            initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
-            ownership={ownership}
-||||||| base
-            initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
-            ownership="personal"
-=======
             initialMethod={reconnecting?.method ?? method}
             fixedMethod={Boolean(reconnecting)}
             connectionId={reconnecting?.id}
             name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "google" ? "Gemini" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
->>>>>>> theirs
             agentIds={agentId ? [agentId] : []}
             allAgents={allAgents}
             environmentId={environmentId}

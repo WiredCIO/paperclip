@@ -20,13 +20,7 @@ import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
-import {
-  decideClaudeAuthMerge,
-  hasRenewableClaudeOauthValue,
-  parseClaudeOauthCredential,
-  CLAUDE_USE_SOURCE,
-  copyClaudeUserAgentDefinitions,
-} from "@paperclipai/adapter-claude-local/server";
+import { copyClaudeUserAgentDefinitions } from "@paperclipai/adapter-claude-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -424,86 +418,6 @@ export async function prepareManagedAiRuntime(
                     eq(connectionGrants.companyId, input.companyId),
                   ),
                 )
-<<<<<<< ours
-                  return;
-                const current = await service.credential({
-                  ...selection,
-                  grant,
-                });
-                const destination = path.join(
-                  providerHome,
-                  "current-auth.json",
-                );
-                await writeFile(destination, current, { mode: 0o600 });
-                const decision =
-                  input.binding.provider === "openai"
-                    ? await decideCodexAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      })
-                    : await decideGrokAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      });
-                // 10 across all three predicates: install the refreshed source.
-                if (decision !== CLAUDE_USE_SOURCE) return;
-                const ref = grant.credentialSecretRefs.find(
-                  (r) => r.configPath === "ai.credential",
-                )!;
-                await secretService(tx).rotate(
-                  ref.secretId,
-                  { value: refreshed },
-                  { userId: grant.subjectUserId },
-                );
-                await tx
-                  .update(connectionGrants)
-                  .set({ updatedAt: new Date() })
-                  .where(eq(connectionGrants.id, grant.id));
-              });
-          }
-        } finally {
-          try {
-            if (home) await rm(home, { recursive: true, force: true });
-          } finally {
-            await release();
-||||||| base
-                  return;
-                const current = await service.credential({
-                  ...selection,
-                  grant,
-                });
-                const destination = path.join(
-                  providerHome,
-                  "current-auth.json",
-                );
-                await writeFile(destination, current, { mode: 0o600 });
-                const decision =
-                  input.binding.provider === "openai"
-                    ? await decideCodexAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      })
-                    : await decideGrokAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      });
-                if (decision !== 10) return;
-                const ref = grant.credentialSecretRefs.find(
-                  (r) => r.configPath === "ai.credential",
-                )!;
-                await secretService(tx).rotate(
-                  ref.secretId,
-                  { value: refreshed },
-                  { userId: grant.subjectUserId },
-                );
-                await tx
-                  .update(connectionGrants)
-                  .set({ updatedAt: new Date() })
-                  .where(eq(connectionGrants.id, grant.id));
-              });
-          }
-        } finally {
-          try {
-            if (home) await rm(home, { recursive: true, force: true });
-          } finally {
-            await release();
-=======
                 .for("update");
               // A missing or revoked grant blocks the write-back. Among
               // active copies, the merge decision below keeps the
@@ -560,7 +474,6 @@ export async function prepareManagedAiRuntime(
                 if (attempt >= 2 || (error as NodeJS.ErrnoException)?.code !== WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) throw error;
               }
             }
->>>>>>> theirs
           }
         }
         // Preserve the private home on any failed write-back, including an

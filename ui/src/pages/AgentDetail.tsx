@@ -1904,13 +1904,8 @@ export function AgentOverview({
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
   const lastRun = runs[0] ?? null;
-<<<<<<< ours
   const seatBacked = agentIsClaudeSeatBacked(agent);
   const rateLimit = seatBacked ? runRateLimit(mostRecentCompletedRun(runs)) : null;
-
-||||||| base
-
-=======
   const identity = useQuery({
     queryKey: [...queryKeys.agents.identity(agent.id), lastRun?.id, lastRun?.status],
     queryFn: () => agentsApi.getIdentity(agent.id, agent.companyId),
@@ -1923,7 +1918,6 @@ export function AgentOverview({
     retry: false,
   });
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
->>>>>>> theirs
   return (
     <div className="space-y-6">
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
