@@ -1276,7 +1276,16 @@ export function projectService(db: Db) {
       return removed ? toWorkspace(removed) : null;
     },
 
-    resolveByReference: async (companyId: string, reference: string) => {
+    /**
+     * `canSee`, when given, drops shortname matches the caller cannot see, so
+     * a hidden namesake neither makes the reference ambiguous nor resolves.
+     * It does not apply to a UUID reference.
+     */
+    resolveByReference: async (
+      companyId: string,
+      reference: string,
+      options: { canSee?: (projectId: string) => Promise<boolean> } = {},
+    ) => {
       const raw = reference.trim();
       if (raw.length === 0) {
         return { project: null, ambiguous: false } as const;
@@ -1304,7 +1313,11 @@ export function projectService(db: Db) {
         .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
         .from(projects)
         .where(eq(projects.companyId, companyId));
-      const matches = rows.filter((row) => deriveProjectUrlKey(row.name, row.id) === urlKey);
+      let matches = rows.filter((row) => deriveProjectUrlKey(row.name, row.id) === urlKey);
+      if (options.canSee && matches.length > 0) {
+        const visible = await Promise.all(matches.map((row) => options.canSee!(row.id)));
+        matches = matches.filter((_, index) => visible[index]);
+      }
       if (matches.length === 1) {
         const match = matches[0]!;
         return {
