@@ -2488,7 +2488,13 @@ export function toolAccessService(
       const reconnectSuppliesOAuthConfig =
         Boolean(input.oauthClient) ||
         Boolean(asRecord(input.configValues).oauth);
-      // It must stay on the same grant kind and, for a remote MCP
+      // Only a reconnect on the same method keeps the old OAuth identity.
+      // Switching methods (GitHub managed OAuth -> personal access token) is
+      // a deliberate change of identity; carrying the stale `config.oauth`
+      // across keeps the health check on the managed-grant path, which then
+      // fails with "OAuth authorization expired" even though the new key is
+      // valid.
+      // It must also stay on the same grant kind and, for a remote MCP
       // connector, the same URL: canRetainCredentialMaterial refuses to carry
       // credentials to a different host or across an access change, and this
       // preservation must not reopen that.
@@ -2501,6 +2507,7 @@ export function toolAccessService(
           ref.configPath.startsWith("oauth."),
         ) &&
         !reconnectSuppliesOAuthConfig &&
+        retainedMethodKey === method?.key &&
         previousGrantKind === requestedGrantKind &&
         (!remoteMcpConnector || baseConfig.url === retainedConfig.url);
       const mergeSecretRefsByConfigPath = (
