@@ -68,8 +68,8 @@ export {
   projectedConnectionToolArguments,
   projectedConnectionToolInputSchema,
 } from "./tool-access/connection-methods.js";
-import { loadGitHubTokenRepositories } from "./tool-access/github-access-discovery.js";
-export { loadGitHubGrantMetadata, loadGitHubTokenRepositories } from "./tool-access/github-access-discovery.js";
+import { loadGitHubPersonalAccessTokenIdentity, loadGitHubTokenRepositories } from "./tool-access/github-access-discovery.js";
+export { loadGitHubGrantMetadata, loadGitHubPersonalAccessTokenIdentity, loadGitHubTokenRepositories } from "./tool-access/github-access-discovery.js";
 
 import { stableHash } from "./tool-catalog-hash.js";
 
@@ -2267,6 +2267,47 @@ export function toolAccessService(
       current: typeof connectionGrants.$inferSelect;
     } | null = null;
     let personalPublicSetupEstablished = false;
+    // A GitHub personal access token belongs to whichever account created it,
+    // not to the person connecting it or to a revived grant's earlier sign-in.
+    // Read that account from GitHub before any secret is written, so a bad
+    // token fails here and the grant never shows a stale identity.
+    // Only personal and dedicated-agent grants carry an identity that git and
+    // the identity UI read, so an organization token is not looked up.
+    const githubPersonalAccessToken =
+      galleryEntry?.slug === "github" &&
+      method?.auth === "api_key" &&
+      credentialSource !== "vercel_connect" &&
+      (requestedGrantKind === "user" || requestedGrantKind === "agent")
+        ? credentialFieldsFor(galleryEntry, method.key)
+            .map((field) => credentialValues[field.configPath])
+            .find(
+              (value): value is string =>
+                typeof value === "string" && value.trim().length > 0,
+            )
+        : undefined;
+    let personalAccessTokenProviderTenant: {
+      providerTenant?: (typeof connectionGrants.$inferSelect)["providerTenant"];
+    } = {};
+    if (githubPersonalAccessToken) {
+      try {
+        personalAccessTokenProviderTenant = {
+          providerTenant: {
+            github: await loadGitHubPersonalAccessTokenIdentity(
+              githubPersonalAccessToken,
+            ),
+          },
+        };
+      } catch (error) {
+        if (
+          error instanceof HttpError &&
+          asRecord(error.details).code === "github_personal_access_token_rejected"
+        )
+          throw error;
+        // GitHub was unreachable or answered unexpectedly. Record the account
+        // as unknown rather than keep a revived grant's earlier sign-in.
+        personalAccessTokenProviderTenant = { providerTenant: null };
+      }
+    }
 
     try {
       const credentialFields =
@@ -2668,6 +2709,7 @@ export function toolAccessService(
               .update(connectionGrants)
               .set({
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 revokedAt: null,
                 revokedByAgentId: null,
@@ -2694,6 +2736,7 @@ export function toolAccessService(
                 kind: "user",
                 subjectUserId: personalIdentityUserId,
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 isDefault: false,
                 createdByUserId: personalIdentityUserId,
@@ -2759,6 +2802,7 @@ export function toolAccessService(
               .update(connectionGrants)
               .set({
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 revokedAt: null,
                 revokedByAgentId: null,
@@ -2785,6 +2829,7 @@ export function toolAccessService(
                 kind: "agent",
                 subjectAgentId: dedicatedAgentId,
                 credentialSecretRefs,
+                ...personalAccessTokenProviderTenant,
                 status: "active",
                 isDefault: false,
                 createdByUserId:

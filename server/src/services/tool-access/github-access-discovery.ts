@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { unprocessable } from "../../errors.js";
+import type { connectionGrants } from "@paperclipai/db";
 
 function gitHubRepositoryOwnerType(repository: Record<string, unknown>) {
   const type = recordValue(repository.owner) ? repository.owner.type : undefined;
@@ -59,6 +60,63 @@ export async function loadGitHubTokenRepositories(
       return repositories;
     if (!rows.length) throw unprocessable("GitHub returned invalid pagination");
   }
+}
+
+/**
+ * Identifies the GitHub account behind a personal access token. A PAT has no
+ * GitHub App installation, so the installation fields are recorded as empty and
+ * `tokenKind` marks the grant as tool-only: git and gh read only a sign-in token.
+ */
+export async function loadGitHubPersonalAccessTokenIdentity(
+  token: string,
+  request: typeof fetch = fetch,
+): Promise<
+  NonNullable<
+    NonNullable<(typeof connectionGrants.$inferSelect)["providerTenant"]>["github"]
+  >
+> {
+  const response = await request("https://api.github.com/user", {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token.replace(/^bearer\s+/i, "").trim()}`,
+      "user-agent": "Paperclip",
+      "x-github-api-version": "2022-11-28",
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw unprocessable(
+      response.status === 401
+        ? "GitHub rejected this personal access token. Check that it is current and was copied in full."
+        : "GitHub could not verify this personal access token",
+      {
+        code:
+          response.status === 401
+            ? "github_personal_access_token_rejected"
+            : "github_access_check_failed",
+      },
+    );
+  }
+  const user = (await response.json()) as unknown;
+  const userId = recordValue(user) ? githubId(user.id) : null;
+  const login = recordValue(user) && typeof user.login === "string" ? user.login : null;
+  if (!userId || !login)
+    throw unprocessable("GitHub returned invalid account metadata", {
+      code: "github_bad_response",
+    });
+  return {
+    userId,
+    login,
+    ...(recordValue(user) && typeof user.avatar_url === "string"
+      ? { avatarUrl: user.avatar_url }
+      : {}),
+    installationCount: 0,
+    repositoryCount: 0,
+    repositorySelection: "none",
+    installationIds: [],
+    installationOwnerLogins: [],
+    tokenKind: "personal_access_token",
+  };
 }
 
 export async function loadGitHubGrantMetadata(
