@@ -92,7 +92,7 @@ RUN set -eu; \
 # device-login-parse.ts) matches the CLI's output exactly, so a silent CLI
 # upgrade can make the sign-in card render blank until the login times out.
 ARG GROK_VERSION=1.0.40
-ARG CLAUDE_CODE_VERSION=2.1.282
+ARG CLAUDE_CODE_VERSION=2.1.308
 RUN set -eu; \
     npm install -g \
       "@xai-official/grok@${GROK_VERSION}" \
