@@ -1,5 +1,6 @@
+import type { ChatProvider } from "./chat-channels.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
-import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
+import type { ExecutionProjection, ExecutionBlocker, TaskInterruptionPresentation } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
@@ -190,6 +191,8 @@ export interface DocumentRevision {
   changeSummary: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Writer provenance; reading a revision does not grant access to the run. */
+  createdByRunId?: string | null;
   createdAt: Date;
 }
 
@@ -490,6 +493,7 @@ export type IssueReviewAttentionPathKind =
   | "interaction"
   | "approval"
   | "monitor"
+  | "external_response"
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
@@ -831,7 +835,15 @@ export interface IssueChangeReceiptEntry {
 
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
+export type IssueSummary = Pick<
+  Issue,
+  "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt"
+> & {
+  externalConversationState: "active" | "waiting" | null;
+};
+
 export interface Issue {
+  statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
@@ -916,6 +928,7 @@ export interface Issue {
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
+  interruption?: TaskInterruptionPresentation | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
@@ -982,6 +995,7 @@ export type CompactIssue = Pick<
   | "createdAt"
   | "updatedAt"
 > & {
+  interruption?: TaskInterruptionPresentation | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -1148,8 +1162,10 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  /** Producer-classified diagnostics; task interruption UI owns system repair. */
+  recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */
-  sourceChannel?: "imessage-photon";
+  sourceChannel?: ChatProvider;
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
@@ -1604,6 +1620,9 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
   /** Read-time acceptance gate; omitted when no workspace preparation is pending. */
   acceptanceBlocker?: "workspace_sync_pending";
+  /** Deferred to conversation history by a human; never an approval or answer. */
+  dismissedAt?: Date | string | null;
+  dismissedByUserId?: string | null;
   /** @deprecated Read requestedResolverPolicy. Kept for API compatibility. */
   resolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
   requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
@@ -1700,4 +1719,11 @@ export interface IssueAttachment {
   contentPath: string;
   openPath?: string;
   downloadPath?: string;
+}
+
+/** Bounded cold-open window; the complete chronological feed stays paginated. */
+export interface IssueRecentComments {
+  latestCommentId: string | null;
+  comments: IssueComment[];
+  hasMore: boolean;
 }

@@ -1,4 +1,5 @@
 import { ensureSkillCacheDirectory, touchSkillVersionCache, withSkillVersionCacheLock } from "./skill-version-cache.js";
+import { verifyExistingBundledSkillRelease } from "./bundled-skill-release-validation.js";
 import { retainProjectSkillAccess, skillAccessService } from "./skill-access.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -3094,30 +3095,22 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const fileInventory = serializeVersionFileInventory(
         await collectVersionFileInventoryFromDirectory(release.releaseDir),
       );
-      const existing = await db
-        .select()
-        .from(companySkillVersions)
-        .where(and(
-          eq(companySkillVersions.companyId, companyId),
-          eq(companySkillVersions.companySkillId, paperclipSkill.id),
-          eq(companySkillVersions.releaseId, release.id),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        const existingInventory = toCompanySkillVersion(existing).fileInventory;
-        const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
-          path: entry.path,
-          sha256: sha256Buffer(entry.content),
-        })));
-        const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
-          path: entry.path,
-          sha256: sha256Buffer(entry.content),
-        })));
-        if (existingHash !== registryHash) {
-          throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
-        }
-        continue;
-      }
+      const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
+        path: entry.path,
+        sha256: sha256Buffer(entry.content),
+      })));
+      if (await verifyExistingBundledSkillRelease({ db, companyId, skillId: paperclipSkill.id, releaseId: release.id,
+        expectedInventoryHash: registryHash, validateInventory: existing => {
+          const existingInventory = toCompanySkillVersion(existing).fileInventory;
+          const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
+            path: entry.path,
+            sha256: sha256Buffer(entry.content),
+          })));
+          if (existingHash !== registryHash) {
+            throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
+          }
+        },
+      })) continue;
       const releasedAt = new Date(release.releasedAt);
       if (Number.isNaN(releasedAt.getTime())) {
         throw new Error(`Invalid bundled skill release date: ${release.releasedAt}`);
@@ -6089,6 +6082,20 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       // with the real cause — a silent drop makes the skill vanish from the
       // runtime while the library still shows it installed.
       try {
+        if (options.materializeMissing === false && !options.snapshotLatest) {
+          // Agent settings enumerate the library, including unselected skills.
+          // Execution, rather than browsing, validates the repository bytes.
+          try {
+            await ensureSkillCacheDirectory(versionPath);
+            const entrypoint = await fs.lstat(path.join(versionPath, "SKILL.md"));
+            if (!entrypoint.isFile() || entrypoint.isSymbolicLink()) throw unprocessable("Unsafe skill cache entrypoint.");
+            return { status: "available", source: versionPath };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            return { status: "missing", source: versionPath,
+              detail: "The selected skill version will be materialized on the next run." };
+          }
+        }
         const versionSource = await materializeVersionSnapshot(companyId, skill, version);
         if (versionSource) return { status: "available", source: versionSource };
         return { status: "missing", source: versionPath, detail: "The selected skill version produced no files." };

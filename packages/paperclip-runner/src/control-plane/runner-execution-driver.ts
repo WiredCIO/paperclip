@@ -1,13 +1,16 @@
+import type { RunnerLaunchPreparer } from "../live/runner-provider-launch.js";
 import type { DurablePrpControlPlane, RunnerProcessConnection, RunnerProcessHandle, RunnerProcessLaunchSpec } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 
 /** Environment ownership shared by local, SSH, and sandbox Runner execution.
  * Preparation belongs to connection registration, before launch; activation
  * happens after dispatch. PRP authority and session semantics stay with Core.
- * Filesystem paths and process specifications are private to the built-in driver,
- * not a serializable plugin API.
+ * Provider preparation can be owned by the execution environment. Process
+ * specifications stay private to the driver; plugins receive versioned requirements.
  */
 export interface RunnerExecutionDriver {
+  /** Own provider configuration and file preparation in the execution environment. */
+  prepareLaunch?: RunnerLaunchPreparer;
   /** Prepare resources and register or acquire the connection before launch. */
   controlPlaneRegistration?: (
     authority: DurablePrpControlPlane,
@@ -25,7 +28,7 @@ export interface RunnerExecutionDriver {
       | "runner_ingress_unavailable";
     /** Persists only exact, independently verified suspended remote state. */
     checkpoint?: (settlement: "settled" | "unsettled") => Promise<void> | void;
-    release: () => Promise<void> | void;
+    release: (reason?: "detach") => Promise<void> | void;
   }>;
   /** Override process ownership; omission uses the SDK's local process owner. */
   runnerProcessLauncher?: (
@@ -44,6 +47,10 @@ export interface RunnerExecutionDriver {
   }) => Promise<Record<string, unknown>>;
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
+  /** Process lifetime while disconnected. Defaults to the active-connection
+   * recovery budget for compatibility. Null uses the authenticated connection
+   * lease as the lifetime bound, so controller downtime cannot kill its owner. */
+  runnerProcessReconnectGraceMs?: number | null;
   /**
    * A verified Runner that outlived its controller. Adoption registers
    * the durable authority and waits for this exact process to reconnect; it

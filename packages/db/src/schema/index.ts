@@ -35,6 +35,11 @@ export { orgEdges } from "./org_edges.js";
 export { documentMemberships } from "./document_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export {
+  executionWorkspaceRestorePoints,
+  EXECUTION_WORKSPACE_RESTORE_POINT_STATUSES,
+  type ExecutionWorkspaceRestorePointStatus,
+} from "./execution_workspace_restore_points.js";
 export { executionWorkspaceRuntimeLeases } from "./execution_workspace_runtime_leases.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
@@ -74,6 +79,8 @@ export { routines, routineRevisions, routineTriggers, routineWebhookTestReceipts
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
   cases,
+  caseHandoffs,
+  caseAccessSources,
   caseAttachments,
   caseDocuments,
   caseEvents,
@@ -256,3 +263,7 @@ export { executionWorkspaceRepositories } from "./execution_workspace_repositori
 export { executionWorkspaceRepositoryRoots } from "./execution_workspace_repository_roots.js";
 export { executionWorkspaceRepositoryAccess } from "./execution_workspace_repository_access.js";
 export * from "./fast_responses.js";
+export { companyObservability } from "./company_observability.js";
+
+export * from "./prompt_injection_prevention.js";
+export { workflows } from "./workflows.js";

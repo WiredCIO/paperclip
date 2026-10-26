@@ -38,6 +38,27 @@ function isRunFailureStatus(status: string): status is RunFailureStatus {
   return status === "failed" || status === "timed_out" || status === "cancelled";
 }
 
+type RunFailureTransitionState = Pick<HeartbeatRun, "status" | "runtimeMode" | "nativePhase">;
+
+/**
+ * A native run that waits for a same-run retry is stored as `failed` with
+ * `nativePhase: "retryable_failure"`. That is not terminal: the retry or the
+ * workspace copy-back retry can still finish the run as succeeded.
+ */
+function isPendingNativeRetry(run: RunFailureTransitionState): boolean {
+  return run.status === "failed" && run.runtimeMode === "native" && run.nativePhase === "retryable_failure";
+}
+
+/**
+ * Whether a status write is a new terminal failure to pass to `reportRunFailure`.
+ * A status change counts. A run that leaves a pending native retry but stays
+ * `failed` also counts, because `reportRunFailure` skipped its earlier write.
+ */
+export function isNewTerminalRunFailure(before: RunFailureTransitionState, after: RunFailureTransitionState): boolean {
+  if (after.status !== before.status) return true;
+  return isPendingNativeRetry(before) && !isPendingNativeRetry(after);
+}
+
 function readTaskId(run: HeartbeatRun): string | null {
   if (run.issueId) return run.issueId;
   if (run.nativeIssueId) return run.nativeIssueId;
@@ -215,6 +236,19 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
     options.phase !== "setup" && run.signal == null;
 }
 
+const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
+
+/**
+ * The ACP agent typed its terminal failure as `access` (provider auth_required),
+ * and the adapter kept it on the sign-in recovery path. The run blocks and the
+ * user gets a reconnect request, so Sentry adds no signal.
+ */
+function isAcpProviderAccessFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode != null && providerAuthErrorCodes.has(run.errorCode) &&
+    asRecord(asRecord(run.resultJson)?.terminalSessionFailure)?.category === "access" &&
+    options.phase !== "setup" && run.signal == null;
+}
+
 /**
  * The Grok endpoint refused every work wake with an HTTP 4xx, so the offer
  * expired unaccepted. Durable delivery receipts prove the external cause. A
@@ -238,7 +272,8 @@ async function isRejectedExternalBotWake(db: Db, run: HeartbeatRun): Promise<boo
 
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
- * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
+ * other than failures and unexpected started cancellations, and for a native
+ * run that still waits for a same-run retry. Never throws — a Sentry failure or a
  * database read failure must not change the caller's control flow.
  *
  * Call this beside the caller's own terminal-status write, with
@@ -252,6 +287,8 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (mode === "off") return Promise.resolve();
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
+  // The terminal write that ends the retry reports instead (`isNewTerminalRunFailure`).
+  if (isPendingNativeRetry(run)) return Promise.resolve();
   if (mode === "unexpected" && (
     isMissingSecretConfigurationBlocker(run, options) ||
     isAiConnectionSelectionBlocker(run, options) ||
@@ -260,6 +297,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
+    isAcpProviderAccessFailure(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;

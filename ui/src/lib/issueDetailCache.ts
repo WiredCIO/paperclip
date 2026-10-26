@@ -84,6 +84,9 @@ export function getCachedIssueDetail(
 
   const cachedEntries = queryClient.getQueriesData<Issue>({ queryKey: ISSUE_DETAIL_QUERY_PREFIX });
   return cachedEntries
+    // Core reads share invalidation/mutation updates with detail, but cannot
+    // stand in for its related data or suppress the enrichment request.
+    .filter(([key]) => key.length === ISSUE_DETAIL_QUERY_PREFIX.length + 1)
     .map(([, cachedIssue]) => cachedIssue)
     .find((cachedIssue): cachedIssue is Issue =>
       isCompleteIssueSnapshot(cachedIssue) && matchesIssueRef(cachedIssue, refs)
@@ -118,6 +121,10 @@ export async function fetchIssueDetail(
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
   const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
+  const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
+  if (issue.planDocument !== undefined && !queryClient.getQueryState(planKey)) {
+    queryClient.setQueryData(planKey, issue.planDocument);
+  }
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 

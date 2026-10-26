@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, companySkills, createDb, heartbeatRunEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, createDb, heartbeatRunEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
@@ -105,6 +105,8 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), projectId = randomUUID();
     const userId = `configuration-user-${companyId}`;
     const credential = `fixture-api-key-${companyId}`;
+    await db.insert(authUsers).values({ id: userId, name: "Configuration user", email: `${userId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: companyId, name: "Execution configuration fixture", issuePrefix: `C${companyId.slice(0, 6)}` });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     const account = managed ? await aiConnectionService(db).save(companyId, userId, {
@@ -157,7 +159,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       config: { sourceWorkspaceConfig: { ...agent.adapterConfig, homeMode: "preconfigured" }, aiBinding: managed
         ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) : undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
-        useIsolatedTaskDirectory: false, explicitTaskDirectory: false },
+        useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
       environment: { selectedEnvironmentId: null, selectedEnvironmentForConfig: null,
         resolvedInstanceSettings: await instanceSettingsService(db).get(), persistedNativeExecutionInput: persisted },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
@@ -187,7 +189,11 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
     skillFailures.set(f.companyId, "Preconfigured mode must not resolve assigned skills");
     const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime");
-    const beforeNative = vi.fn(async () => { throw new Error("fixture stopped before provider start"); });
+    const beforeNative = vi.fn(async () => {
+      // The fixture intentionally stops preparation; do not schedule a retry.
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+      throw new Error("fixture stopped before provider start");
+    });
     const nativeHeartbeat = heartbeatService(db, { beforeNativeRuntimeSelection: beforeNative });
     try {
       const run = await nativeHeartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual",
@@ -214,7 +220,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
-  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner") {
+  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace") {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
@@ -224,13 +230,35 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null,
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding: undefined },
-      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory: false },
+      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
       environment: { selectedEnvironmentId: null, selectedEnvironmentForConfig: null,
         resolvedInstanceSettings, persistedNativeExecutionInput: null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
+
+  it("keeps default task-directory configuration stable when the directory is reused", async () => {
+    const f = await seed();
+    const initial = await (await configuration(f, {}, {}, "paperclip_runner", true)).prepare();
+    const reused = await (await configuration(f, {})).prepare();
+    expect(initial.prepared).toBe(true);
+    expect(reused.prepared).toBe(true);
+    if (!initial.prepared || !reused.prepared) throw new Error("Configuration was not prepared");
+    expect(initial.mergedConfig).toEqual(reused.mergedConfig);
+    expect(initial.configSnapshot).toEqual(reused.configSnapshot);
+  });
+
+  it.each([
+    { mode: "shared_workspace" as const, config: { workspaceStrategy: { type: "git_worktree", baseRef: "main" } } },
+    { mode: "agent_default" as const, config: {} },
+  ])("still selects directory transport instead of a $mode strategy", async ({ mode, config }) => {
+    const f = await seed();
+    const prepared = await (await configuration(f, config, {}, "paperclip_runner", true, mode)).prepare();
+    expect(prepared.prepared).toBe(true);
+    if (!prepared.prepared) throw new Error("Configuration was not prepared");
+    expect(prepared.mergedConfig.workspaceStrategy).toEqual({ type: "project_primary" });
+  });
 
   it.each(["fresh", "saved empty"])("prepares a %s native skill selection while another run holds the company cache lock", async kind => {
     const f = await seed();

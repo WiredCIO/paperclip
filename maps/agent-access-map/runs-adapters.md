@@ -2,6 +2,8 @@
 
 Product map: [Runs, harnesses, and model accounts](../feature-map/runs-adapters.md).
 
+Feature ID: `runs-adapters`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -22,6 +24,8 @@ shutdown/readiness ordering. The original baseline and review depth remain for
 unrelated operations; no live provider or agent authorization is claimed.
 
 ## `availability`
+
+Capability ID: `runs-adapters/availability`.
 
 Review: `baseline`.
 
@@ -44,6 +48,11 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Runner discovery exposes `supportedRunners` and `defaultRunner`; it describes
+qualified selection, not successful authentication or task execution. Native
+Claude retains existing account grants and company/responsible-user boundaries.
+Source: [adapter discovery](../../server/src/adapters/registry.ts).
+
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.
 
@@ -52,9 +61,26 @@ reports supported runners/effective default for the selected company/environment
 [selection policy](../../server/src/services/agent-runner-selection.ts) reads
 server-owned immutable sandbox facts without provisioning. New Codex defaults
 and explicit overrides follow the [shared runner contract](../../packages/shared/src/agent-runner.ts);
-other harness defaults remain unchanged. The board inventory does not grant a
+Claude follows its qualified rollout described above. The board inventory does not grant a
 native agent an equivalent discovery binding. See
 [probe restrictions](./execution-environments.md#probe) for acquiring qualification.
+OpenCode now follows the qualified native default without the experimental
+flag on macOS and GNU/Linux x64; Linux ARM64 retains Legacy. An explicit
+`provider/model` is required for test/hire; only server-owned
+inactive setup drafts may omit it. Saved runners and permission/lifecycle
+policies remain authoritative. Actor/company checks and board-only discovery
+remain unchanged. This is scoped source/control evidence for OpenCode selection,
+not live provider execution or agent authorization proof.
+Pi follows the same supported platform/default and model-free inactive-draft
+boundary, with explicit pinned-runtime setup required on the execution host.
+Native ACPX Pi is admitted with the generic flag off. Existing direct Pi agents
+remain Legacy; saved native policies remain authoritative. Incompatible thinking,
+launch, permission, or lifecycle settings return remediation on conversion.
+Managed Pi accounts accept OpenRouter routing and matching OpenAI, Anthropic,
+Google, or OpenRouter API-key models. Subscription methods and custom gateways
+remain excluded for Pi. Selection keeps the existing company, user, grant, and
+agent-install checks; runtime preparation clears alternate credentials and rejects
+custom Pi provider overrides. This adds no cross-company access or runtime installation API.
 An absent forced-Kubernetes environment is an unqualified sandbox target, never
 a local target. Discovery and automatic creation keep the Legacy path without
 provisioning it; explicit Paperclip selection returns qualification guidance.
@@ -62,6 +88,8 @@ The existing execution path owns lazy environment creation. Saved runners remain
 unchanged. This is source/control evidence, not live Kubernetes qualification.
 
 ## `validation`
+
+Capability ID: `runs-adapters/validation`.
 
 Review: `baseline`.
 
@@ -85,6 +113,26 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Environment test path checks creation/configuration policy; missing provider auth
 must use its owner setup flow.
+
+Scoped source-only Claude CLI preparation: both the selected environment test
+and normal CLI execution use
+[versioned sandbox preparation](../../packages/adapters/claude-local/src/server/sandbox-cli-version.ts).
+An outdated default sandbox command can use a private pinned compatible CLI;
+local, SSH and custom commands are not replaced. The selected model, engine,
+account and existing actor/company checks remain authoritative. Installer
+failure cannot turn an incompatible CLI into a passing probe. Local subprocess
+controls exercise version checks and installer outcomes; live agent and
+subscription access are `not-run` for this change.
+
+Scoped Legacy Codex shell delivery: resolved task configuration can explicitly
+assign service-secret variables to shell tools through ACP or CLI execution.
+The existing configuration and secret-access checks still authorize that binding;
+the shell allowlist grants no extra company or vault access. Codex login keys,
+observability credentials, private runtime transport credentials, and unassigned
+host secrets retain their separate paths. Source/control evidence:
+[shared shell policy](../../packages/adapter-utils/src/codex-shell-environment.ts)
+and the adapter executor regressions. Live delivery remains a separate check
+under `runs-adapters/validation`.
 
 Scoped source review: [test authorization and resolution](../../server/src/routes/agents.ts)
 requires same-company `agents:create`, saved-agent update access when supplied,
@@ -114,6 +162,18 @@ No grant, token, authority cache or provider dispatch bypass is added. The
 [executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
 remain separate from live latency and permitted/denied agent acceptance.
 
+Scoped OpenCode assigned-tool source evidence: local and remote native sessions
+use the server-owned authenticated relay. The provider sees bounded
+`paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` schemas,
+then uses pinned aliases. Search intersects fresh grants and work modes; calls
+retain the run's original gateway policy, validation, approvals, revocation and
+audit path. Prompt arguments cannot select gateway authority. Assigned gateway
+launch credentials stay on the controller. Former direct-catalog OpenCode
+checkpoints refresh; other provider fingerprints stay unchanged. The
+[projection controls](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts)
+and [wiring controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+are source evidence, not live permitted/denied sandbox acceptance.
+
 For a linked Codex subscription with server-resolved managed credential provenance,
 setup checks the resolved owner and stages a private probe copy before local or
 remote isolation. Without a selected API key, an unbound linked `CODEX_HOME` is
@@ -142,6 +202,8 @@ settings. See [creation access](./agents.md#hire).
 
 ## `runs`
 
+Capability ID: `runs-adapters/runs`.
+
 Review: `baseline`.
 
 Scoped source-only timing evidence: workspace preparation spans carry only the
@@ -149,6 +211,9 @@ existing hashed run ID. Controller startup phase spans carry no custom attribute
 Native controller setup and settlement phases use that same run hash, including
 assigned MCP discovery; neither tool definitions nor credentials are recorded.
 Both retain operator-controlled tracing; unconfigured clients stay silent.
+The native first-text span ends after text is committed for the existing run-events
+reader, including reasoning and completed responses. It exports only the bounded
+text kind and timing, with no text content or new agent access.
 This adds no agent API, credential access, run-log write, or recovery authority.
 See [the tracing contract](../../doc/observability.md#controller-preparation-phases).
 Live latency verification remains separate from the existing access baseline.
@@ -156,8 +221,8 @@ Live latency verification remains separate from the existing access baseline.
 API: `present` — representative operation IDs:
 
 - `GET /api/heartbeat-runs/{runId}`.
-- `GET /api/heartbeat-runs/{runId}/log`.
-- `GET /api/heartbeat-runs/{runId}/events`.
+- `GET /api/heartbeat-runs/{runId}/log` (optional `alignStartToRecord=true` extends a tail backward to its first complete record; this can exceed `limitBytes` by that record's prefix and retains the same access/redaction checks).
+- `GET /api/heartbeat-runs/{runId}/events` (optional `view=conversation` returns assistant messages and request lifecycles through the same access/redaction checks; `afterSeq` remains a sequence cursor).
 - `GET /api/heartbeat-runs/{runId}/workspace-operations`.
 - `GET /api/heartbeat-runs/{runId}/issues`.
 - `GET /api/companies/{companyId}/heartbeat-runs`.
@@ -199,6 +264,8 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Capability ID: `runs-adapters/session`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -223,6 +290,14 @@ Gaps: Task-session listing and execution-context reset require board agent
 management at their HTTP routes. Native `call_api` preserves these denials; native
 continuation remains server-owned.
 
+Scoped source evidence: replacement of a workspace may bootstrap a newly
+admitted provider session only with matching current run/runner/lease identity,
+no prior activity or backup, and an atomic claim of an absent remote session
+directory. Existing sessions retain verified restore. This adds no reset or
+cleanup authority. Follow the [session recipe](../feature-map/runs-adapters.md#session)
+with a board-owned disposable fixture; live provider and actor-access evidence
+remain separate from the executor regressions.
+
 Scoped source-only evidence: [configuration changes](../../server/src/services/agent-configuration.ts)
 and [native execution/recovery](../../server/src/services/native-runtime/native-session-executor.ts)
 retain existing execution on unrelated edits and use recorded run configuration
@@ -239,6 +314,13 @@ is suppressed for the validated report; process-death and controller/native
 ownership checks still apply. No agent gains session or recovery control.
 PostgreSQL regressions cover valid native/Legacy callbacks and rejected bindings;
 revised live execution and actor authorization remain `not-run`.
+
+Scoped source-only evidence: [configuration changes](../../server/src/services/agent-configuration.ts)
+and [native execution/recovery](../../server/src/services/native-runtime/native-session-executor.ts)
+retain existing execution on unrelated edits and use recorded run configuration
+for active/recovered runs. Explicit runner changes use revisions and session
+invalidation. Verify saved configuration, current versus historical run identity,
+restart and follow-up without granting session-reset authority to an agent.
 
 Scoped Evidence: `source-only` — the
 [native transport](../../packages/paperclip-runner/src/live/runnerd-codex-transport.ts)

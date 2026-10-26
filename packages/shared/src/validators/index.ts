@@ -350,6 +350,8 @@ export {
   builtInAgentResetSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  agentRuntimeSettingsPatchSchema,
+  type AgentRuntimeSettingsPatch,
   agentRuntimeConfigSchema,
   agentInstructionsBundleModeSchema,
   updateAgentInstructionsBundleSchema,
@@ -365,8 +367,10 @@ export {
   wakeAgentSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  addAgentProjectAccessSchema,
   type CreateAgent,
   type BuiltInAgentProvision,
   type BuiltInAgentReset,
@@ -431,6 +435,7 @@ export {
 
 export {
   createIssueSchema,
+  issueSummariesQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -452,6 +457,8 @@ export {
   resolveIssueRecoveryActionSchema,
   isValidExistingBranchName,
   retryWorkspaceExportSchema,
+  recoverWorkspaceSchema,
+  taskRetrySchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   issueReviewRequestSchema,
@@ -747,26 +754,6 @@ export {
   type CreateAssetImageMetadata,
 } from "./asset.js";
 
-export {
-  pipelineAutomationRetryCleanupOptionsSchema,
-  pipelineAutomationRetryRequestSchema,
-  pipelineAutomationRetryScopeSchema,
-  pipelineStageAutomationSchema,
-  pipelineStageApproverSchema,
-  pipelineStageConfigSchema,
-  pipelineStageKindSchema,
-  pipelineStageOnEnterSchema,
-  pipelineStageVariableSchema,
-  type PipelineAutomationRetryCleanupOptions,
-  type PipelineAutomationRetryRequest,
-  type PipelineAutomationRetryScope,
-  type PipelineStageAutomationConfig,
-  type PipelineStageApprover,
-  type PipelineStageConfig,
-  type PipelineStageKind,
-  type PipelineStageOnEnter,
-  type PipelineStageVariable,
-} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,

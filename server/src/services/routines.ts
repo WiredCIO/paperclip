@@ -18,7 +18,6 @@ import {
   folders,
   goals,
   heartbeatRuns,
-  issueInboxArchives,
   issues,
   pluginManagedResources,
   plugins,
@@ -1695,38 +1694,6 @@ export function routineService(
     return value;
   }
 
-  async function touchIssueForUserInbox(
-    executor: Db,
-    input: {
-      companyId: string;
-      issueId: string;
-      userId: string;
-      touchedAt: Date;
-    },
-  ) {
-    await executor.insert(activityLog).values({
-      companyId: input.companyId,
-      actorType: "user",
-      actorId: input.userId,
-      action: "issue.inbox_touched",
-      entityType: "issue",
-      entityId: input.issueId,
-      responsibleUserId: input.userId,
-      details: { source: "manual_routine_run" },
-      createdAt: input.touchedAt,
-    });
-
-    await executor
-      .delete(issueInboxArchives)
-      .where(
-        and(
-          eq(issueInboxArchives.companyId, input.companyId),
-          eq(issueInboxArchives.issueId, input.issueId),
-          eq(issueInboxArchives.userId, input.userId),
-        ),
-      );
-  }
-
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -1896,14 +1863,6 @@ export function routineService(
         });
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: activeIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: activeIssue.id,
@@ -1963,14 +1922,6 @@ export function routineService(
           });
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: existingIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: existingIssue.id,
@@ -2987,32 +2938,6 @@ export function routineService(
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
-        actor,
-      });
-    },
-
-    runPipelineStageEntryRoutine: async (id: string, input: RunRoutine & { descriptionAppendix?: string | null }, actor?: Actor) => {
-      const routine = await getRoutineById(id);
-      if (!routine) throw notFound("Routine not found");
-      if (routine.status === "archived") throw conflict("Routine is archived");
-      await assertProject(routine.companyId, input.projectId ?? null);
-      const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
-      await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
-      return dispatchRoutineRun({
-        routine,
-        trigger: null,
-        source: "api",
-        payload: input.payload as Record<string, unknown> | null | undefined,
-        variables: input.variables as Record<string, unknown> | null | undefined,
-        projectId: input.projectId ?? null,
-        projectWorkspaceId: input.projectWorkspaceId ?? null,
-        assigneeAgentId: input.assigneeAgentId ?? null,
-        idempotencyKey: input.idempotencyKey,
-        executionWorkspaceId: input.executionWorkspaceId ?? null,
-        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
-        executionWorkspaceSettings:
-          (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
-        descriptionAppendix: input.descriptionAppendix ?? null,
         actor,
       });
     },

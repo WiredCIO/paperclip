@@ -25,6 +25,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
       }
       async start() {}
       async stop() {}
+      async drainPendingConnectionProcessing() {}
       disconnectActiveRunner() {}
       persistRunAttachTemplate() {}
       issueBootstrapTicket() { return {}; }
@@ -158,6 +159,10 @@ it("does not dispatch an expired durable request when its consumer resumes", asy
     fixture.emitPermission();
     peer.current!.emit("runtime_request.expired", { requestId: "permission-7" });
     fixture.emitMarker();
+    expect((await fixture.iterator.next()).value).toMatchObject({
+      method: "paperclip/runtimeRequestExpired",
+      params: { payload: { requestId: "permission-7" } },
+    });
     expect((await fixture.iterator.next()).value?.method).toBe("item/agentMessage/delta");
     expect(handler).not.toHaveBeenCalled();
   } finally { await fixture.close(); }
