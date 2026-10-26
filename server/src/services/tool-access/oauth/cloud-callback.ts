@@ -16,7 +16,7 @@ import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from 
 
 import type { OAuthStateStore } from "./state.js";
 import type { OAuthCredentialStore } from "./credential-store.js";
-import type { OAuthCatalogCompletion } from "./catalog-completion.js";
+import { connectionHasPriorGrant, type OAuthCatalogCompletion } from "./catalog-completion.js";
 import type { RefreshConnectionCatalog } from "../catalog/contracts.js";
 
 import { toApplication } from "../applications/projection.js";
@@ -54,6 +54,10 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       status: connection.status,
       enabled: connection.enabled,
     };
+    // CH-3: read before this callback writes its own grant below, so a
+    // connection revived after removal (whose revoked grant row survives)
+    // is never mistaken for genuinely new.
+    const isNewConnection = !(await connectionHasPriorGrant(db, connection));
     // The connection lifecycle, not the incidental presence of its app profile,
     // distinguishes setup from reauthorization. New connections and connections
     // revived after removal are drafts until this callback completes. A profile
@@ -486,6 +490,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
           catalog: refresh.catalog,
           suggestedDefaults,
           activateQuarantined: true,
+          isNewConnection,
           actor: input.actor,
         })
       : null;

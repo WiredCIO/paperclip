@@ -29,8 +29,8 @@ async function syncCredentialBindings(
     connection: typeof toolConnections.$inferSelect,
     grantSecretRefs: ToolCredentialSecretRef[] = [],
     dbClient: ToolAccessMutationDb = db,
-  ) {
-    await syncConnectionCredentialBindings(db, connection, grantSecretRefs, dbClient);
+  ): Promise<number> {
+    return syncConnectionCredentialBindings(db, connection, grantSecretRefs, dbClient);
   }
 
   async function annotateSavedOAuthClientSecret(connections: ToolConnection[], viewerUserId?: string) {

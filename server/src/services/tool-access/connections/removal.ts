@@ -17,6 +17,7 @@ import { logger } from "../../../middleware/logger.js";
 import { forgetMcpHttpSessions } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { connectionSecretsUsedByOtherConsumers } from "../../connection-credentials.js";
+import { syncConnectionCredentialBindings } from "../../connection-credential-bindings.js";
 import { createToolRuntimeSupervisor } from "../../tool-runtime-supervisor.js";
 import { vercelConnectIntegrationStatus, vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
@@ -335,16 +336,16 @@ async function removeConnection(
     // provider round-trip rather than after it. They are also not needed to
     // finish the job: the refs on the connection row are what a resumed removal
     // reads to find the secrets it still owes a revocation.
-    const removedSecretBindings = await db
-      .delete(companySecretBindings)
-      .where(
-        and(
-          eq(companySecretBindings.companyId, connection.companyId),
-          eq(companySecretBindings.targetType, "tool_connection"),
-          eq(companySecretBindings.targetId, connection.id),
-        ),
-      )
-      .returning({ id: companySecretBindings.id });
+    //
+    // CH-2: route through the single binding writer instead of a private
+    // delete. Grants were just revoked above, so its own active-grants query
+    // contributes nothing; passing a zeroed-out copy of the connection's own
+    // refs makes this a sync to the empty set rather than a second code path.
+    const removedSecretBindingsCount = await syncConnectionCredentialBindings(db, {
+      ...connection,
+      credentialRefs: [],
+      credentialSecretRefs: [],
+    });
 
     const removedInstalls = await db
       .delete(toolConnectionInstalls)
@@ -637,7 +638,7 @@ async function removeConnection(
         secretsRevoked,
         secretsRetainedShared: retained.length,
         credentialRefsCleared,
-        secretBindingsRemoved: removedSecretBindings.length,
+        secretBindingsRemoved: removedSecretBindingsCount,
         grantsRevoked: grantsToRevoke.length,
         installsRemoved: removedInstalls.length,
         appProfile: appProfileOutcome,

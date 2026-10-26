@@ -18,7 +18,7 @@ import { secretService } from "../../secrets.js";
 
 import type { OAuthStateStore } from "./state.js";
 import type { OAuthCredentialStore } from "./credential-store.js";
-import type { OAuthCatalogCompletion } from "./catalog-completion.js";
+import { connectionHasPriorGrant, type OAuthCatalogCompletion } from "./catalog-completion.js";
 import type { RefreshConnectionCatalog, CheckConnectionHealth } from "../catalog/contracts.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 
@@ -104,6 +104,9 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       status: connection.status,
       enabled: connection.enabled,
     };
+    // CH-3: read before this callback writes its own grant further down, in
+    // either the personal or the organization branch.
+    const isNewConnection = !(await connectionHasPriorGrant(db, connection));
     await assertConnectorConnectionSetupEnabled(connection);
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
@@ -440,6 +443,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
             connection,
             catalog: refresh.catalog,
             suggestedDefaults,
+            isNewConnection,
             actor: input.actor,
           })
         : null;
@@ -683,6 +687,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
           connection,
           catalog: refresh.catalog,
           suggestedDefaults,
+          isNewConnection,
           actor: input.actor,
         })
       : null;

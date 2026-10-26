@@ -2476,13 +2476,83 @@ export function toolAccessService(
       // leaving it empty is what keeps the secret off an organization grant.
       const connectionCredentialSecretRefs =
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
+      // A reconnect that supplies no OAuth material (no `oauthClient`, no
+      // `configValues.oauth`) is adding/replacing something else -- headers,
+      // credentials, config -- not re-establishing OAuth. Rebuilding `authKind`,
+      // `config`, and both ref arrays from scratch in that case silently
+      // destroys the connection's existing OAuth identity (CH-1: a header-only
+      // reconnect flipped authKind to api_key and dropped the oauth.* secret
+      // refs). Preserve the previous OAuth state and merge refs by
+      // configPath/name instead, so the request's values win per-path but
+      // nothing else is lost.
+      const reconnectSuppliesOAuthConfig =
+        Boolean(input.oauthClient) ||
+        Boolean(asRecord(input.configValues).oauth);
+      // It must stay on the same grant kind and, for a remote MCP
+      // connector, the same URL: canRetainCredentialMaterial refuses to carry
+      // credentials to a different host or across an access change, and this
+      // preservation must not reopen that.
+      // Only an established OAuth identity (oauth.* secrets on the row) is
+      // preserved. Endpoints merely discovered by an unauthenticated probe are
+      // rediscovered by this setup's own probe, which needs authKind "none".
+      const preserveOAuthIdentity =
+        Boolean(revivedConnectionPrevious) &&
+        (revivedConnectionPrevious?.credentialSecretRefs ?? []).some((ref) =>
+          ref.configPath.startsWith("oauth."),
+        ) &&
+        !reconnectSuppliesOAuthConfig &&
+        previousGrantKind === requestedGrantKind &&
+        (!remoteMcpConnector || baseConfig.url === retainedConfig.url);
+      const mergeSecretRefsByConfigPath = (
+        fresh: CreateToolConnection["credentialSecretRefs"],
+        previous: CreateToolConnection["credentialSecretRefs"],
+      ): CreateToolConnection["credentialSecretRefs"] => {
+        const freshPaths = new Set(fresh.map((ref) => ref.configPath));
+        const carried = previous.filter(
+          (ref) => !freshPaths.has(ref.configPath),
+        );
+        return [...fresh, ...carried];
+      };
+      const mergeCredentialRefsByName = (
+        fresh: McpConnectionCredentialRef[],
+        previous: McpConnectionCredentialRef[],
+      ): McpConnectionCredentialRef[] => {
+        const freshNames = new Set(fresh.map((ref) => ref.name));
+        const carried = previous.filter((ref) => !freshNames.has(ref.name));
+        return [...fresh, ...carried];
+      };
+      const reconnectAuthKind = preserveOAuthIdentity
+        ? revivedConnectionPrevious!.authKind
+        : genericAuthKind;
+      const reconnectConfig = preserveOAuthIdentity
+        ? {
+            ...config,
+            oauth:
+              asRecord(revivedConnectionPrevious!.config).oauth ??
+              config.oauth,
+          }
+        : config;
+      const reconnectCredentialSecretRefs = preserveOAuthIdentity
+        ? mergeSecretRefsByConfigPath(
+            connectionCredentialSecretRefs,
+            (revivedConnectionPrevious!.credentialSecretRefs ??
+              []) as CreateToolConnection["credentialSecretRefs"],
+          )
+        : connectionCredentialSecretRefs;
+      const reconnectCredentialRefs = preserveOAuthIdentity
+        ? mergeCredentialRefsByName(
+            credentialRefs,
+            (revivedConnectionPrevious!.credentialRefs ??
+              []) as McpConnectionCredentialRef[],
+          )
+        : credentialRefs;
       if (revivedConnectionPrevious) {
         forgetMcpHttpSessions(revivedConnectionPrevious.id);
         [connectionRow] = await db
           .update(toolConnections)
           .set({
             name,
-            authKind: genericAuthKind,
+            authKind: reconnectAuthKind,
             transport,
             status: "draft",
             enabled: false,
@@ -2490,10 +2560,10 @@ export function toolAccessService(
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
               : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
-            config,
-            transportConfig: config,
-            credentialRefs,
-            credentialSecretRefs: connectionCredentialSecretRefs,
+            config: reconnectConfig,
+            transportConfig: reconnectConfig,
+            credentialRefs: reconnectCredentialRefs,
+            credentialSecretRefs: reconnectCredentialSecretRefs,
             credentialSource,
             externalCredential,
             credentialPolicy,

@@ -9,7 +9,8 @@ import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "../../connection-permission-errors.js";
-import { mcpDiscoveryHttpFailure, withMcpConnectionFailure } from "../../mcp-connection-failure.js";
+import { markMcpHttpResponseFailure, mcpDiscoveryHttpFailure, withMcpConnectionFailure } from "../../mcp-connection-failure.js";
+import { redactSensitiveText } from "../../../redaction.js";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "../../browser-use-client.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "../../cognee-connection.js";
@@ -315,7 +316,19 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
           oauthSupported: Boolean(endpoints),
         });
       }
-      throw mcpDiscoveryHttpFailure(response, `Remote app returned HTTP ${response.status}`);
+      // CH-4: capture the provider's own response body before it is discarded.
+      // `sanitizeHttpFailure` scrubs and truncates it into `detail` so a health
+      // check surfaces what the provider actually objected to instead of a bare
+      // HTTP status.
+      const failureBody = redactSensitiveText((await response.text().catch(() => "")).slice(0, 2048)).slice(0, 512);
+      throw markMcpHttpResponseFailure(
+        response,
+        new HttpError(502, `Remote app returned HTTP ${response.status}`, {
+          status: response.status,
+          code: "remote_http_status",
+          ...(failureBody ? { detail: failureBody } : {}),
+        }),
+      );
     }
     const descriptors: McpToolDescriptor[] = [];
     const seenCursors = new Set<string>();

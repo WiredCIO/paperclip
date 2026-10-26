@@ -1,5 +1,6 @@
 import type { ToolConnectionHealthStatus } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
+import { redactSensitiveText } from "../../../redaction.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -44,6 +45,37 @@ export function unsupportedToolConnectionTransport() {
 }
 
 export function sanitizeHttpFailure(error: unknown): {
+  status: ToolConnectionHealthStatus;
+  message: string;
+  code: string;
+  /**
+   * CH-4: the provider's own response body (or, for a binding_missing failure,
+   * the config paths it was missing), scrubbed and truncated. `message` alone
+   * used to collapse every remote failure to `HTTP 400` with no way to tell
+   * what the provider actually objected to.
+   */
+  detail?: string;
+} {
+  const classified = classifyHttpFailure(error);
+  if (!(error instanceof HttpError)) return classified;
+  const detailsRecord = asRecord(error.details);
+  const rawDetail =
+    typeof detailsRecord.detail === "string"
+      ? detailsRecord.detail
+      : Array.isArray(detailsRecord.configPaths) &&
+          detailsRecord.configPaths.every((path) => typeof path === "string")
+        ? `Missing secret binding for: ${detailsRecord.configPaths.join(", ")}`
+        : undefined;
+  const detail = rawDetail ? redactSensitiveText(rawDetail).slice(0, 512) : undefined;
+  return detail ? { ...classified, detail } : classified;
+}
+
+/** CH-4: fold the scrubbed provider detail into the text health_message/last_error store. */
+export function healthMessageWithDetail(failure: { message: string; detail?: string }): string {
+  return failure.detail ? `${failure.message} (${failure.detail})` : failure.message;
+}
+
+function classifyHttpFailure(error: unknown): {
   status: ToolConnectionHealthStatus;
   message: string;
   code: string;

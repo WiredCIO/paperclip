@@ -2,7 +2,7 @@ import type { ActorInfo } from "../types.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueThreadInteractions, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { connectionGrants, issueThreadInteractions, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import type { ConnectToolAppResult, FinishToolApp, ToolCatalogEntry } from "@paperclipai/shared";
 
 import type { FinishConnectionSetup } from "../catalog/contracts.js";
@@ -10,6 +10,33 @@ function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
   return {};
+}
+
+/**
+ * CH-3: a connection revived after removal keeps its id, and `removeConnection`
+ * revokes (never deletes) its grant rows -- so a *revoked* grant proves this
+ * connection was actually removed before, not merely mid-setup. Checking for
+ * any grant regardless of status is too broad: a setup attempt that fails
+ * partway through can leave an active grant behind on a connection that was
+ * never active. Callers must run this before writing the current callback's
+ * own grant, or that write would make every connection look pre-existing.
+ */
+export async function connectionHasPriorGrant(
+  db: Db,
+  connection: Pick<typeof toolConnections.$inferSelect, "id" | "companyId">,
+): Promise<boolean> {
+  const [revokedGrant] = await db
+    .select({ id: connectionGrants.id })
+    .from(connectionGrants)
+    .where(
+      and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.status, "revoked"),
+      ),
+    )
+    .limit(1);
+  return Boolean(revokedGrant);
 }
 
 export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection: FinishConnectionSetup) {
@@ -20,6 +47,15 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
     activateQuarantined?: boolean;
     actor?: ActorInfo;
     interactionId?: string | null;
+    /**
+     * CH-3: `installs.length === 0` is not proof a connection is new -- removing
+     * one revokes its grants and deletes its installs, so a connection revived
+     * afterward reaches this function with the same empty installs a brand-new
+     * one has. The caller must say which one this is from state it read before
+     * writing this callback's own grant. Only a genuinely new connection gets
+     * the open default; a reconnect leaves installs alone, even when empty.
+     */
+    isNewConnection: boolean;
   }) {
     const linkedInteraction = input.interactionId
       ? await db
@@ -112,7 +148,7 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
       },
       input.actor,
     );
-    if (!deferTaskAccess && !preserveEmptyInstalls && installs.length === 0) {
+    if (!deferTaskAccess && !preserveEmptyInstalls && input.isNewConnection && installs.length === 0) {
       const installTargets =
         access === "all_agents"
           ? [

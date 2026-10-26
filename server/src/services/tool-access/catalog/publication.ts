@@ -26,7 +26,7 @@ import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js
 import { classifyRisk, shouldQuarantineNewEntries, isGoogleWorkspaceToolAllowed, type McpToolDescriptor } from "./descriptors.js";
 import { toConnection } from "../connections/projection.js";
 import { toCatalogEntry } from "./projection.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure } from "./failures.js";
+import { healthFailureHttpStatus, healthMessageWithDetail, sanitizeHttpFailure } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -81,7 +81,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       const updated = await updateConnectionHealth(
         connection,
         failure.status,
-        failure.message,
+        healthMessageWithDetail(failure),
       );
       await audit({
         companyId: connection.companyId,
@@ -92,7 +92,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         details: { status: failure.status },
         actor,
       });
-      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
+      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), healthMessageWithDetail(failure), {
         code: failure.code,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),

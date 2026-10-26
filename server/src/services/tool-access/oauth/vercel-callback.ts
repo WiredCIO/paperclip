@@ -12,7 +12,7 @@ import { deriveVercelConnectSubject, vercelGrantReference, vercelTokenRequest, V
 
 import type { OAuthStateStore } from "./state.js";
 
-import type { OAuthCatalogCompletion } from "./catalog-completion.js";
+import { connectionHasPriorGrant, type OAuthCatalogCompletion } from "./catalog-completion.js";
 import type { RefreshConnectionCatalog } from "../catalog/contracts.js";
 
 import { toApplication } from "../applications/projection.js";
@@ -60,6 +60,8 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       stateRow.connectionId,
       stateRow.companyId,
     );
+    // CH-3: read before this callback writes its own grant below.
+    const isNewConnection = !(await connectionHasPriorGrant(db, connection));
     const credential = vercelCredentialFor(connection);
     if (
       credential.principalMode !== "user" ||
@@ -237,6 +239,7 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       connection,
       catalog: refresh.catalog,
       suggestedDefaults,
+      isNewConnection,
       actor: input.actor,
     });
     const [application] = await db

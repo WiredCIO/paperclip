@@ -9,6 +9,7 @@ import { agents, connectionGrantMembers, connectionGrantDelegations, connectionG
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
 import { isPaperclipCloudConnectorStrategy } from "../../paperclip-cloud-connector.js";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
+import { syncConnectionCredentialBindings } from "../../connection-credential-bindings.js";
 
 import type { createConnectionCredentialValidation } from "./credential-validation.js";
 type GrantDependencies = {
@@ -459,6 +460,10 @@ replaceConnectionGrantMembers: async (
         })
         .returning();
       if (!grant) throw new Error("Failed to create connection installation");
+      // CH-2: this grant's refs must reach company_secret_bindings through the
+      // one writer that also derives from the connection's own refs and every
+      // other active grant, not a bespoke insert that can drift from it.
+      await syncConnectionCredentialBindings(db, connection);
       await db.insert(toolAccessAuditEvents).values({
         companyId: connection.companyId,
         connectionId: connection.id,

@@ -7,9 +7,10 @@ import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
-import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolApplications, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
+import { companySecretBindings, companySecrets, connectionGrants, toolApplications, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
+import { connectionCredentialConfigPath as credentialRefConfigPath } from "../../connection-credentials.js";
 import type { ToolConnectionHealthCheckResult, ToolConnectionHealthStatus } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
 
@@ -18,7 +19,7 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, healthMessageWithDetail, sanitizeHttpFailure, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -72,6 +73,96 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
     return updated;
   }
 
+  /**
+   * CH-2: the JSONB credential refs on a connection and the active grants
+   * pointing at it are the source of truth `syncCredentialBindings` derives
+   * `company_secret_bindings` from. Anything that writes those refs without
+   * going through that function leaves the two out of sync, surfacing only as
+   * `binding_missing` at call time. This walks the same derivation and reports
+   * any secret a binding row is missing for, so health checks catch drift
+   * before a provider call does.
+   */
+  async function assertCredentialBindingsConsistent(
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<void> {
+    const activeGrants = await db
+      .select({ refs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.status, "active"),
+        ),
+      );
+    const candidateRefs = [
+      ...connection.credentialRefs.map((ref) => ({
+        secretId: ref.secretId,
+        configPath: credentialRefConfigPath(ref),
+      })),
+      ...connection.credentialSecretRefs.map((ref) => ({
+        secretId: ref.secretId,
+        configPath: ref.configPath,
+      })),
+      ...activeGrants.flatMap((grant) =>
+        grant.refs.map((ref) => ({
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+        })),
+      ),
+    ];
+    if (candidateRefs.length === 0) return;
+    // A personal grant's secrets are scope "user": syncCredentialBindings
+    // deliberately excludes them from company_secret_bindings (they go
+    // through syncUserSecretDeclarationsForTarget instead), so requiring a
+    // binding row for them here would fail every personal-identity connection.
+    const candidateSecretRows = await db
+      .select({ id: companySecrets.id, scope: companySecrets.scope })
+      .from(companySecrets)
+      .where(
+        and(
+          eq(companySecrets.companyId, connection.companyId),
+          inArray(companySecrets.id, [
+            ...new Set(candidateRefs.map((ref) => ref.secretId)),
+          ]),
+        ),
+      );
+    const userScopedSecretIds = new Set(
+      candidateSecretRows
+        .filter((row) => row.scope === "user")
+        .map((row) => row.id),
+    );
+    const expectedRefs = candidateRefs.filter(
+      (ref) => !userScopedSecretIds.has(ref.secretId),
+    );
+    if (expectedRefs.length === 0) return;
+    const existingBindings = await db
+      .select({ configPath: companySecretBindings.configPath })
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.companyId, connection.companyId),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          eq(companySecretBindings.targetId, connection.id),
+        ),
+      );
+    const boundConfigPaths = new Set(
+      existingBindings.map((row) => row.configPath),
+    );
+    const missingConfigPaths = [
+      ...new Set(
+        expectedRefs
+          .filter((ref) => !boundConfigPaths.has(ref.configPath))
+          .map((ref) => ref.configPath),
+      ),
+    ];
+    if (missingConfigPaths.length === 0) return;
+    throw unprocessable(
+      "A configured credential secret could not be resolved.",
+      { code: "binding_missing", configPaths: missingConfigPaths },
+    );
+  }
+
   async function checkConnectionHealth(
     connectionId: string,
     actor?: ActorInfo,
@@ -83,6 +174,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
     const unavailableServices: string[] = [];
     try {
       assertSupportedConnection(connection);
+      // CH-2: catch credential-ref/binding drift before spending a round trip
+      // on a provider that can only ever fail with an opaque binding_missing.
+      await assertCredentialBindingsConsistent(connection);
       const config = asRecord(connection.config);
       const oauth = asRecord(config.oauth);
       if (
@@ -190,7 +284,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       const updated = await updateConnectionHealth(
         connection,
         failure.status,
-        failure.message,
+        healthMessageWithDetail(failure),
       );
       const runtimeSlot =
         connection.transport === "local_stdio"
@@ -205,7 +299,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         actor,
         details: { status: failure.status, transport: connection.transport },
       });
-      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
+      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), healthMessageWithDetail(failure), {
         code: failure.code,
         connection: toConnection(updated),
         runtimeSlot,
