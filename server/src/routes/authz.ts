@@ -392,25 +392,6 @@ export async function getVisibleIssue<T extends VisibilityCheckedIssue>(
 }
 
 /**
- * Whether project visibility hides this project from the caller. Only the
- * visibility denial counts; every other read denial stays with the route's
- * own checks. With `PAPERCLIP_PROJECT_ACCESS_MODE=off` this makes no query.
- */
-export async function isProjectHiddenByProjectVisibility(
-  req: Request,
-  access: ProjectVisibilityDecider,
-  project: { id: string; companyId: string },
-): Promise<boolean> {
-  if (projectAccessMode() === "off" || req.actor.type === "none") return false;
-  const decision = await access.decide({
-    actor: req.actor as AuthorizationActor,
-    action: "project:read",
-    resource: { type: "project", companyId: project.companyId, projectId: project.id },
-  });
-  return isProjectVisibilityDenial(decision);
-}
-
-/**
  * `getAccessibleResource` for projects, plus project visibility: a missing,
  * cross-tenant or project-hidden project all get the same
  * `404 { error: notFoundMessage }`, so a write to a hidden project changes
@@ -427,7 +408,7 @@ export async function getVisibleProject<T extends { id: string; companyId: strin
   if (
     !resolved ||
     !hasCompanyAccess(req, resolved.companyId) ||
-    await isProjectHiddenByProjectVisibility(req, access, resolved)
+    await isProjectHiddenByProjectVisibility(req, access, resolved.companyId, resolved.id)
   ) {
     res.status(404).json({ error: notFoundMessage });
     return null;

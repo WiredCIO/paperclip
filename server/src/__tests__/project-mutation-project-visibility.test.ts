@@ -265,7 +265,7 @@ describe("isProjectHiddenByProjectVisibility", () => {
     const decide = vi.fn();
     const req = { actor: { type: "board", userId: "user-1", source: "session" } } as unknown as express.Request;
 
-    await expect(isProjectHiddenByProjectVisibility(req, { decide }, { id: randomUUID(), companyId: randomUUID() }))
+    await expect(isProjectHiddenByProjectVisibility(req, { decide }, randomUUID(), randomUUID()))
       .resolves.toBe(false);
     expect(decide).not.toHaveBeenCalled();
   });
@@ -273,17 +273,20 @@ describe("isProjectHiddenByProjectVisibility", () => {
   it("treats only a visibility denial as hidden", async () => {
     vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
     const req = { actor: { type: "board", userId: "user-1", source: "session" } } as unknown as express.Request;
-    const project = { id: randomUUID(), companyId: randomUUID() };
+    const companyId = randomUUID();
+    const projectId = randomUUID();
 
     await expect(isProjectHiddenByProjectVisibility(
       req,
       { decide: async () => ({ allowed: false, reason: "deny_project_visibility" }) },
-      project,
+      companyId,
+      projectId,
     )).resolves.toBe(true);
     await expect(isProjectHiddenByProjectVisibility(
       req,
       { decide: async () => ({ allowed: false, reason: "deny_missing_membership" }) },
-      project,
+      companyId,
+      projectId,
     )).resolves.toBe(false);
   });
 });
