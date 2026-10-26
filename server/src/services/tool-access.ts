@@ -2729,6 +2729,80 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        //
+        // A key-based method (for example a GitHub personal access token) has
+        // its credential now and no callback follows. The runtime resolves a
+        // `per_agent` connection only through this agent's grant, so the key
+        // goes straight onto it, the same way "Just me" commits to the user's
+        // grant above. Without this the key is stored on nothing the runtime
+        // or the health check can read.
+        if (credentialSecretRefs.length > 0) {
+          const [grantSnapshot] = await db
+            .select({
+              grant: connectionGrants,
+              updatedAtVersion: sql<string>`${connectionGrants.updatedAt}::text`,
+            })
+            .from(connectionGrants)
+            .where(
+              and(
+                eq(connectionGrants.companyId, companyId),
+                eq(connectionGrants.connectionId, connectionRow.id),
+                eq(connectionGrants.kind, "agent"),
+                eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+              ),
+            )
+            .limit(1);
+          const existingGrant = grantSnapshot?.grant;
+          let changedGrant: typeof connectionGrants.$inferSelect | undefined;
+          if (existingGrant) {
+            [changedGrant] = await db
+              .update(connectionGrants)
+              .set({
+                credentialSecretRefs,
+                status: "active",
+                revokedAt: null,
+                revokedByAgentId: null,
+                revokedByUserId: null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(connectionGrants.id, existingGrant.id),
+                  sql`${connectionGrants.updatedAt} = ${grantSnapshot!.updatedAtVersion}::timestamptz`,
+                ),
+              )
+              .returning();
+            if (!changedGrant)
+              throw conflict(
+                "The agent credential changed during setup. Please try again.",
+              );
+          } else {
+            [changedGrant] = await db
+              .insert(connectionGrants)
+              .values({
+                companyId,
+                connectionId: connectionRow.id,
+                kind: "agent",
+                subjectAgentId: dedicatedAgentId,
+                credentialSecretRefs,
+                status: "active",
+                isDefault: false,
+                createdByUserId:
+                  actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+                createdByAgentId:
+                  actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+              })
+              .returning();
+            if (!changedGrant)
+              throw new Error("Failed to create dedicated agent grant");
+          }
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = {
+              previous: existingGrant ?? null,
+              current: changedGrant,
+            };
+          }
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,

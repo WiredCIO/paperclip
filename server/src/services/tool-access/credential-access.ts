@@ -1,7 +1,7 @@
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
 import { remoteEndpoint } from "./connection-methods.js";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolConnections } from "@paperclipai/db";
 import { badRequest, HttpError, unprocessable } from "../../errors.js";
@@ -38,6 +38,37 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<typeof connectionGrants.$inferSelect | null> {
+    if (connection.credentialPolicy === "per_agent") {
+      // A dedicated-agent connection only ever runs as its agent (the runtime
+      // resolves it by `subjectAgentId`). The person who clicks Connect or
+      // Check health is not that identity, so their own personal grant --
+      // often a revoked leftover from an earlier OAuth setup -- must not be
+      // substituted for it or block the check with "reauthorization required".
+      const actingAgentId =
+        actor?.actorType === "agent" ? (actor.actorId ?? null) : null;
+      const [agentGrant] = await db
+        .select()
+        .from(connectionGrants)
+        .where(
+          and(
+            eq(connectionGrants.companyId, connection.companyId),
+            eq(connectionGrants.connectionId, connection.id),
+            eq(connectionGrants.kind, "agent"),
+            eq(connectionGrants.status, "active"),
+            ...(actingAgentId
+              ? [eq(connectionGrants.subjectAgentId, actingAgentId)]
+              : []),
+          ),
+        )
+        .orderBy(desc(connectionGrants.updatedAt))
+        .limit(1);
+      if (agentGrant) return agentGrant;
+      throw unprocessable("This agent's dedicated authorization is required", {
+        code: "agent_authorization_required",
+        setupUrl: connectionSetupUrl(connection),
+        reconnectUrl: connectionReconnectUrl(connection),
+      });
+    }
     const actorUserId =
       actor?.actorType === "user" ? (actor.actorId ?? null) : null;
     if (actorUserId) {
