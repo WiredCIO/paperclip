@@ -752,7 +752,6 @@ function Setup({
           ? { applyStoredClaudeLogin: true }
           : {}),
       });
-      hired = true;
       try {
         await addProjectBindings(companyId, "agent", response.agent.id, projectIds);
       } catch (cause) {
