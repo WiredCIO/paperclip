@@ -5074,7 +5074,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
-    options: { allowBreakGlass?: boolean } = {},
+    options: { allowBreakGlass?: boolean; notFoundMessage?: string } = {},
   ) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
@@ -5087,7 +5087,7 @@ export function issueRoutes(
       await recordIssueBreakGlassRead(req, issue);
       return true;
     }
-    res.status(404).json({ error: "Issue not found" });
+    res.status(404).json({ error: options.notFoundMessage ?? "Issue not found" });
     return false;
   }
 
@@ -19709,10 +19709,10 @@ export function issueRoutes(
     if (!attachment) return;
     const issue = await svc.getById(attachment.issueId);
     if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
+      res.status(404).json({ error: "Attachment not found" });
       return;
     }
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertIssueReadAllowed(req, res, issue, { notFoundMessage: "Attachment not found" }))) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(

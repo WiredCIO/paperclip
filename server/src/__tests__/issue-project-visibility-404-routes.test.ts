@@ -410,6 +410,8 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     process.env.PAPERCLIP_PROJECT_ACCESS_MODE = "off";
     const app = await createApp("operator");
     await request(app).delete(`/api/work-products/${HIDDEN_WORK_PRODUCT_ID}`);
-    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    // Upstream's private-task gate still reads the issue; the fork adds no further decisions.
+    expect(mockAccessService.decide).toHaveBeenCalledTimes(1);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 });
