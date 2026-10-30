@@ -9,7 +9,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0355_good_vision.sql";
+const MIGRATION_FILE = "0378_good_vision.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
