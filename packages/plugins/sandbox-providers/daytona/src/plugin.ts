@@ -2037,6 +2037,35 @@ async function executeInSession(
 // create time, so the host closes the exact terminal by that identifier even
 // when the open reply was lost. It also indexes by the worker session identifier
 // for input and stop. The `onShutdown` hook closes every open session here.
+// A `bypassSession` command whose timeout exceeds this runs in a detached
+// session rather than one-shot. Short bypass commands (bridge control-plane
+// plumbing, provision, probes) keep the cheaper one-shot path.
+const DETACHED_SESSION_MIN_TIMEOUT_MS = 10 * 60_000;
+
+// Run one long command in its own throwaway session. The Daytona gateway ends
+// any single HTTP request at 3600 s with a 504, so a one-shot `executeCommand`
+// for an agent run longer than an hour always fails with its output lost. The
+// session path dispatches with `runAsync`, then streams or polls in short
+// requests, so it has no such cap. The session is separate from the lease's
+// persistent session, because that one is serialized: a command that never
+// returns would block every later in-run command behind it. It opens no
+// `session.open` span, because this command runs before the run trace exists.
+async function executeInDetachedSession(
+  sandbox: Sandbox,
+  params: PluginEnvironmentExecuteParams,
+  config: DaytonaDriverConfig,
+): Promise<PluginEnvironmentExecuteResult> {
+  const sessionId = `paperclip-detached-${randomUUID()}`;
+  await sandbox.process.createSession(sessionId);
+  try {
+    return await executeInSession(sandbox, sessionId, params, config);
+  } finally {
+    await sandbox.process.deleteSession(sessionId).catch((error: unknown) => {
+      console.error(`Failed to delete detached Daytona session ${sessionId}: ${formatErrorMessage(error)}`);
+    });
+  }
+}
+
 interface DaytonaLoginPtyEntry {
   hostRouteId: string;
   workerSessionId: string;
@@ -2814,10 +2843,17 @@ const plugin = definePlugin({
       // session there would emit a `session.open` span with no run parent, and
       // the span backend would drop it. With the bypass the session opens on the
       // first in-run command, whose open span parents to the run trace.
+      //
+      // A long `bypassSession` command (the agent process launch) runs in its own
+      // detached session instead: one-shot holds a single HTTP request open for
+      // the whole command, and the Daytona gateway cuts that off with a 504 at
+      // 3600 s.
       let result: PluginEnvironmentExecuteResult;
       if (!params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
         result = await executeInSession(sandbox, sessionId, params, config);
+      } else if (resolveTimeoutMs(params.timeoutMs, config) > DETACHED_SESSION_MIN_TIMEOUT_MS) {
+        result = await executeInDetachedSession(sandbox, params, config);
       } else {
         result = await executeOneShot(sandbox, params, config);
       }

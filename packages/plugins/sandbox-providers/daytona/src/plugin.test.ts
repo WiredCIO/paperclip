@@ -1556,6 +1556,53 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
+    it("runs a long bypassSession command in a detached session, not one-shot", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      // The agent process launch bypasses the run session but can run for
+      // hours. One-shot would hold one HTTP request open, which the Daytona
+      // gateway ends with a 504 at 3600 s.
+      const result = await plugin.definition.onEnvironmentExecute?.(
+        sessionExecParams({ bypassSession: true, timeoutMs: 4 * 60 * 60_000 }),
+      );
+
+      expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      expect(sessionId).toMatch(/^paperclip-detached-/);
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledWith(
+        sessionId,
+        expect.objectContaining({ runAsync: true }),
+        expect.any(Number),
+      );
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+
+      // The detached session is not the lease's persistent session: the next
+      // in-run command opens its own.
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.createSession.mock.calls[1]![0]).toMatch(/^paperclip-(?!detached-)/);
+    });
+
+    it("deletes the detached session when the long command fails", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      sandbox.process.executeSessionCommand.mockRejectedValue(new Error("dispatch failed"));
+      mockGet.mockResolvedValue(sandbox);
+
+      await expect(
+        plugin.definition.onEnvironmentExecute?.(
+          sessionExecParams({ bypassSession: true, timeoutMs: 4 * 60 * 60_000 }),
+        ),
+      ).rejects.toThrow("dispatch failed");
+
+      const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+    });
+
     it("opens the session on the first in-run command after a bypassSession command", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
