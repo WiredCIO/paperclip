@@ -7287,8 +7287,12 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableUser(companyId: string, userId: string) {
-    const membership = await db
+  async function assertAssignableUser(
+    companyId: string,
+    userId: string,
+    dbOrTx: DbReader = db,
+  ) {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -8243,10 +8247,16 @@ export function issueService(db: Db) {
       }
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`-task_search.score`;
+      // Project visibility bounds every search candidate set (comment and
+      // document matches included), alongside the private-task read condition.
+      const searchReadParts = [filters?.readCondition, projectVisibilityCondition].filter(
+        (condition): condition is SQL<boolean> => Boolean(condition),
+      );
+      const searchReadCondition = searchReadParts.length > 0 ? (and(...searchReadParts) as SQL<boolean>) : undefined;
       const issueSource = db.select(issueListSelect).from(issues);
       const searchedSource = hasSearch
         ? issueSource.innerJoin(sql`(
-            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), filters?.readCondition)}
+            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), searchReadCondition)}
             SELECT m.id, ${taskSearchScore(taskSearch)} AS score FROM matched m
           ) task_search`, sql`task_search.id = ${issues.id}`)
         : issueSource;
@@ -8494,6 +8504,7 @@ export function issueService(db: Db) {
       companyId: string,
       userId: string,
       status?: string | readonly string[],
+      projectVisibility?: ProjectVisibilityResolution,
     ) => {
       const conditions = [
         eq(issues.companyId, companyId),
@@ -8501,6 +8512,9 @@ export function issueService(db: Db) {
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
+      const projectVisibilityCondition =
+        projectVisibilityIssueCondition(projectVisibility);
+      if (projectVisibilityCondition) conditions.push(projectVisibilityCondition);
       const statuses = parseStatusFilter(status);
       if (statuses.length === 1) {
         conditions.push(eq(issues.status, statuses[0]));
@@ -11121,6 +11135,7 @@ export function issueService(db: Db) {
         await assertAssignableUser(
           existing.companyId,
           issueData.assigneeUserId,
+          dbOrTx,
         );
       }
       let nextProjectId =
@@ -11152,8 +11167,8 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
-      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
-      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
+      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId, dbOrTx);
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId, dbOrTx);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined

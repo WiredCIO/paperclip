@@ -1137,7 +1137,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
   }
 
   /**
-   * Project-visibility gate for board-user reads. Returns a deny decision
+   * Project-visibility gate for board-user reads and issue writes. Returns a deny decision
    * only in `enforce` mode; `shadow` logs the would-be deny and returns null
    * so the caller's existing allow stands; `off` never touches the database.
    */
@@ -1179,7 +1179,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         resourceType: input.resource.type,
         companyId: input.companyId,
         userId: input.userId,
-      }, "Project visibility would deny this read (shadow mode; allowed)");
+      }, "Project visibility would deny this action (shadow mode; allowed)");
       return null;
     }
     return deny({
@@ -2132,7 +2132,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       // replaced by company-scoped visibility: an active membership in the
       // resource company grants the same read surface a same-company agent
       // gets, and non-viewer members may mutate issues inside their company.
-      // Cross-company access stays denied.
+      // Cross-company access stays denied. Project visibility narrows this
+      // shortcut exactly as it narrows the session-user branch below.
       if (input.actor.source === "cloud_tenant" && input.actor.userId) {
         const membership = await getActiveMembership(companyId, "user", input.actor.userId);
         if (membership) {
@@ -2143,6 +2144,16 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
             input.action === "issue:read" ||
             input.action === "project:read"
           ) {
+            if (input.action !== "decision_queue:read") {
+              const visibilityDeny = await decideProjectVisibility({
+                actor: input.actor,
+                action: input.action,
+                resource: input.resource,
+                companyId,
+                userId: input.actor.userId,
+              });
+              if (visibilityDeny) return visibilityDeny;
+            }
             return allow({
               action: input.action,
               reason: "allow_company_member",
@@ -2158,6 +2169,16 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
             ) &&
             membership.membershipRole !== "viewer"
           ) {
+            if (input.action === "issue:comment" || input.action === "issue:mutate") {
+              const visibilityDeny = await decideProjectVisibility({
+                actor: input.actor,
+                action: input.action,
+                resource: input.resource,
+                companyId,
+                userId: input.actor.userId,
+              });
+              if (visibilityDeny) return visibilityDeny;
+            }
             return allow({
               action: input.action,
               reason: "allow_company_member",
@@ -2226,6 +2247,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           }
           const membership = await getActiveMembership(companyId, "user", input.actor.userId);
           if (membership && membership.membershipRole !== "viewer") {
+            const visibilityDeny = await decideProjectVisibility({
+              actor: input.actor,
+              action: input.action,
+              resource: input.resource,
+              companyId,
+              userId: input.actor.userId,
+            });
+            if (visibilityDeny) return visibilityDeny;
             return allow({
               action: input.action,
               reason: "allow_simple_company_member",
@@ -2788,6 +2817,53 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     });
   }
 
+  /**
+   * Project visibility of an agent's responsible user for an issue write.
+   * Fills a missing or null projectId from the scope, the issue row or the
+   * parent issue, so an incomplete resource cannot skip the check. Reads are left to
+   * decideBase; `off` makes no query.
+   */
+  async function decideResponsibleUserIssueVisibility(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    },
+    companyId: string,
+    responsibleUserId: string,
+  ): Promise<AuthorizationDecision | null> {
+    if (input.resource.type !== "issue" || input.action === "issue:read") return null;
+    if (projectAccessMode() === "off") return null;
+    const scopeString = (key: string) => {
+      const value = input.scope?.[key];
+      return typeof value === "string" && value.length > 0 ? value : undefined;
+    };
+    const issueId = input.resource.issueId ?? scopeString("issueId");
+    let projectId = input.resource.projectId !== undefined
+      ? input.resource.projectId
+      : input.scope && input.scope.projectId === null ? null : scopeString("projectId");
+    // A null projectId is not trusted here: the stored issue row, or for a
+    // create the parent it inherits from, decides the project.
+    if (!projectId && issueId) {
+      const issue = await loadIssue(issueId);
+      if (issue && issue.companyId === companyId && issue.projectId) projectId = issue.projectId;
+    } else if (!projectId) {
+      const parentIssueId = input.resource.parentIssueId ?? scopeString("parentIssueId");
+      if (parentIssueId) {
+        const parent = await loadIssue(parentIssueId);
+        if (parent && parent.companyId === companyId && parent.projectId) projectId = parent.projectId;
+      }
+    }
+    return decideProjectVisibility({
+      actor: input.actor,
+      action: input.action,
+      resource: { ...input.resource, issueId: issueId ?? null, projectId },
+      companyId,
+      userId: responsibleUserId,
+    });
+  }
+
   async function applyResponsibleUserIntersection(
     input: {
       actor: AuthorizationActor;
@@ -2833,7 +2909,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       return agentDecision;
     }
 
-    const userDecision = snapshot.userExists && snapshot.activeMembership
+    let userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
           ...input,
           actor: {
@@ -2853,14 +2929,19 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         });
 
     if (
-      !userDecision.allowed &&
-      userDecision.reason === "deny_unsupported_action" &&
-      activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+      userDecision.allowed ||
+      (
+        userDecision.reason === "deny_unsupported_action" &&
+        activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+      )
     ) {
-      return agentDecision;
+      // Neither the fallback nor every allow path checks project visibility,
+      // and a route may pass an issue resource without its projectId. Check
+      // the responsible user's visibility against the completed resource.
+      const visibilityDeny = await decideResponsibleUserIssueVisibility(input, companyId, responsibleUserId);
+      if (!visibilityDeny) return agentDecision;
+      userDecision = visibilityDeny;
     }
-
-    if (userDecision.allowed) return agentDecision;
 
     const denied = deny({
       action: input.action,

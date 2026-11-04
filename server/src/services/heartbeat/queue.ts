@@ -55,6 +55,7 @@ import {
   unadmittedChatWakeupCondition,
 } from "../durable-chat-wakeup.js";
 import { agentService } from "../agents.js";
+import { PROVIDER_QUOTA_HOLD_SOURCES, getProviderQuotaHold } from "../provider-quota-hold.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { randomUUID } from "node:crypto";
 import {
@@ -834,7 +835,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               .where(eq(heartbeatRuns.id, current.id));
           return onClear(tx as unknown as Db);
         }
-        if (proof.kind === "unresolved" && stage === "claim") return null;
+        // Claim defers a proof that may still clear (pending chat state, a
+        // contended row). Exhausted ancestry never clears; deferring it keeps
+        // the queued run holding the issue execution lock forever, so settle
+        // it as unresolved now.
+        if (
+          proof.kind === "unresolved" &&
+          stage === "claim" &&
+          !("reason" in proof && proof.reason === "ancestry_exhausted")
+        )
+          return null;
         const now = new Date();
         const stopped = proof.kind === "stopped";
         const code = stopped
@@ -2741,6 +2751,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    if (source && PROVIDER_QUOTA_HOLD_SOURCES.has(source)) {
+      const quotaHold = await getProviderQuotaHold(db, agentId, new Date());
+      if (quotaHold) {
+        await writeSkippedHeartbeatRequest("heartbeat.provider_quota_hold", {
+          reason: "Provider allowance is exhausted; skipping scheduled wakes until the hold lapses.",
+          holdUntil: quotaHold.until.toISOString(),
+          consecutiveFailures: quotaHold.consecutiveFailures,
+          lastError: quotaHold.reason,
+        });
+        await markTimerHeartbeatChecked(agentId, source);
+        return null;
+      }
     }
 
     if (issueId) {

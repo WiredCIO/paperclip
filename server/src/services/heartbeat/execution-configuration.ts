@@ -15,7 +15,7 @@ import { AI_CONNECTION_BUSY_RETRY_REASON, extractWakeCommentIds, isNonAssigneeWo
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
-import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
+import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, readClaudeUserAgentsDir, stripAiAuthBindings } from "../ai-connection-runtime.js";
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -181,7 +181,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   onFailureSecretsResolved(() => collectRunFailureSecretValues(resolvedConfig.env, secretKeys));
   if (aiBinding) {
     try {
-      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig }));
+      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig, claudeUserAgentsDir: readClaudeUserAgentsDir(executionRunConfig.env) }));
       onManagedAiRuntimeAcquired(managedAiRuntime);
     } catch (error) {
       // Only fresh executions can receive a pre-provider wait receipt. A

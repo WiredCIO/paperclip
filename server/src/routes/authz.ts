@@ -245,7 +245,7 @@ export function isProjectVisibilityDenial(
 type ProjectVisibilityDecider = {
   decide(input: {
     actor: AuthorizationActor;
-    action: "issue:read";
+    action: "issue:read" | "project:read";
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }): Promise<{ allowed: boolean; reason?: string | null }>;
@@ -322,6 +322,49 @@ export async function issueListProjectVisibility(
 }
 
 /**
+ * A per-request "can the caller see this issue?" check for code that lists
+ * or summarises many issues. Returns `undefined` when project visibility
+ * cannot hide anything (`PAPERCLIP_PROJECT_ACCESS_MODE=off`, or no actor), so
+ * callers skip filtering without a query. Answers are cached per issue id.
+ */
+export function issueVisibilityForRequest(
+  req: Request,
+  access: ProjectVisibilityDecider,
+): ((issue: VisibilityCheckedIssue) => Promise<boolean>) | undefined {
+  if (projectAccessMode() === "off" || req.actor.type === "none") return undefined;
+  const cache = new Map<string, Promise<boolean>>();
+  return (issue) => {
+    let visible = cache.get(issue.id);
+    if (!visible) {
+      visible = isIssueHiddenByProjectVisibility(req, access, issue).then((hidden) => !hidden);
+      cache.set(issue.id, visible);
+      void visible.catch(() => cache.delete(issue.id));
+    }
+    return visible;
+  };
+}
+
+/**
+ * Whether project visibility hides `projectId` from the caller. Write routes
+ * use it to refuse creating an issue in, or moving one into, a project the
+ * actor cannot see. A null project is always visible; `off` makes no query.
+ */
+export async function isProjectHiddenByProjectVisibility(
+  req: Request,
+  access: ProjectVisibilityDecider,
+  companyId: string,
+  projectId: string | null | undefined,
+): Promise<boolean> {
+  if (!projectId || projectAccessMode() === "off" || req.actor.type === "none") return false;
+  const decision = await access.decide({
+    actor: req.actor as AuthorizationActor,
+    action: "project:read",
+    resource: { type: "project", companyId, projectId },
+  });
+  return isProjectVisibilityDenial(decision);
+}
+
+/**
  * `getAccessibleResource` for issues, plus project visibility: a missing,
  * cross-tenant or project-hidden issue all get the same
  * `404 { error: notFoundMessage }`. Pass the not-found message of the
@@ -340,6 +383,32 @@ export async function getVisibleIssue<T extends VisibilityCheckedIssue>(
     !resolved ||
     !hasCompanyAccess(req, resolved.companyId) ||
     await isIssueHiddenByProjectVisibility(req, access, resolved)
+  ) {
+    res.status(404).json({ error: notFoundMessage });
+    return null;
+  }
+  assertCompanyAccess(req, resolved.companyId);
+  return resolved;
+}
+
+/**
+ * `getAccessibleResource` for projects, plus project visibility: a missing,
+ * cross-tenant or project-hidden project all get the same
+ * `404 { error: notFoundMessage }`, so a write to a hidden project changes
+ * nothing and does not confirm the project exists.
+ */
+export async function getVisibleProject<T extends { id: string; companyId: string }>(
+  req: Request,
+  res: Response,
+  access: ProjectVisibilityDecider,
+  project: T | null | undefined | Promise<T | null | undefined>,
+  notFoundMessage: string,
+): Promise<T | null> {
+  const resolved = await project;
+  if (
+    !resolved ||
+    !hasCompanyAccess(req, resolved.companyId) ||
+    await isProjectHiddenByProjectVisibility(req, access, resolved.companyId, resolved.id)
   ) {
     res.status(404).json({ error: notFoundMessage });
     return null;

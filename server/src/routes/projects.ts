@@ -35,7 +35,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyOwnerOrAdminMembership } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, getVisibleProject, hasCompanyOwnerOrAdminMembership } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -298,7 +298,7 @@ export function projectRoutes(db: Db) {
 
   router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
     assertBoard(req);
-    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    const project = await getVisibleProject(req, res, access, svc.getById(req.params.id as string), "Project not found");
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     if (!(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
@@ -481,7 +481,7 @@ export function projectRoutes(db: Db) {
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     if ("categoryId" in req.body && !hasCompanyOwnerOrAdminMembership(req, existing.companyId)) {
@@ -644,7 +644,7 @@ export function projectRoutes(db: Db) {
 
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
@@ -685,7 +685,7 @@ export function projectRoutes(db: Db) {
     async (req, res) => {
       const id = req.params.id as string;
       const workspaceId = req.params.workspaceId as string;
-      const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
       if (!existing) return;
       if (!(await assertProjectReadAllowed(req, res, existing))) return;
     if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
@@ -733,7 +733,7 @@ export function projectRoutes(db: Db) {
       return;
     }
 
-    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const project = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
 
@@ -1008,7 +1008,7 @@ export function projectRoutes(db: Db) {
   router.delete("/projects/:id/workspaces/:workspaceId", async (req, res) => {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
@@ -1038,7 +1038,7 @@ export function projectRoutes(db: Db) {
 
   router.delete("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    const existing = await getVisibleProject(req, res, access, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const project = await svc.remove(id);

@@ -10,6 +10,7 @@ import {
   type CompanySearchExtractSourceRef,
 } from "@paperclipai/shared";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { projectColumnPredicate, type ProjectVisibilityResolution } from "./project-visibility.js";
 
 const EXCERPT_MAX_CHARS = 180;
 const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"'`]+|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\/[^\s<>"'`]+/giu;
@@ -154,7 +155,7 @@ export function companySearchExtractService(db: Db) {
     extract: async (
       companyId: string,
       query: CompanySearchExtractQuery,
-      options?: { issueReadCondition?: SQL<boolean> },
+      options: { issueReadCondition?: SQL<boolean>; projectVisibility?: ProjectVisibilityResolution } = {},
     ): Promise<CompanySearchExtractResponse> => {
       const containsPattern = `%${escapeLikePattern(query.contains)}%`;
       const urlPattern = urlContainsPattern(query.contains);
@@ -202,7 +203,10 @@ export function companySearchExtractService(db: Db) {
         visibleIssueCondition(),
         or(...scopeConditions)!,
       ];
-      if (options?.issueReadCondition) conditions.push(options.issueReadCondition);
+      if (options.issueReadCondition) conditions.push(options.issueReadCondition);
+      if (options.projectVisibility?.kind === "restricted") {
+        conditions.push(projectColumnPredicate(options.projectVisibility, issues.projectId));
+      }
       if (query.status.length > 0) conditions.push(inArray(issues.status, query.status));
       const updatedWithin = updatedWithinStart(query.updatedWithin);
       if (updatedWithin) conditions.push(gte(issues.updatedAt, updatedWithin));

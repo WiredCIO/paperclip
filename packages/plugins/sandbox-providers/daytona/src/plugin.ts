@@ -1838,6 +1838,10 @@ async function executeOneShot(
       metadata: { durationMs },
     };
   } catch (error) {
+    // A gateway 504 also arrives as `DaytonaTimeoutError`; report it as the
+    // provider failure it is, before the real-timeout branch below.
+    const gatewayFailure = gatewayFailureResult(error, execStart);
+    if (gatewayFailure) return gatewayFailure;
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
@@ -1873,6 +1877,72 @@ const SESSION_LOG_STREAM_IDLE_MS = 15_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// HTTP statuses the Daytona proxy returns when the toolbox behind it is briefly
+// unreachable. The SDK maps 504 to `DaytonaTimeoutError`, so without this check
+// a single gateway blip on a status read looked like the command timing out.
+const TRANSIENT_GATEWAY_STATUS_CODES = new Set([502, 503, 504]);
+
+// How long a run keeps retrying through consecutive gateway errors before it
+// gives up, and the delay between those retries.
+const SESSION_GATEWAY_RETRY_WINDOW_MS = 120_000;
+const SESSION_GATEWAY_RETRY_DELAY_MS = 500;
+
+function gatewayStatusCode(error: unknown): number | null {
+  const status = (error as { statusCode?: unknown } | null)?.statusCode;
+  return typeof status === "number" && TRANSIENT_GATEWAY_STATUS_CODES.has(status) ? status : null;
+}
+
+// Run one short Daytona API read, retrying through transient gateway errors
+// until `deadlineMs`. Any other error, or a gateway error past the deadline,
+// propagates to the caller.
+async function withGatewayRetry<T>(op: () => Promise<T>, deadlineMs: number): Promise<T> {
+  while (true) {
+    try {
+      return await op();
+    } catch (error) {
+      if (gatewayStatusCode(error) == null || Date.now() >= deadlineMs) throw error;
+      await sleep(SESSION_GATEWAY_RETRY_DELAY_MS);
+    }
+  }
+}
+
+// Status and log-snapshot reads of one session command, retried through
+// transient gateway errors. The streaming log read is not wrapped: a failed
+// socket already reconnects and then falls back to these snapshot reads.
+function readSessionCommandStatus(sandbox: Sandbox, sessionId: string, commandId: string) {
+  return withGatewayRetry(
+    () => sandbox.process.getSessionCommand(sessionId, commandId),
+    Date.now() + SESSION_GATEWAY_RETRY_WINDOW_MS,
+  );
+}
+function readSessionCommandLogSnapshot(sandbox: Sandbox, sessionId: string, commandId: string) {
+  return withGatewayRetry(
+    () => sandbox.process.getSessionCommandLogs(sessionId, commandId),
+    Date.now() + SESSION_GATEWAY_RETRY_WINDOW_MS,
+  );
+}
+
+// The result for a command whose outcome is unknown because the Daytona gateway
+// kept failing. It is a provider failure, not a command timeout, so it reports
+// `timedOut: false` and says what happened instead of echoing the gateway's
+// HTML error page.
+function gatewayFailureResult(
+  error: unknown,
+  execStart: number | null,
+): PluginEnvironmentExecuteResult | null {
+  const status = gatewayStatusCode(error);
+  if (status == null) return null;
+  const durationMs = execStart != null ? timingNow() - execStart : undefined;
+  const after = durationMs != null ? ` after ${Math.round(durationMs / 1000)} s` : "";
+  return {
+    exitCode: null,
+    timedOut: false,
+    stdout: "",
+    stderr: `Daytona gateway returned HTTP ${status}${after}, so the command's result is unknown. This is a sandbox provider error, not a command timeout.\n`,
+    ...(durationMs != null ? { metadata: { durationMs } } : {}),
+  };
 }
 
 // Backoff delays for the exit-code read after the log stream ends. The live
@@ -2084,6 +2154,8 @@ async function observeSessionCommand<T>(timeoutMs: number, action: () => Promise
     return await beforeSessionDeadline(Date.now() + timeoutMs, action);
   } catch (error) {
     if (commandDeadline?.expired()) throw new SessionCommandDeadlineError();
+    // A gateway 502/503/504 is a provider failure, not an observation timeout.
+    if (gatewayStatusCode(error) != null) throw error;
     if (error instanceof SessionCommandDeadlineError || error instanceof DaytonaTimeoutError) {
       throw new SessionObservationTimeoutError();
     }
@@ -2183,13 +2255,13 @@ async function readSessionExitCode(
   timeoutMs: number,
   commandDeadline?: CommandDeadline,
 ): Promise<number | null> {
-  const first = await observeSessionCommand(timeoutMs, () => sandbox.process.getSessionCommand(sessionId, commandId), commandDeadline);
+  const first = await observeSessionCommand(timeoutMs, () => readSessionCommandStatus(sandbox, sessionId, commandId), commandDeadline);
   if (typeof first.exitCode === "number") {
     return first.exitCode;
   }
   for (const delayMs of SESSION_EXIT_CODE_RETRY_DELAYS_MS) {
     await sleepWithinCommandDeadline(commandDeadline, delayMs);
-    const status = await observeSessionCommand(timeoutMs, () => sandbox.process.getSessionCommand(sessionId, commandId), commandDeadline);
+    const status = await observeSessionCommand(timeoutMs, () => readSessionCommandStatus(sandbox, sessionId, commandId), commandDeadline);
     if (typeof status.exitCode === "number") {
       return status.exitCode;
     }
@@ -2294,7 +2366,7 @@ async function executeInSession(
       confirmedExitCode = streamResult.exitCode;
       // A log socket can close before the process emits its final bytes. Even
       // a now-visible exit code does not prove the streamed prefix is complete.
-      const logs = await observeSessionCommand(effectiveTimeoutMs, () => sandbox.process.getSessionCommandLogs(sessionId, commandId), commandDeadline);
+      const logs = await observeSessionCommand(effectiveTimeoutMs, () => readSessionCommandLogSnapshot(sandbox, sessionId, commandId), commandDeadline);
       streamBuffer.resetConnectionCursors();
       streamBuffer.onStdout(logs?.stdout ?? "");
       streamBuffer.onStderr(logs?.stderr ?? "");
@@ -2323,14 +2395,15 @@ async function executeInSession(
           ? observeSessionCommand(effectiveTimeoutMs, action, commandDeadline)
           : commandDeadline ? commandDeadline.race(action) : beforeSessionDeadline(deadlineMs, action));
       } catch (error) {
+        if (gatewayStatusCode(error) != null) throw error;
         if (error instanceof DaytonaTimeoutError) throw new SessionObservationTimeoutError();
         throw error;
       }
     };
     while (true) {
-      const status = await observe(() => sandbox.process.getSessionCommand(sessionId, commandId));
+      const status = await observe(() => readSessionCommandStatus(sandbox, sessionId, commandId));
       if (typeof status.exitCode === "number") confirmedExitCode = status.exitCode;
-      const logs = await observe(() => sandbox.process.getSessionCommandLogs(sessionId, commandId));
+      const logs = await observe(() => readSessionCommandLogSnapshot(sandbox, sessionId, commandId));
       streamResult.buffer.resetConnectionCursors();
       streamResult.buffer.onStdout(logs.stdout ?? "");
       streamResult.buffer.onStderr(logs.stderr ?? "");
@@ -2352,6 +2425,10 @@ async function executeInSession(
         : Math.max(0, Math.min(SESSION_LOG_POLL_INTERVAL_MS, deadlineMs - Date.now())));
     }
   } catch (error) {
+    // A gateway error past the retry window is a provider failure, not a
+    // command timeout. Observation wrappers pass these through unchanged.
+    const gatewayFailure = gatewayFailureResult(error, execStart);
+    if (gatewayFailure) return gatewayFailure;
     if (error instanceof SessionObservationTimeoutError ||
       (error instanceof SessionCommandDeadlineError && confirmedExitCode !== null)) {
       // Preserve undecided decoder suffixes in the partial result, without
@@ -2392,6 +2469,35 @@ async function executeInSession(
     if (stdinPath) {
       await sandbox.fs.deleteFile(stdinPath).catch(() => undefined);
     }
+  }
+}
+
+// A `bypassSession` command whose timeout exceeds this runs in a detached
+// session rather than one-shot. Short bypass commands (bridge control-plane
+// plumbing, provision, probes) keep the cheaper one-shot path.
+const DETACHED_SESSION_MIN_TIMEOUT_MS = 10 * 60_000;
+
+// Run one long command in its own throwaway session. The Daytona gateway ends
+// any single HTTP request at 3600 s with a 504, so a one-shot `executeCommand`
+// for an agent run longer than an hour always fails with its output lost. The
+// session path dispatches with `runAsync`, then streams or polls in short
+// requests, so it has no such cap. The session is separate from the lease's
+// persistent session, because that one is serialized: a command that never
+// returns would block every later in-run command behind it. It opens no
+// `session.open` span, because this command runs before the run trace exists.
+async function executeInDetachedSession(
+  sandbox: Sandbox,
+  params: PluginEnvironmentExecuteParams,
+  config: DaytonaDriverConfig,
+): Promise<PluginEnvironmentExecuteResult> {
+  const sessionId = `paperclip-detached-${randomUUID()}`;
+  await sandbox.process.createSession(sessionId);
+  try {
+    return await executeInSession(sandbox, sessionId, params, config);
+  } finally {
+    await sandbox.process.deleteSession(sessionId).catch((error: unknown) => {
+      console.error(`Failed to delete detached Daytona session ${sessionId}: ${formatErrorMessage(error)}`);
+    });
   }
 }
 
@@ -3384,10 +3490,17 @@ const plugin = definePlugin(trackDaytonaHooks({
       // session there would emit a `session.open` span with no run parent, and
       // the span backend would drop it. With the bypass the session opens on the
       // first in-run command, whose open span parents to the run trace.
+      //
+      // A long `bypassSession` command (the agent process launch) runs in its own
+      // detached session instead: one-shot holds a single HTTP request open for
+      // the whole command, and the Daytona gateway cuts that off with a 504 at
+      // 3600 s.
       let result: PluginEnvironmentExecuteResult;
       if (!params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
         result = await executeInSession(sandbox, sessionId, params, config);
+      } else if (resolveTimeoutMs(params.timeoutMs, config) > DETACHED_SESSION_MIN_TIMEOUT_MS) {
+        result = await executeInDetachedSession(sandbox, params, config);
       } else {
         result = await executeOneShot(sandbox, params, config);
       }

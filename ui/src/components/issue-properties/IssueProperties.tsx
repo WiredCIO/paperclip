@@ -62,6 +62,7 @@ import { formatRetryReason } from "../../lib/runRetryState";
 import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "../IssueScheduledRetryCard";
 import { StatusIcon } from "../StatusIcon";
+import { ReleaseExecutionStageAction } from "./ReleaseExecutionStageAction";
 import { PriorityIcon } from "../PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
@@ -2672,6 +2673,13 @@ export function IssueProperties({
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
+          </PropertyRow>
+        )}
+        {issue.executionState?.status === "pending" &&
+          !!currentUserId &&
+          issue.executionState.currentParticipant?.userId === currentUserId && (
+          <PropertyRow label="">
+            <ReleaseExecutionStageAction issue={issue} agents={agents} currentUserId={currentUserId} />
           </PropertyRow>
         )}
 

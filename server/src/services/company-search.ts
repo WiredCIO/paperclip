@@ -39,6 +39,7 @@ import {
 import { companyArtifactsService } from "./company-artifacts.js";
 import { companySearchExtractService } from "./company-search-extract.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { projectColumnPredicate, type ProjectVisibilityResolution } from "./project-visibility.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore, taskSearchFieldMatch, taskSearchTermMatch } from "./task-search.js";
 
 const SNIPPET_MAX_CHARS = 240;
@@ -535,6 +536,20 @@ export function companySearchBranchFetchLimit(limit: number, offset = 0) {
   return Math.min(COMPANY_SEARCH_BRANCH_FETCH_LIMIT, normalizedOffset + normalizedLimit + 1);
 }
 
+export type CompanySearchOptions = {
+  /** Private-task read predicate on `issues` for the caller. */
+  issueReadCondition?: SQL<boolean>;
+  /** Project read predicate on `projects` for the caller. */
+  projectReadCondition?: SQL<boolean>;
+  /**
+   * Projects the caller can see. Applied in SQL to every issue-derived result
+   * (issues, comment and document matches, artifacts) and to project results,
+   * so counts and pages cover visible rows only. Absent or unrestricted adds
+   * nothing.
+   */
+  projectVisibility?: ProjectVisibilityResolution;
+};
+
 export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
@@ -542,7 +557,7 @@ export function companySearchService(db: Db) {
     search: async (
       companyId: string,
       query: CompanySearchQuery,
-      options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
+      options: CompanySearchOptions = {},
     ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
@@ -573,6 +588,17 @@ export function companySearchService(db: Db) {
       const containsPattern = hasSearchText && tokens.length > 0 ? taskSearch.containsPattern : "__paperclip_no_match__";
       const tokenCount = tokens.length;
 
+      const restricted = options.projectVisibility?.kind === "restricted" ? options.projectVisibility : null;
+      const issueVisibility = restricted ? projectColumnPredicate(restricted, issues.projectId) : undefined;
+      const projectVisibility = restricted
+        ? restricted.projectIds.size > 0 ? inArray(projects.id, [...restricted.projectIds]) : noMatchSql()
+        : undefined;
+      // Both predicates bound every task candidate set, so hidden or private
+      // issues never match on any field.
+      const issueReadCondition: SQL<boolean> | undefined =
+        options.issueReadCondition && issueVisibility
+          ? (and(options.issueReadCondition, issueVisibility) as SQL<boolean>)
+          : options.issueReadCondition ?? issueVisibility;
       const issueFilters = issueFilterConditions(companyId, query);
       const hasIssueOnlyFilters = issueOnlyFiltersActive(query);
 
@@ -722,7 +748,7 @@ export function companySearchService(db: Db) {
         }
 
         const resultRows = await db.execute(sql`
-          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), options?.issueReadCondition)}
+          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), issueReadCondition)}
           ${sql.join(branches, sql` UNION ALL `)}
         `) as unknown as Array<SearchAggregateRow & Omit<IssueSearchRow, "commentSnippet" | "commentId" | "documentSnippet" | "documentTitle" | "documentKey">>;
 
@@ -902,7 +928,7 @@ export function companySearchService(db: Db) {
             updatedAt: projects.updatedAt,
           })
           .from(projects)
-          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition))
+          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition, projectVisibility))
           .orderBy(desc(projects.updatedAt), desc(projects.id))
           .limit(fetchLimit);
       }
@@ -914,6 +940,7 @@ export function companySearchService(db: Db) {
           eq(issues.companyId, companyId),
           visibleIssueCondition(),
           ...artifactIssueFilters,
+          ...(issueVisibility ? [issueVisibility] : []),
         ];
         const documentArtifactConditions = [
           eq(issueDocuments.companyId, companyId),
@@ -989,7 +1016,7 @@ export function companySearchService(db: Db) {
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
-          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition));
+          .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt), projectCondition, projectReadCondition, projectVisibility));
         return Number(rows[0]?.count ?? 0);
       }
 
@@ -998,7 +1025,7 @@ export function companySearchService(db: Db) {
         const result = await companyArtifactsService(db).list(companyId, {
           q: normalizedQuery.slice(0, COMPANY_ARTIFACTS_MAX_QUERY_LENGTH),
           limit: Math.min(fetchLimit, COMPANY_ARTIFACTS_MAX_LIMIT),
-        }, { issueConditions: issueFilters });
+        }, { issueConditions: issueVisibility ? [...issueFilters, issueVisibility] : issueFilters });
         return result.artifacts;
       }
 

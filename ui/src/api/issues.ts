@@ -27,6 +27,7 @@ import type {
   IssueLabel,
   IssueRecoveryAction,
   IssueRetryNowResponse,
+  ReleaseExecutionStage,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
   IssueThreadInteraction,
@@ -294,6 +295,12 @@ export const issuesApi = {
         )
       : response;
   },
+  /** WIR-1354: the active human approver hands a pending stage back to an agent. */
+  releaseExecutionStage: (id: string, data: ReleaseExecutionStage) =>
+    api.post<{ issue: Issue; wakeQueued: boolean }>(
+      `/issues/${id}/execution-stage/release`,
+      data,
+    ),
   decideStalledReview: (id: string, data: StalledReviewDecision) =>
     api.post<StalledReviewDecisionResponse>(
       `/issues/${id}/stalled-review-decision`,

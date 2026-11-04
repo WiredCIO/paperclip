@@ -119,6 +119,8 @@ import {
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   stalledReviewDecisionSchema,
+  releaseExecutionStageSchema,
+  bulkReleaseExecutionStageSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
@@ -259,9 +261,14 @@ import {
   getVisibleIssue,
   isIssueHiddenByProjectVisibility,
   issueListProjectVisibility,
+  issueVisibilityForRequest,
+  isProjectHiddenByProjectVisibility,
   isProjectVisibilityDenial,
 } from "./authz.js";
-import { projectAccessMode } from "../services/project-visibility.js";
+import {
+  projectAccessMode,
+  type ProjectVisibilityResolution,
+} from "../services/project-visibility.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -317,6 +324,7 @@ import {
   projectReadSqlCondition,
 } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
+import { executionStageReleaseService } from "../services/execution-stage-release.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { ensurePersonalPrivateProject } from "../services/projects.js";
@@ -458,12 +466,12 @@ type CompanySearchService = {
   extract(
     companyId: string,
     query: CompanySearchExtractQuery,
-    options?: { issueReadCondition?: SQL<boolean> },
+    options?: { issueReadCondition?: SQL<boolean>; projectVisibility?: ProjectVisibilityResolution },
   ): Promise<CompanySearchExtractResponse>;
   search(
     companyId: string,
     query: CompanySearchQuery,
-    options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
+    options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; projectVisibility?: ProjectVisibilityResolution },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -4911,6 +4919,47 @@ export function issueRoutes(
     return source?.projectId ?? null;
   }
 
+  // Board writes may not place an issue in a project the actor cannot see.
+  async function assertBoardIssueProjectVisible(
+    req: Request,
+    companyId: string,
+    projectId: string | null | undefined,
+  ) {
+    if (req.actor.type !== "board") return;
+    if (await isProjectHiddenByProjectVisibility(req, access, companyId, projectId)) {
+      throw notFound("Project not found");
+    }
+  }
+
+  // Board writes may not reference an issue the actor cannot see (a workspace
+  // inheritance source, a new blocker). Unknown, cross-company and hidden ids
+  // all fail here, before any other check, so the response cannot tell them
+  // apart.
+  async function assertBoardReferencedIssuesVisible(
+    req: Request,
+    companyId: string,
+    issueIds: ReadonlyArray<string | null | undefined> | null | undefined,
+    hiddenError: () => Error,
+  ) {
+    if (req.actor.type !== "board" || projectAccessMode() === "off" || !issueIds) return;
+    const ids = new Set(
+      issueIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+    for (const id of ids) {
+      const referenced = await svc.getById(id);
+      if (
+        !referenced ||
+        referenced.companyId !== companyId ||
+        (await isIssueHiddenByProjectVisibility(req, access, referenced))
+      ) {
+        throw hiddenError();
+      }
+    }
+  }
+
+  const hiddenBlockerError = () =>
+    unprocessable("Blocked-by issues must belong to the same company");
+
   async function assertCanAssignTasks(
     req: Request,
     companyId: string,
@@ -8225,6 +8274,7 @@ export function issueRoutes(
     }
     const result = await getSearchService().extract(companyId, parsedQuery.data, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
+      projectVisibility: await issueListProjectVisibility(req, db, companyId),
     });
     res.json(result);
   });
@@ -8276,6 +8326,7 @@ export function issueRoutes(
     const result = await getSearchService().search(companyId, query, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
       projectReadCondition: await projectReadSqlCondition(db, req.actor),
+      projectVisibility: await issueListProjectVisibility(req, db, companyId),
     });
     res.json(result);
   });
@@ -8929,9 +8980,10 @@ export function issueRoutes(
     validate(runnerGoalActionRequestSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         getIssueById(req, id),
         "Issue not found",
       );
@@ -9450,9 +9502,10 @@ export function issueRoutes(
     validate(upsertIssueWatchdogSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         getIssueById(req, id),
         "Issue not found",
       );
@@ -9509,9 +9562,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       getIssueById(req, id),
       "Issue not found",
     );
@@ -9661,9 +9715,10 @@ export function issueRoutes(
     validate(resolveIssueRecoveryActionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -10421,9 +10476,10 @@ export function issueRoutes(
     validate(refreshExternalObjectsSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -10558,9 +10614,10 @@ export function issueRoutes(
     validate(createDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -10681,9 +10738,10 @@ export function issueRoutes(
     validate(createDocumentAnnotationCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -10759,9 +10817,10 @@ export function issueRoutes(
     validate(updateDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -10817,9 +10876,10 @@ export function issueRoutes(
     validate(upsertIssueDocumentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -10984,9 +11044,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/lock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -11041,9 +11102,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -11128,9 +11190,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const revisionId = req.params.revisionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -11277,9 +11340,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -11387,9 +11451,10 @@ export function issueRoutes(
     validate(createIssueWorkProductSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -11603,9 +11668,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const workProductId = req.params.workProductId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -11639,9 +11705,10 @@ export function issueRoutes(
     validate(promoteLowTrustOutputSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -11959,9 +12026,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -11998,9 +12066,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -12103,9 +12172,10 @@ export function issueRoutes(
     validate(inboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -12149,9 +12219,10 @@ export function issueRoutes(
     validate(inboxArchiveBodySchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -12206,9 +12277,10 @@ export function issueRoutes(
     validate(linkIssueApprovalSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -12246,9 +12318,10 @@ export function issueRoutes(
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -12519,6 +12592,40 @@ export function issueRoutes(
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: rawCreateBody.assigneeUserId ?? null,
       };
+      if (
+        req.actor.type === "board" &&
+        createBody.parentId &&
+        projectAccessMode() !== "off"
+      ) {
+        // Board callers skip the agent-only parent load above. Unknown,
+        // cross-company and hidden parents get the same 404, as agents do.
+        const boardParent = await svc.getById(createBody.parentId);
+        if (
+          !boardParent ||
+          boardParent.companyId !== companyId ||
+          (await isIssueHiddenByProjectVisibility(req, access, boardParent))
+        ) {
+          res.status(404).json({ error: "Parent issue not found" });
+          return;
+        }
+      }
+      await assertBoardIssueProjectVisible(
+        req,
+        companyId,
+        createAssignmentScope.projectId,
+      );
+      await assertBoardReferencedIssuesVisible(
+        req,
+        companyId,
+        [createBody.inheritExecutionWorkspaceFromIssueId],
+        () => notFound("Workspace inheritance issue not found"),
+      );
+      await assertBoardReferencedIssuesVisible(
+        req,
+        companyId,
+        createBody.blockedByIssueIds,
+        hiddenBlockerError,
+      );
       await assertTaskBridgeCreateAllowed(
         req,
         companyId,
@@ -12819,9 +12926,10 @@ export function issueRoutes(
     validateIssueMutationBody(createChildIssueSchema),
     async (req, res) => {
       const parentId = req.params.id as string;
-      const parent = await getAccessibleResource(
+      const parent = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(parentId),
         "Parent issue not found",
       );
@@ -12880,6 +12988,17 @@ export function issueRoutes(
         assigneeAgentId: createBody.assigneeAgentId ?? null,
         assigneeUserId: createBody.assigneeUserId ?? null,
       };
+      await assertBoardIssueProjectVisible(
+        req,
+        parent.companyId,
+        childAssignmentScope.projectId,
+      );
+      await assertBoardReferencedIssuesVisible(
+        req,
+        parent.companyId,
+        createBody.blockedByIssueIds,
+        hiddenBlockerError,
+      );
       await assertTaskBridgeCreateAllowed(
         req,
         parent.companyId,
@@ -13076,9 +13195,10 @@ export function issueRoutes(
     validateIssueMutationBody(createAcceptedPlanDecompositionSchema),
     async (req, res) => {
       const sourceIssueId = req.params.id as string;
-      const sourceIssue = await getAccessibleResource(
+      const sourceIssue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(sourceIssueId),
         "Issue not found",
       );
@@ -13115,6 +13235,17 @@ export function issueRoutes(
             : {}),
         };
         requestedChildren.push(childBody);
+        await assertBoardIssueProjectVisible(
+          req,
+          sourceIssue.companyId,
+          childBody.projectId ?? sourceIssue.projectId ?? null,
+        );
+        await assertBoardReferencedIssuesVisible(
+          req,
+          sourceIssue.companyId,
+          childBody.blockedByIssueIds,
+          hiddenBlockerError,
+        );
         assertNoAgentHostWorkspaceCommandMutation(
           req,
           collectIssueWorkspaceCommandPaths(childBody),
@@ -13326,9 +13457,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -13355,9 +13487,10 @@ export function issueRoutes(
   router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -13536,9 +13669,10 @@ export function issueRoutes(
     validate(stalledReviewDecisionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -13666,7 +13800,7 @@ export function issueRoutes(
   );
 
   router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
-    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const existing = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!existing) return;
     if (req.actor.type === "agent") {
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
@@ -13695,6 +13829,154 @@ export function issueRoutes(
     if (active) throw conflict("An agent currently owns execution. Wait for it to finish, or manage execution in Paperclip.", { code: "MCP_ACTIVE_EXECUTION" });
   }
 
+  // WIR-1354: the active human reviewer/approver hands a pending stage back to
+  // an agent so the agent can close the issue. Board-only; the service rejects
+  // anyone who is not the stage's current participant.
+  async function assertActiveNonViewerMember(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (req.actor.source === "local_implicit") return;
+    const userId = req.actor.userId?.trim();
+    const membership = userId
+      ? await db
+          .select({ membershipRole: companyMemberships.membershipRole })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, userId),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (!membership?.membershipRole || membership.membershipRole === "viewer") {
+      throw forbidden("Active non-viewer company membership required");
+    }
+  }
+
+  async function releaseExecutionStageAndWake(
+    req: Request,
+    input: { issueId: string; companyId: string; comment: string; assigneeAgentId?: string | null },
+  ) {
+    const actor = getActorInfo(req);
+    const result = await executionStageReleaseService(db).release({
+      ...input,
+      actor: { userId: actor.actorId, runId: actor.runId },
+    });
+    try {
+      await issueReferencesSvc.syncComment(result.comment.id);
+      await externalObjectsSvc.syncCommentSafely(result.comment.id);
+    } catch (err) {
+      logger.warn(
+        { err, issueId: result.issue.id, commentId: result.comment.id },
+        "failed to sync execution-stage release comment",
+      );
+    }
+    // Best-effort, as for stalled-review decisions: the issue is already
+    // `in_progress` and assigned, which the liveness sweep picks up.
+    let wakeQueued = false;
+    if (result.issue.assigneeAgentId) {
+      try {
+        const wake = await enqueueStalledReviewDecisionWakeup(result.issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          idempotencyKey: `execution-stage-release:${result.decisionId}`,
+          requestedByActorType: "user",
+          requestedByActorId: actor.actorId,
+          payload: {
+            issueId: result.issue.id,
+            mutation: "execution_stage_released",
+            resumeIntent: true,
+            userAuthoredNote: { commentId: result.comment.id, authorUserId: actor.actorId },
+          },
+          contextSnapshot: {
+            issueId: result.issue.id,
+            taskId: result.issue.id,
+            source: "issue.execution_stage_released",
+            wakeReason: "issue_status_changed",
+            resumeIntent: true,
+          },
+        });
+        wakeQueued = wake !== null;
+      } catch (err) {
+        logger.warn(
+          { err, issueId: result.issue.id, agentId: result.issue.assigneeAgentId },
+          "failed to enqueue execution-stage release wake",
+        );
+      }
+    }
+    return { issue: result.issue, comment: result.comment, wakeQueued };
+  }
+
+  router.post(
+    "/issues/:id/execution-stage/release",
+    validate(releaseExecutionStageSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await getVisibleIssue(req, res, access, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      await assertActiveNonViewerMember(req, issue.companyId);
+      res.json(
+        await releaseExecutionStageAndWake(req, {
+          issueId: issue.id,
+          companyId: issue.companyId,
+          comment: req.body.comment,
+          assigneeAgentId: req.body.assigneeAgentId ?? null,
+        }),
+      );
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/issues/execution-stage/release",
+    validate(bulkReleaseExecutionStageSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertActiveNonViewerMember(req, companyId);
+      // Each issue releases in its own transaction: one issue the caller is
+      // not the approver on must not hold back the rest of the batch.
+      const results: Array<{ issueId: string; ok: boolean; status: number; error?: string; wakeQueued?: boolean }> = [];
+      const visibilityApplies = issueVisibilityForRequest(req, access) !== undefined;
+      for (const issueId of req.body.issueIds as string[]) {
+        try {
+          // A project-hidden issue reports the same 404 the release service
+          // gives an id that does not exist.
+          if (visibilityApplies) {
+            const issue = await svc.getById(issueId);
+            if (
+              issue &&
+              issue.companyId === companyId &&
+              (await isIssueHiddenByProjectVisibility(req, access, issue))
+            ) {
+              results.push({ issueId, ok: false, status: 404, error: "Issue not found" });
+              continue;
+            }
+          }
+          const released = await releaseExecutionStageAndWake(req, {
+            issueId,
+            companyId,
+            comment: req.body.comment,
+            assigneeAgentId: req.body.assigneeAgentId ?? null,
+          });
+          results.push({ issueId, ok: true, status: 200, wakeQueued: released.wakeQueued });
+        } catch (err) {
+          // Earlier issues in the batch have already committed, so report every
+          // failure per issue rather than failing the whole response.
+          if (err instanceof HttpError) {
+            results.push({ issueId, ok: false, status: err.status, error: err.message });
+          } else {
+            logger.error({ err, issueId, companyId }, "execution-stage release failed");
+            results.push({ issueId, ok: false, status: 500, error: "Internal error" });
+          }
+        }
+      }
+      res.json({ results });
+    },
+  );
+
   router.patch(
     "/issues/:id",
     (req, _res, next) => {
@@ -13717,9 +13999,10 @@ export function issueRoutes(
         throw unprocessable("expectedExecutionPolicy requires a policy-only update");
       }
       const id = req.params.id as string;
-      const existing = await getAccessibleResource(
+      const existing = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -13866,6 +14149,46 @@ export function issueRoutes(
       if (commentAttachmentIds !== undefined && !commentBody) {
         res.status(400).json({ error: "Attachment ids require a comment" });
         return;
+      }
+      if (
+        updateFields.projectId !== undefined &&
+        updateFields.projectId !== existing.projectId
+      ) {
+        await assertBoardIssueProjectVisible(
+          req,
+          existing.companyId,
+          updateFields.projectId as string | null,
+        );
+      }
+      if (existingRelations) {
+        // Only newly added blockers: a hidden blocker someone else set may
+        // be resubmitted unchanged.
+        const currentBlockerIds = new Set(
+          existingRelations.blockedBy.map((relation) => relation.id),
+        );
+        await assertBoardReferencedIssuesVisible(
+          req,
+          existing.companyId,
+          (req.body.blockedByIssueIds as string[]).filter(
+            (id) => !currentBlockerIds.has(id),
+          ),
+          hiddenBlockerError,
+        );
+      }
+      if (
+        req.actor.type === "board" &&
+        typeof updateFields.parentId === "string" &&
+        updateFields.parentId !== existing.parentId &&
+        projectAccessMode() !== "off"
+      ) {
+        const nextParent = await svc.getById(updateFields.parentId);
+        if (
+          !nextParent ||
+          nextParent.companyId !== existing.companyId ||
+          (await isIssueHiddenByProjectVisibility(req, access, nextParent))
+        ) {
+          throw notFound("Parent issue not found");
+        }
       }
       const reviewPolicyChangeRequested =
         req.body.reviewPolicy !== undefined &&
@@ -16012,9 +16335,10 @@ export function issueRoutes(
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -16061,9 +16385,10 @@ export function issueRoutes(
     validate(checkoutIssueSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -16212,9 +16537,10 @@ export function issueRoutes(
 
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -16260,9 +16586,10 @@ export function issueRoutes(
     }
 
     const id = req.params.id as string;
-    const existing = await getAccessibleResource(
+    const existing = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -16420,9 +16747,10 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -16451,9 +16779,10 @@ export function issueRoutes(
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -16480,7 +16809,7 @@ export function issueRoutes(
     async (req, res) => {
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -16552,9 +16881,10 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -16834,9 +17164,10 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -16883,9 +17214,10 @@ export function issueRoutes(
     validate(createIssueThreadInteractionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17075,9 +17407,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17402,9 +17735,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17512,9 +17846,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17597,9 +17932,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17691,9 +18027,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17819,9 +18156,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17877,9 +18215,10 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -17999,9 +18338,10 @@ export function issueRoutes(
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(
+    const issue = await getVisibleIssue(
       req,
       res,
+      access,
       svc.getById(id),
       "Issue not found",
     );
@@ -18371,9 +18711,10 @@ export function issueRoutes(
     validate(addIssueCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );
@@ -19428,9 +19769,10 @@ export function issueRoutes(
     validate(upsertIssueFeedbackVoteSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await getAccessibleResource(
+      const issue = await getVisibleIssue(
         req,
         res,
+        access,
         svc.getById(id),
         "Issue not found",
       );

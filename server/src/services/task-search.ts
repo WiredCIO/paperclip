@@ -80,9 +80,12 @@ export function taskSearchScore(search: TaskSearch): SQL<number> {
 /** Shared task retrieval for company search and issue-list/command-palette search.
  * Uses existing pg_trgm indexes and current rows: no derived corpus or worker.
  * The tagged comment/document sets are evaluated once, not once per task.
+ * `visibilityFilter` (an `issues` predicate, e.g. project visibility) bounds
+ * every candidate set, so hidden issues never match on any field.
  */
 export function taskSearchCtes(companyId: string, search: TaskSearch, includeContext = true, fallbackFilters?: SQL, readCondition?: SQL<boolean>): SQL {
   const n = search.tokens.length;
+  const visible = visibilityFilter ? sql`${visibleIssueCondition()} AND ${visibilityFilter}` : visibleIssueCondition();
   const comments = n === 0 || !includeContext ? sql`SELECT NULL::uuid AS issue_id, 0 AS ord WHERE false`
     : sql.join(search.patterns.map((_, index) => sql`
       SELECT c.issue_id, ${index}::int AS ord FROM issue_comments c
