@@ -608,7 +608,7 @@ export function companySearchService(db: Db) {
       const tokenCount = tokens.length;
 
       const restricted = options.projectVisibility?.kind === "restricted" ? options.projectVisibility : null;
-      const issueVisibility = restricted ? projectColumnPredicate(restricted, issues.projectId) : undefined;
+      const issueVisibility = restricted ? (projectColumnPredicate(restricted, issues.projectId) as SQL<boolean>) : undefined;
       const projectVisibility = restricted
         ? restricted.projectIds.size > 0 ? inArray(projects.id, [...restricted.projectIds]) : noMatchSql()
         : undefined;

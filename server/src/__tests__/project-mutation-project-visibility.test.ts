@@ -28,7 +28,7 @@ import { isProjectHiddenByProjectVisibility } from "../routes/authz.js";
  */
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 type Actor = Express.Request["actor"];
 

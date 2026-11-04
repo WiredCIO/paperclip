@@ -498,7 +498,7 @@ describe("plugin scoped API routes", () => {
   });
 });
 
-describe.sequential("plugin scoped API routes: project visibility (WIR-124)", () => {
+describe("plugin scoped API routes: project visibility (WIR-124)", () => {
   const pluginId = "11111111-1111-4111-8111-111111111111";
   const companyId = "22222222-2222-4222-8222-222222222222";
   const hiddenIssueId = "55555555-5555-4555-8555-555555555555";

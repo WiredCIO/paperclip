@@ -39,6 +39,7 @@ import {
   QuarantineBadge,
 } from "./shared";
 import { describeError } from "@/api/errors";
+import { ApiError } from "@/api/client";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
   mcp_remote: "remote http",

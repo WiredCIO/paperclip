@@ -50,7 +50,7 @@ const vault = vi.hoisted(() => ({
   ),
   resolveSecretValue: vi.fn(async () => "test-dedicated-token"),
   resolveEnvBindings: vi.fn(
-    async (_company: string, env: Record<string, { secretId: string }>) => ({
+    async (_company: string, env: Record<string, { secretId: string }>, _context?: unknown) => ({
       env: Object.fromEntries(
         Object.entries(env).map(([key, binding]) => [key, `resolved-${binding.secretId}`]),
       ),
@@ -935,7 +935,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       ).toBe(403);
     });
     describe("named agent GitHub identities", () => {
-      const reviewBinding = { type: "secret_ref", secretId: "review-secret", version: "latest" };
+      const reviewBinding = { type: "secret_ref" as const, secretId: "review-secret", version: "latest" as const };
       it("resolves the agent's <NAME>_GH_TOKEN binding for one operation without touching the run identity", async () => {
         const input = await seed();
         await grant(input, "A");

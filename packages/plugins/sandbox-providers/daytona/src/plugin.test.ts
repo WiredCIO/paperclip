@@ -3314,9 +3314,12 @@ describe("Daytona sandbox provider plugin", () => {
         vi.useFakeTimers();
         try {
           const params = streamExecParams({ timeoutMs: 14_400_000, commandTimeoutMs: 14_400_000 });
-          // Characterize the one-shot transport failure with the same command
-          // and budget, then exercise the existing asynchronous session path.
-          expect(await plugin.definition.onEnvironmentExecute?.({ ...params, bypassSession: true }))
+          // Characterize the one-shot transport failure with the same command,
+          // then exercise the existing asynchronous session path. A bypass
+          // command with a budget over DETACHED_SESSION_MIN_TIMEOUT_MS runs in
+          // a detached session instead of one-shot, so the characterization
+          // uses a short budget to stay on the one-shot path.
+          expect(await plugin.definition.onEnvironmentExecute?.({ ...params, bypassSession: true, timeoutMs: 5 * 60_000 }))
             .toMatchObject({ timedOut: true, exitCode: null });
           sandbox.process.executeCommand.mockClear();
           const pending = plugin.definition.onEnvironmentExecute?.(params);
