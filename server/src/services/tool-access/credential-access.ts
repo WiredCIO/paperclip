@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "./actor.js";
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
 import { remoteEndpoint } from "./connection-methods.js";
@@ -70,7 +71,7 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
       });
     }
     const actorUserId =
-      actor?.actorType === "user" ? (actor.actorId ?? null) : null;
+      connectionActorUserId(actor);
     if (actorUserId) {
       const [personal] = await db
         .select()

@@ -233,6 +233,8 @@ export interface ConnectionGrant {
        * request, so this is the baseline its response is judged against.
        */
       requestedScopes?: string[];
+      /** Last successful consent; ordinary token refresh preserves this. */
+      consentedAt?: string;
       tokenType?: string;
       refreshTokenExpiresAt?: string;
       refreshedAt?: string;
@@ -264,6 +266,9 @@ export interface ConnectionGrant {
       appSlug?: string;
       accessRevision?: string;
       lastAccessRefreshAt?: string;
+      /** Unsettled Cloud binding changes; retained until the exact revision is delivered. */
+      bindingSync?: { id: string; removeInstallationIds: string[] };
+      continuityRetry?: { at: string; attempts: number; revision: string };
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";
       /** Set when the credential is a personal access token rather than a GitHub App sign-in. Such a token powers the app's tools only; git and gh cannot use it. */
@@ -304,6 +309,8 @@ export interface ConnectionGrantCapabilities {
  * not "render disabled".
  */
 export interface ToolConnectionCapabilities {
+  management?: { allowed: boolean; reason: string; operation: string };
+  usage?: { allowed: boolean; reason: string; operation: string; requiresApproval?: boolean; allowedCount?: number; askFirstCount?: number };
   canConfigure: boolean;
   canCreateOrganizationGrant: boolean;
   canSetCompanyInstall: boolean;
@@ -747,6 +754,8 @@ export interface ToolMcpGatewayToken {
   revokedAt: Date | string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
+  responsibleUserId?: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -776,6 +785,12 @@ export interface ToolProfileSummary {
   assignmentCount: number;
   appliesToAgentCount: number;
   isCompanyDefault: boolean;
+}
+
+/** Saved configuration only; no effective-access summary or pending-review calculation. */
+export interface ToolProfileConfiguration extends Omit<ToolProfile, "newToolsPendingCount"> {
+  entries: ToolProfileEntry[];
+  bindings: ToolProfileBinding[];
 }
 
 export interface ToolProfileWithDetails extends ToolProfile {
@@ -1007,6 +1022,11 @@ export interface ToolAppAttentionItem {
   reasons: ToolAppAttentionReason[];
 }
 
+export interface ToolConnectionReviewCounts {
+  pendingActionRequestCount: number;
+  quarantinedCatalogEntryCount: number;
+}
+
 export interface ToolAppsAttentionResponse {
   generatedAt: Date | string;
   apps: ToolAppAttentionItem[];
@@ -1236,7 +1256,8 @@ export interface ToolOAuthStartResult {
   connectionId: string;
   provider: string;
   authorizationUrl: string;
-  expiresAt: string;
+  /** Null until the addressed human starts provider authorization from a saved setup. */
+  expiresAt: string | null;
   /**
    * Opaque Paperclip Cloud authorization handoff. The board submits this only
    * to its fixed same-origin Cloud endpoint; it is never treated as a URL.
@@ -1576,6 +1597,7 @@ export interface ToolAccessDecisionInput {
   };
   runContext?: {
     heartbeatRunId?: string | null;
+    originatingAgentId?: string | null;
     issueId?: string | null;
     projectId?: string | null;
     routineId?: string | null;

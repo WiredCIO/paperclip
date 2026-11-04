@@ -5,6 +5,7 @@ import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
 import { projectCategories } from "./project_categories.js";
+import { connectionGrants } from "./tool_access.js";
 
 export const projects = pgTable(
   "projects",
@@ -24,6 +25,8 @@ export const projects = pgTable(
     color: text("color"),
     icon: text("icon"),
     env: jsonb("env").$type<AgentEnvConfig>(),
+    gitAuthorizationGrantId: uuid("git_authorization_grant_id").references(() => connectionGrants.id, { onDelete: "set null" }),
+    gitAuthorizedByUserId: text("git_authorized_by_user_id"),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),

@@ -9,7 +9,7 @@ import type {
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi, type CreateToolConnectionInput } from "@/api/tools";
 import { secretsApi } from "@/api/secrets";
-import { ApiError } from "@/api/client";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,12 +33,12 @@ import { ProjectBindingsField, addProjectBindings } from "@/components/ProjectBi
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import {
   LoadingState,
-  ErrorState,
   HealthBadge,
   RiskBadge,
   CapabilityBadges,
   QuarantineBadge,
 } from "./shared";
+import { describeError } from "@/api/errors";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
   mcp_remote: "remote http",
@@ -74,16 +74,22 @@ export function CatalogDialog({ connection, onClose }: { connection: ToolConnect
     queryKey: queryKeys.tools.catalog(connection.id),
     queryFn: () => toolsApi.listCatalog(connection.id),
   });
+  const catalogView = useQueryView(catalog);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Tool catalog — {connection.name}</DialogTitle>
         </DialogHeader>
-        {catalog.isLoading ? (
+        {catalog.isLoading || catalogView.kind === "reconnecting" ? (
           <LoadingState />
-        ) : catalog.error ? (
-          <ErrorState error={catalog.error} onRetry={() => catalog.refetch()} />
+        ) : catalogView.kind === "error" ? (
+          <QueryErrorState
+            error={catalog.error}
+            action="load the tool catalog"
+            onRetry={catalogView.retry}
+            retrying={catalogView.isFetching}
+          />
         ) : (catalog.data?.catalog ?? []).length === 0 ? (
           <p className="py-6 text-sm text-muted-foreground">
             No tools discovered yet. Use “Refresh catalog” to discover tools from this connection.
@@ -236,7 +242,7 @@ export function AddConnectionDialog({
     onError: (err) =>
       pushToast({
         title: "Could not create connection",
-        body: err instanceof ApiError ? err.message : String(err),
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -250,7 +256,7 @@ export function AddConnectionDialog({
     onError: (err) =>
       pushToast({
         title: "Probe failed",
-        body: err instanceof ApiError ? err.message : String(err),
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -266,7 +272,7 @@ export function AddConnectionDialog({
     onError: (err) =>
       pushToast({
         title: "Activation failed",
-        body: err instanceof ApiError ? err.message : String(err),
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -505,8 +511,12 @@ export function AddConnectionDialog({
               <div className="rounded-md border border-border bg-muted/40 p-3">
                 <LoadingState label="Probing connection…" />
               </div>
-            ) : probe.isError ? (
-              <ErrorState error={probe.error} onRetry={() => draft && probe.mutate(draft.id)} />
+            ) : probe.error ? (
+              <QueryErrorState
+                error={probe.error}
+                action="probe the connection"
+                onRetry={() => draft && probe.mutate(draft.id)}
+              />
             ) : probeResult ? (
               <div className="rounded-md border border-border bg-muted/40 p-3">
                 <div className="flex items-center gap-2 text-sm">

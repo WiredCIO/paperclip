@@ -28,6 +28,7 @@ export const updateAgentInstructionsBundleSchema = z.object({
   rootPath: z.string().trim().min(1).nullable().optional(),
   entryFile: z.string().trim().min(1).optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
+  requireExistingEntry: z.boolean().optional(),
 });
 
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
@@ -196,6 +197,7 @@ export const updateAgentSchema = objectWithoutDefaults(
     // CH-18: runtimeConfig deep-merges by default and an explicit null deletes
     // a key. This is the escape hatch back to wholesale replacement.
     replaceRuntimeConfig: z.boolean().optional(),
+    expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
   });
