@@ -9884,7 +9884,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/retry", validate(taskRetrySchema), async (req, res) => {
     assertBoard(req);
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -9908,7 +9908,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/recovery-actions/recover-workspace", validate(recoverWorkspaceSchema), async (req, res) => {
     assertBoard(req);
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -9920,7 +9920,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/recovery-actions/resume-workspace-finalization", validate(resumeWorkspaceFinalizationSchema), async (req, res) => {
     assertBoard(req);
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -9931,7 +9931,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/recovery-actions/retry-workspace-export", validate(retryWorkspaceExportSchema), async (req, res) => {
     assertBoard(req);
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -9943,7 +9943,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/recovery-actions/reconstruct-workspace", validate(reconstructWorkspaceSchema), async (req, res) => {
     assertBoard(req);
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -11402,7 +11402,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/documents/:key/revisions/:revisionId", async (req, res) => {
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, getIssueById(req, req.params.id as string), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const key = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -13809,7 +13809,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/privacy-constraints", async (req, res) => {
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await resolveManagedIssueForPrivacy(req, res, issue))) return;
     // A task owner need not be able to read its surrounding private scope.
     // Read policy internally and return only action hints, never scope identity.
@@ -13828,7 +13828,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/access-grants", async (req, res) => {
-    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const managedIssue = await resolveManagedIssueForPrivacy(req, res, issue);
     if (!managedIssue) return;
@@ -13866,7 +13866,7 @@ export function issueRoutes(
     "/issues/:id/access-grants",
     validate(createIssueAccessGrantSchema),
     async (req, res) => {
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
       if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
       const managedIssue = await resolveManagedIssueForPrivacy(req, res, issue);
       if (!managedIssue) return;
@@ -13918,7 +13918,7 @@ export function issueRoutes(
     "/issues/:id/access-grants/:grantId/revoke",
     validate(revokeIssueAccessGrantSchema),
     async (req, res) => {
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
       if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
       const managedIssue = await resolveManagedIssueForPrivacy(req, res, issue);
       if (!managedIssue) return;
@@ -16975,7 +16975,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/recent-comments", async (req, res) => {
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    const issue = await getVisibleIssue(req, res, access, getIssueById(req, req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     if (issue.conversationAgentId) {
       const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
@@ -17563,7 +17563,7 @@ export function issueRoutes(
   router.get("/issues/:id/chat-handoffs", async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Conversation not found");
+    const issue = await getVisibleIssue(req, res, access, getIssueById(req, req.params.id as string), "Conversation not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!issue.conversationAgentId || issue.conversationUserId !== req.actor.userId) throw notFound("Conversation not found");
@@ -17580,7 +17580,7 @@ export function issueRoutes(
   router.get("/issues/:id/pending-questions", async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Conversation not found");
+    const issue = await getVisibleIssue(req, res, access, getIssueById(req, req.params.id as string), "Conversation not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!issue.conversationAgentId || issue.conversationUserId !== req.actor.userId) {
@@ -17595,7 +17595,7 @@ export function issueRoutes(
   router.get("/issues/:id/decision-receipts", async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
-    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Conversation not found");
+    const issue = await getVisibleIssue(req, res, access, getIssueById(req, req.params.id as string), "Conversation not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!issue.conversationAgentId || issue.conversationUserId !== req.actor.userId) {
@@ -17797,7 +17797,7 @@ export function issueRoutes(
     "/issues/:id/interactions/:interactionId/resolve-from-comment",
     validate(resolveConfirmationFromCommentSchema),
     async (req, res) => {
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
       if (req.actor.type !== "agent") throw forbidden("Conversational resolution requires the responding agent run");
       const authorization = await getIssueThreadInteractionResolutionAuthorization(
@@ -18550,7 +18550,7 @@ export function issueRoutes(
     "/issues/:id/interactions/:interactionId/dismiss",
     async (req, res) => {
       assertBoard(req);
-      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      const issue = await getVisibleIssue(req, res, access, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
