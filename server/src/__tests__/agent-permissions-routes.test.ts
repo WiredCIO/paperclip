@@ -2394,7 +2394,9 @@ describe("agent permission routes", () => {
   });
 
   it("stamps a board cancel as operator-initiated and suppresses immediate recovery", async () => {
-    const run = { id: "run-1", companyId, agentId, status: "queued" };
+    const runId = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+    // A company-scoped run (no task binding) is readable by any company member.
+    const run = { id: runId, companyId, agentId, status: "queued", scopeKind: "company", issueId: null };
     mockHeartbeatService.getRun.mockResolvedValue(run);
     mockHeartbeatService.cancelRun.mockResolvedValue({ ...run, status: "cancelled" });
 
@@ -2406,13 +2408,13 @@ describe("agent permission routes", () => {
       companyIds: [companyId],
     });
 
-    const res = await requestApp(app, (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/cancel").send({}));
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).post(`/api/heartbeat-runs/${runId}/cancel`).send({}));
 
     expect(res.status).toBe(200);
     // Without the suppression the release path queues a replacement
     // continuation that retakes the issue lock.
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
-      "run-1",
+      runId,
       "Cancelled by a board operator",
       {
         suppressImmediateRecovery: true,

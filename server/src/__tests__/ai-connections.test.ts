@@ -2578,7 +2578,12 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       actor: { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, membershipRole, status: "active" }] },
     }) as express.Request;
     const sharedIntent = { ownership: "shared" as const, allAgents: false, agentIds: [], connectionId: undefined };
-    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "create-guard-member", status: "active", membershipRole: "member" });
+    // Upstream decides connection management from the persisted membership
+    // and its role grants, not from the request's membership claim.
+    await db.insert(companyMemberships).values([
+      { companyId, principalType: "user", principalId: "create-guard-member", status: "active", membershipRole: "member" },
+      { companyId, principalType: "user", principalId: "create-guard-admin", status: "active", membershipRole: "admin" },
+    ]);
     await expect(assertAiConnectionCreateAccess(db, actorFor("create-guard-member", "member"), companyId, sharedIntent)).rejects.toThrow(/connection manager/i);
     await expect(assertAiConnectionCreateAccess(db, actorFor("create-guard-admin", "admin"), companyId, sharedIntent)).resolves.toBe("create-guard-admin");
   });

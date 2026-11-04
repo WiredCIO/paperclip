@@ -5691,10 +5691,16 @@ export function agentRoutes(
       }
     }
     if (requestedRuntimeConfig && !replaceRuntimeConfig) {
+      // An AI binding is one value, not a bag of keys: a new binding replaces
+      // the old one wholesale instead of merging field by field into it.
+      const requestedAiConnection = requestedRuntimeConfig.aiConnection;
       requestedRuntimeConfig = deepMergeConfig(
         existing.runtimeConfig as Record<string, unknown>,
         requestedRuntimeConfig,
       );
+      if (requestedAiConnection !== undefined && requestedAiConnection !== null) {
+        requestedRuntimeConfig.aiConnection = requestedAiConnection;
+      }
       if (dropExistingAiConnection) delete requestedRuntimeConfig.aiConnection;
     }
     if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection

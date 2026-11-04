@@ -6270,7 +6270,7 @@ export function issueRoutes(
             "Suggested-task creation is outside the resolver's authorized issue scope",
         });
       }
-      if (parent && !(await assertIssueReadAllowed(req, res, parent))) return false;
+      if (parent && !(await assertIssueReadAllowed(req, res, parent, { notFoundMessage: "Parent issue not found" }))) return false;
       if (projectId) {
         const project = await projectsSvc.getById(projectId);
         if (!project || project.companyId !== issue.companyId) {
@@ -12829,7 +12829,7 @@ export function issueRoutes(
       };
     if (createBody.parentId) {
       const parent = await svc.getById(createBody.parentId);
-      if (!parent || parent.companyId !== companyId || !(await assertIssueReadAllowed(req, res, parent))) {
+      if (!parent || parent.companyId !== companyId || !(await assertIssueReadAllowed(req, res, parent, { notFoundMessage: "Parent issue not found" }))) {
         if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
         return;
       }
@@ -12858,6 +12858,14 @@ export function issueRoutes(
         return;
       }
     }
+      // A hidden inheritance source must answer exactly like an unknown one,
+      // so check it before the project resolution below reads its project.
+      await assertBoardReferencedIssuesVisible(
+        req,
+        companyId,
+        [createBody.inheritExecutionWorkspaceFromIssueId],
+        () => notFound("Workspace inheritance issue not found"),
+      );
       const createAssignmentScope = {
         projectId: await resolveCreateAssignmentProjectId({ ...createBody, companyId }),
         parentIssueId: createBody.parentId ?? null,
@@ -12885,12 +12893,6 @@ export function issueRoutes(
         req,
         companyId,
         createAssignmentScope.projectId,
-      );
-      await assertBoardReferencedIssuesVisible(
-        req,
-        companyId,
-        [createBody.inheritExecutionWorkspaceFromIssueId],
-        () => notFound("Workspace inheritance issue not found"),
       );
       await assertBoardReferencedIssuesVisible(
         req,
@@ -14352,7 +14354,7 @@ export function issueRoutes(
       }
       if (req.body.parentId) {
         const parent = await svc.getById(req.body.parentId);
-        if (!parent || parent.companyId !== existing.companyId || !(await assertIssueReadAllowed(req, res, parent))) {
+        if (!parent || parent.companyId !== existing.companyId || !(await assertIssueReadAllowed(req, res, parent, { notFoundMessage: "Parent issue not found" }))) {
           if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
           return;
         }

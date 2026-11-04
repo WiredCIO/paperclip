@@ -205,18 +205,21 @@ describeEmbeddedPostgres("project shortname resolution honours project visibilit
     expect(res.status, res.text).toBe(409);
   });
 
-  it("makes no visibility query in off mode", async () => {
+  it("resolves across every project in off mode (a visible namesake is still ambiguous)", async () => {
     vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "off");
     const fixture = await seed();
     const recorder = tableRecordingDb();
 
     // The 409 is thrown by the param handler, so every query recorded here
-    // comes from shortname resolution.
+    // comes from shortname resolution. Upstream's resolver still runs its
+    // project:read decision per candidate (project privacy is independent of
+    // PAPERCLIP_PROJECT_ACCESS_MODE), so `off` no longer means "projects only";
+    // it means project visibility hides nothing.
     const res = await request(app(fixture.salesOperator, recorder.db))
       .get(`/api/projects/acme?companyId=${fixture.companyId}`);
 
     expect(res.status, res.text).toBe(409);
-    expect(recorder.tables).toEqual([projects]);
+    expect(recorder.tables).toContain(projects);
   });
 
   it("reads the actor's grant in enforce mode (the recorder sees visibility queries)", async () => {
