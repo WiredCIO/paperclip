@@ -120,6 +120,40 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
   });
+  it.each(["unavailable", "absent", "offline", "available"] as const)("leaves Git identity variables absent, not empty, unless the broker supplies them (broker: %s)", async (mode) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-identity-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real"), repo = path.join(root, "repo");
+    for (const dir of [bin, realBin, repo]) await mkdir(dir, { recursive: true });
+    for (const name of ["git", "gh"]) await writeFile(path.join(bin, name), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), `#!/usr/bin/env node
+process.stdout.write(JSON.stringify(Object.fromEntries(["GIT_AUTHOR_NAME","GIT_AUTHOR_EMAIL","GIT_COMMITTER_NAME","GIT_COMMITTER_EMAIL"].map(k => [k, process.env[k] ?? null]))));
+`, { mode: 0o700 });
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(mode === "available"
+        ? { status: "available", env: { GIT_AUTHOR_NAME: "Bot", GIT_AUTHOR_EMAIL: "bot@example.test", GIT_COMMITTER_NAME: "Bot", GIT_COMMITTER_EMAIL: "bot@example.test" } }
+        : { status: mode, reason: "not connected", env: {} }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    if (mode === "offline") await new Promise<void>(resolve => server.close(() => resolve()));
+    else cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const env: NodeJS.ProcessEnv = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }), PATH: `${bin}:${realBin}:${process.env.PATH}` };
+    // The run environment itself carries empty identity variables, as in a real managed run.
+    expect(env.GIT_AUTHOR_NAME).toBe("");
+    await exec(path.join(bin, "git"), ["init"], { cwd: repo, env });
+
+    const seen = JSON.parse((await exec(path.join(bin, "gh"), [], { cwd: repo, env })).stdout);
+    if (mode === "available") {
+      expect(seen).toEqual({ GIT_AUTHOR_NAME: "Bot", GIT_AUTHOR_EMAIL: "bot@example.test", GIT_COMMITTER_NAME: "Bot", GIT_COMMITTER_EMAIL: "bot@example.test" });
+      return;
+    }
+    expect(seen).toEqual({ GIT_AUTHOR_NAME: null, GIT_AUTHOR_EMAIL: null, GIT_COMMITTER_NAME: null, GIT_COMMITTER_EMAIL: null });
+    await exec(path.join(bin, "git"), ["-c", "user.name=Local Agent", "-c", "user.email=agent@example.test", "commit", "--allow-empty", "-m", "x"], { cwd: repo, env });
+    const log = (await exec(path.join(bin, "git"), ["log", "--format=%an <%ae>|%cn <%ce>"], { cwd: repo, env })).stdout.trim();
+    expect(log).toBe("Local Agent <agent@example.test>|Local Agent <agent@example.test>");
+  });
   it("maps identity names to <NAME>_GH_TOKEN bindings", () => {
     expect(githubIdentityEnvKey("review")).toBe("REVIEW_GH_TOKEN");
     expect(githubIdentityEnvKey(" AppDev ")).toBe("APPDEV_GH_TOKEN");
