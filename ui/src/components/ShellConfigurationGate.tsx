@@ -1,7 +1,7 @@
 import { useLayoutEffect } from "react";
 import { scheduleMainContentFocus } from "@/lib/main-content-focus";
 import { Outlet, useLocation } from "@/lib/router";
-import { PaperclipLoading } from "./AnimatedPaperclipIcon";
+import { WiredcioLoading } from "./AnimatedWiredcioLogo";
 
 /** Keep shell selection stable while the independent access gate loads. */
 export function ShellConfigurationGate({ loaded, allowPendingTaskDetail = false }: { loaded: boolean; allowPendingTaskDetail?: boolean }) {
@@ -17,7 +17,7 @@ export function ShellConfigurationGate({ loaded, allowPendingTaskDetail = false 
   }, [loaded]);
   const prepareOutlet = loaded || (allowPendingTaskDetail && isTaskDetail);
   return <>
-    {!loaded ? <div data-testid="shell-configuration-loading"><PaperclipLoading /></div> : null}
+    {!loaded ? <div data-testid="shell-configuration-loading"><WiredcioLoading /></div> : null}
     {prepareOutlet ? <div hidden={!loaded} inert={!loaded} aria-hidden={!loaded || undefined} className={loaded ? "contents" : "hidden"} data-testid="shell-prepared-outlet"><Outlet /></div> : null}
   </>;
 }

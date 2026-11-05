@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CloudInstanceHealthStatus } from "@/api/health";
 import { cloudStackEntryUrl } from "@/lib/cloudLinks";
 import { beginCloudSignIn, clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
-import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
+import { WiredcioLoading } from "@/components/AnimatedWiredcioLogo";
 import { Button } from "@/components/ui/button";
 
 export function CloudSignIn({ cloud, returnTo }: { cloud: CloudInstanceHealthStatus; returnTo: string }) {
@@ -16,7 +16,7 @@ export function CloudSignIn({ cloud, returnTo }: { cloud: CloudInstanceHealthSta
     setBlocked(!beginCloudSignIn(entryUrl));
   }, [entryUrl]);
 
-  if (entryUrl && !blocked) return <PaperclipLoading />;
+  if (entryUrl && !blocked) return <WiredcioLoading />;
 
   return (
     <div className="mx-auto max-w-xl space-y-4 p-6">

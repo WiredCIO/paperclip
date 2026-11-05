@@ -13,7 +13,7 @@ import { useConnectivityStore } from "@/lib/connectivity";
 import { reconnectDelayFor, retryWhileTransient } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
-import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
+import { WiredcioLoading } from "@/components/AnimatedWiredcioLogo";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CloudSignIn } from "@/components/CloudSignIn";
@@ -187,7 +187,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   }
 
   if (isLoading) {
-    return <PaperclipLoading />;
+    return <WiredcioLoading />;
   }
 
   if (isAuthenticatedMode && healthQuery.data?.cloud && !sessionQuery.data) {
@@ -197,7 +197,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   if (isBootstrapPending) {
     const health = healthQuery.data;
     if (!health) {
-      return <PaperclipLoading />;
+      return <WiredcioLoading />;
     }
     const claimError = claimMutation.error instanceof ApiError
       ? { status: claimMutation.error.status, message: claimMutation.error.message }

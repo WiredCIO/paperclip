@@ -2838,6 +2838,27 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.createSession.mock.calls[1]![0]).toMatch(/^paperclip-(?!detached-)/);
     });
 
+    it("runs a long bridge-channel bypass command one-shot, not in a detached session", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      // The callback bridge start backgrounds the bridge server with `nohup … &`
+      // and passes the run's full timeout. Deleting a detached session after it
+      // returns would kill the bridge it just started.
+      await plugin.definition.onEnvironmentExecute?.(
+        sessionExecParams({
+          bypassSession: true,
+          timeoutMs: 4 * 60 * 60_000,
+          env: { PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge" },
+        }),
+      );
+
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.createSession).not.toHaveBeenCalled();
+      expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+    });
+
     it("deletes the detached session when the long command fails", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();

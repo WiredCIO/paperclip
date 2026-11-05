@@ -3,7 +3,7 @@ import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Navigate, Outlet, useLocation, useParams } from "@/lib/router";
-import { PaperclipLoading } from "./AnimatedPaperclipIcon";
+import { WiredcioLoading } from "./AnimatedWiredcioLogo";
 import { QueryErrorState, useQueryView, type QueryViewState } from "./QueryView";
 import { NotFoundPage } from "../pages/NotFound";
 
@@ -23,7 +23,7 @@ function useWorkspaceLookup(workspaceId: string | undefined) {
 }
 
 function workspaceLookupGate(view: QueryViewState<unknown>, companiesLoading: boolean) {
-  if (companiesLoading || view.kind === "loading" || view.kind === "reconnecting") return <PaperclipLoading />;
+  if (companiesLoading || view.kind === "loading" || view.kind === "reconnecting") return <WiredcioLoading />;
   if (view.kind === "error") {
     if (view.errorKind === "not_found" || view.errorKind === "forbidden" || view.errorKind === "auth") {
       return <NotFoundPage scope="global" />;
@@ -51,7 +51,7 @@ export function UnprefixedExecutionWorkspaceRedirect() {
   if (!workspaceId) return <NotFoundPage scope="global" />;
   const gate = workspaceLookupGate(view, companiesLoading);
   if (gate) return gate;
-  if (!workspace) return <PaperclipLoading />;
+  if (!workspace) return <WiredcioLoading />;
 
   const targetCompany = companies.find(
     (company) => company.id === workspace.companyId,
@@ -78,7 +78,7 @@ export function ExecutionWorkspaceCompanyGate() {
   if (!workspaceId || !companyPrefix) return <NotFoundPage scope="global" />;
   const gate = workspaceLookupGate(view, companiesLoading);
   if (gate) return gate;
-  if (!workspace) return <PaperclipLoading />;
+  if (!workspace) return <WiredcioLoading />;
 
   const routeCompany = companies.find(
     (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),

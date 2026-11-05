@@ -9,7 +9,7 @@ import { ShellConfigurationGate } from "./ShellConfigurationGate";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 
 vi.mock("@/lib/router", async () => await import("react-router-dom"));
-vi.mock("./AnimatedPaperclipIcon", () => ({ PaperclipLoading: () => <div>Loading shell</div> }));
+vi.mock("./AnimatedWiredcioLogo", () => ({ WiredcioLoading: () => <div>Loading shell</div> }));
 const { health, session, access, settings } = vi.hoisted(() => ({ health: vi.fn(), session: vi.fn(), access: vi.fn(), settings: vi.fn() }));
 vi.mock("../api/health", () => ({ healthApi: { get: health } }));
 vi.mock("../api/auth", () => ({ authApi: { getSession: session } }));

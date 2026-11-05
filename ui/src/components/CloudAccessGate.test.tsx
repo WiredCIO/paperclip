@@ -16,7 +16,7 @@ vi.mock("@/lib/router", () => ({
   Navigate: ({ to }: { to: string }) => <div data-redirect={to} />,
   Outlet: () => <textarea aria-label="Instructions" defaultValue="Unsaved instructions" />,
 }));
-vi.mock("@/components/AnimatedPaperclipIcon", () => ({ PaperclipLoading: () => <div>Loading…</div> }));
+vi.mock("@/components/AnimatedWiredcioLogo", () => ({ WiredcioLoading: () => <div>Loading…</div> }));
 vi.mock("@/components/CloudSignIn", () => ({ CloudSignIn: () => <div>Sign in to Cloud</div> }));
 vi.mock("@/components/BootstrapPendingPage", () => ({ BootstrapPendingPage: () => <div>Set up instance</div> }));
 
