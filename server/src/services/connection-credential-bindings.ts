@@ -97,7 +97,20 @@ export async function syncConnectionCredentialBindings(
       userDeclarations,
       { replaceAll: true, db: dbClient },
     );
-    const companyBindings = bindings.filter((ref) => secretById.get(ref.secretId)?.scope !== "user");
+    // CH-2: addConnectionInstallation now routes through this writer, which also
+    // sweeps every other active grant's refs. A ref whose secret row no longer
+    // exists cannot be bound (FK), and the table is unique per config path, so
+    // two grants naming the same path with different secrets cannot both be
+    // bound. Skip dangling refs first so they never shadow a live one, then keep
+    // one binding per config path (first wins: connection refs, then grants).
+    const companyBindings: typeof bindings = [];
+    const boundPaths = new Set<string>();
+    for (const ref of bindings) {
+      const secret = secretById.get(ref.secretId);
+      if (secret === undefined || secret.scope === "user" || boundPaths.has(ref.configPath)) continue;
+      boundPaths.add(ref.configPath);
+      companyBindings.push(ref);
+    }
     if (companyBindings.length === 0) return removed.length;
     await dbClient.insert(companySecretBindings).values(companyBindings.map((ref) => ({
       companyId: connection.companyId,

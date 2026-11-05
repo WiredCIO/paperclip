@@ -720,8 +720,10 @@ describe("issue attachment routes", () => {
     const app = await createApp(storage);
     const res = await request(app).get("/api/attachments/attachment-1/content");
 
+    // WiredCIO: a denied parent issue answers exactly like an unknown attachment
+    // id, so the message cannot be used as an existence oracle.
     expect(res.status).toBe(404);
-    expect(res.body.error).toBe("Issue not found");
+    expect(res.body.error).toBe("Attachment not found");
     expect(storage.getObject).not.toHaveBeenCalled();
   });
 

@@ -125,6 +125,14 @@ const ENV_HOST_PATH_NOISE_KEYS = new Set([
   "XDG_STATE_HOME",
 ]);
 
+// Only sandbox-provisioned paths are volatile host state. A user-configured
+// path (e.g. a custom CODEX_HOME) is real configuration and must still reset
+// the session when it changes; managed credential homes are normalised
+// separately by managedAiSessionFingerprintConfig.
+function isSandboxMaterializedPath(value: unknown) {
+  return typeof value === "string" && /^\/home\/daytona\//.test(value);
+}
+
 type SecretManifestIndex = {
   byConfigPath: Map<string, EffectiveRunConfigSecretVersionMetadata>;
   byEnvKey: Map<string, EffectiveRunConfigSecretVersionMetadata>;
@@ -299,7 +307,7 @@ function canonicalizeEnvRecord(
   const canonicalEnv: Record<string, EffectiveRunConfigCanonicalValue> = {};
   for (const key of Object.keys(envValue).sort()) {
     if (GENERATED_RUNTIME_ENVIRONMENT_KEYS.has(key)) continue;
-    if (ENV_HOST_PATH_NOISE_KEYS.has(key)) continue;
+    if (ENV_HOST_PATH_NOISE_KEYS.has(key) && isSandboxMaterializedPath(envValue[key])) continue;
     const manifestEntry = context.secrets.byConfigPath.get(`env.${key}`) ?? context.secrets.byEnvKey.get(key);
     if (manifestEntry) {
       canonicalEnv[key] = canonicalSecretMetadata(manifestEntry);

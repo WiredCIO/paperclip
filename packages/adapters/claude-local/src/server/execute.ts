@@ -575,23 +575,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Warning: skill "${entry.key}" is enabled for this agent but its files are unavailable and it was not mounted${entry.missingDetail ? `: ${entry.missingDetail}` : "."}\n`,
     );
   }
-  // CH-22: resolved before the bundle so the generated Tools section can join
-  // `combinedInstructionsContents`. It must ride the bundle rather than the
-  // `--append-system-prompt-file` flag: that flag is skipped on a resumed
-  // session, so a section attached to it would never reach a resumed run.
+  // CH-22: the generated Tools section is delivered in the per-run prompt, not
+  // the prompt bundle. The bundle key gates session resume, so a section that
+  // rode it would force a fresh session (and a new bundle dir) every time the
+  // connected tool set changed, which the resume contract forbids. The prompt
+  // is rebuilt on every attempt, fresh or resumed, so the model still learns
+  // which servers are already configured.
   const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
-  // `PAPERCLIP_RUNTIME_TOOLS_GUIDANCE` is an environment variable nothing
-  // surfaces to a model, so an agent had no way to learn its tools were already
-  // configured. Deterministic text, so it participates in the bundle cache key
-  // and only busts it when the server set really changes.
-  const runtimeToolsSection = renderAgentsToolsSection(runtimeMcpServers);
-  if (runtimeToolsSection) {
-    combinedInstructionsContents = combinedInstructionsContents
-      ? `${combinedInstructionsContents}
-
-${runtimeToolsSection.trim()}`
-      : runtimeToolsSection.trim();
-  }
+  const runtimeToolsSection = renderAgentsToolsSection(runtimeMcpServers).trim();
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
     skills: mountableSkillEntries,
@@ -1035,6 +1026,7 @@ ${runtimeToolsSection.trim()}`
       sessionHandoffNote,
       taskContextNote,
       renderedPrompt,
+      runtimeToolsSection,
     ]);
     const promptMetrics = {
       promptChars: prompt.length,

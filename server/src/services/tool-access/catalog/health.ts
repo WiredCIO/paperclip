@@ -98,19 +98,29 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           eq(connectionGrants.companyId, connection.companyId),
           eq(connectionGrants.connectionId, connection.id),
           eq(connectionGrants.status, "active"),
+          // A personal ("user") grant's credential is validated by the grant
+          // credential checks that follow (grant_credential_invalid), which
+          // also catch a secret whose ownership no longer matches the grant.
+          // It is never expected to have a company binding row, so including
+          // it would mask that more specific failure with binding_missing.
+          ne(connectionGrants.kind, "user"),
         ),
       );
+    // A per-user connection mirrors the connecting user's own (user-scoped)
+    // secrets into credentialRefs; those are validated through the grant and
+    // surface grant_credential_invalid, so they are not binding-drift here.
+    const connectionOwnsCredentials = connection.credentialPolicy !== "per_user";
     const candidateRefs = [
-      ...connection.credentialRefs.map((ref) => ({
+      ...(connectionOwnsCredentials ? connection.credentialRefs ?? [] : []).map((ref) => ({
         secretId: ref.secretId,
         configPath: credentialRefConfigPath(ref),
       })),
-      ...connection.credentialSecretRefs.map((ref) => ({
+      ...(connectionOwnsCredentials ? connection.credentialSecretRefs ?? [] : []).map((ref) => ({
         secretId: ref.secretId,
         configPath: ref.configPath,
       })),
       ...activeGrants.flatMap((grant) =>
-        grant.refs.map((ref) => ({
+        (grant.refs ?? []).map((ref) => ({
           secretId: ref.secretId,
           configPath: ref.configPath,
         })),

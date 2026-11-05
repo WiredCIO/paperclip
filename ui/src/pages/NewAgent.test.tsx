@@ -1620,9 +1620,11 @@ describe("New agent setup", () => {
     await act(async () => checkbox.click());
     await click("Finish setup");
     expect(api.hire).toHaveBeenCalledTimes(1);
+    // The mocked hire echoes the client-generated setupAgentId as the agent id.
+    const createdAgentId = api.hire.mock.calls[0][1].setupAgentId;
     expect(projectAccess.putBindings).toHaveBeenCalledWith("company-1", [
       { projectId: "project-1", targetType: "skill", targetId: "skill-1" },
-      { projectId: "project-2", targetType: "agent", targetId: "new-agent" },
+      { projectId: "project-2", targetType: "agent", targetId: createdAgentId },
     ]);
   });
   it("hides the projects picker from non-admins and writes no bindings", async () => {

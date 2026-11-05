@@ -10523,6 +10523,9 @@ describeEmbeddedPostgres("tool access service", () => {
           .where(eq(toolConnectionInstalls.connectionId, first.connectionId)),
       ).resolves.toEqual([]);
 
+      // Upstream no longer revives a personal (per_user) archived connection
+      // from a fresh setup that matches only by name; the owner reconnects it
+      // explicitly, which is the path that must keep the install scope.
       const revived = await service.connectGalleryApp(
         company.id,
         {
@@ -10530,6 +10533,7 @@ describeEmbeddedPostgres("tool access service", () => {
           connectionMethodKey: "paperclip-write",
           grantKind: "user",
           name: "Drive CH-3 install scope",
+          reconnectConnectionId: first.connectionId,
         },
         actor,
       );
