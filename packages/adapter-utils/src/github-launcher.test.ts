@@ -109,10 +109,16 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(operationB.token).toBe("credential-B");
     expect(completedA.config).not.toBe(operationB.config);
     user = null;
-    await expect(git("var", "GIT_AUTHOR_IDENT")).rejects.toThrow();
+    // Identity vars are unset (not empty) when no credential is captured: no previous or host identity
+    // leaks, and repo-local config still works so local commits are not blocked.
+    const leaked = await git("var", "GIT_AUTHOR_IDENT").catch(() => "");
+    expect(leaked).not.toMatch(/A <A@|B <B@|Host/);
+    await git("config", "user.name", "Local Agent");
+    await git("config", "user.email", "local@example.test");
+    await git("commit", "--allow-empty", "-m", "local, no broker identity");
+    expect(await git("log", "-1", "--format=%an <%ae>|%cn <%ce>")).toBe("Local Agent <local@example.test>|Local Agent <local@example.test>");
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
-    expect(env.GIT_AUTHOR_NAME).toBe("");
   });
   it("maps identity names to <NAME>_GH_TOKEN bindings", () => {
     expect(githubIdentityEnvKey("review")).toBe("REVIEW_GH_TOKEN");
