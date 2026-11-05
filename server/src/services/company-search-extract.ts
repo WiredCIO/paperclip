@@ -155,7 +155,7 @@ export function companySearchExtractService(db: Db) {
     extract: async (
       companyId: string,
       query: CompanySearchExtractQuery,
-      options: { projectVisibility?: ProjectVisibilityResolution } = {},
+      options: { issueReadCondition?: SQL<boolean>; projectVisibility?: ProjectVisibilityResolution } = {},
     ): Promise<CompanySearchExtractResponse> => {
       const containsPattern = `%${escapeLikePattern(query.contains)}%`;
       const urlPattern = urlContainsPattern(query.contains);
@@ -203,6 +203,7 @@ export function companySearchExtractService(db: Db) {
         visibleIssueCondition(),
         or(...scopeConditions)!,
       ];
+      if (options.issueReadCondition) conditions.push(options.issueReadCondition);
       if (options.projectVisibility?.kind === "restricted") {
         conditions.push(projectColumnPredicate(options.projectVisibility, issues.projectId));
       }

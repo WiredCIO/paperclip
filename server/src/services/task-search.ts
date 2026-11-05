@@ -1,3 +1,4 @@
+import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { sql, type SQL } from "drizzle-orm";
 import { COMPANY_SEARCH_MAX_QUERY_LENGTH, COMPANY_SEARCH_MAX_TOKENS } from "@paperclipai/shared";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -80,18 +81,12 @@ export function taskSearchScore(search: TaskSearch): SQL<number> {
 /** Shared task retrieval for company search and issue-list/command-palette search.
  * Uses existing pg_trgm indexes and current rows: no derived corpus or worker.
  * The tagged comment/document sets are evaluated once, not once per task.
- * `visibilityFilter` (an `issues` predicate, e.g. project visibility) bounds
- * every candidate set, so hidden issues never match on any field.
+ * `readCondition` (an `issues` predicate: private-task read access and/or
+ * project visibility) bounds every candidate set, so hidden issues never
+ * match on any field.
  */
-export function taskSearchCtes(
-  companyId: string,
-  search: TaskSearch,
-  includeContext = true,
-  fallbackFilters?: SQL,
-  visibilityFilter?: SQL,
-): SQL {
+export function taskSearchCtes(companyId: string, search: TaskSearch, includeContext = true, fallbackFilters?: SQL, readCondition?: SQL<boolean>): SQL {
   const n = search.tokens.length;
-  const visible = visibilityFilter ? sql`${visibleIssueCondition()} AND ${visibilityFilter}` : visibleIssueCondition();
   const comments = n === 0 || !includeContext ? sql`SELECT NULL::uuid AS issue_id, 0 AS ord WHERE false`
     : sql.join(search.patterns.map((_, index) => sql`
       SELECT c.issue_id, ${index}::int AS ord FROM issue_comments c
@@ -143,7 +138,7 @@ export function taskSearchCtes(
   // The search page fetches descriptions only for its result window.
   const flags = (fuzzyMatch: SQL) => sql`
       SELECT issues.id, issues.identifier, issues.title,
-        issues.status, issues.priority, issues.assignee_agent_id, issues.assignee_user_id,
+        issues.status, ${issueDisplayStatusSql()} AS display_status, issues.priority, issues.assignee_agent_id, issues.assignee_user_id,
         issues.project_id, issues.created_at, issues.updated_at,
         ${identExact} AS ident_exact, ${identStarts} AS ident_starts,
         ${phraseMatch(sql`issues.identifier`)} AS ident_phrase,
@@ -170,7 +165,7 @@ export function taskSearchCtes(
     document_matches AS MATERIALIZED (${documents}),
     literal_candidates AS MATERIALIZED (
       SELECT issues.id FROM issues
-      WHERE issues.company_id = ${companyId} AND ${visible}
+      WHERE issues.company_id = ${companyId} AND ${visibleIssueCondition()} AND ${readCondition ?? sql`true`}
         AND ${n === 0 ? sql`${search.normalizedQuery.length === 0}` : sql`(
           ${taskSearchAny(sql`issues.title`, search)}
           OR ${taskSearchAny(sql`issues.identifier`, search)}
@@ -181,7 +176,7 @@ export function taskSearchCtes(
       UNION SELECT issue_id FROM document_matches
     ), search_flags AS MATERIALIZED (
       ${flags(sql`false`)}
-      WHERE issues.company_id = ${companyId} AND ${visible}
+      WHERE issues.company_id = ${companyId} AND ${visibleIssueCondition()} AND ${readCondition ?? sql`true`}
         AND issues.id IN (SELECT id FROM literal_candidates)
     ), literal_matches AS MATERIALIZED (
       SELECT * FROM search_flags
@@ -193,7 +188,7 @@ export function taskSearchCtes(
         JOIN issues ON issues.id = literal.id
         ${fallbackFilters ? sql`WHERE ${fallbackFilters}` : sql``}
       )
-        AND issues.company_id = ${companyId} AND ${visible}
+        AND issues.company_id = ${companyId} AND ${visibleIssueCondition()} AND ${readCondition ?? sql`true`}
         AND ${fuzzy}
     ), matched AS MATERIALIZED (
       SELECT * FROM literal_matches

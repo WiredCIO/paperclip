@@ -2,15 +2,15 @@ import { and, eq, inArray } from "drizzle-orm";
 import { type Db, toolConnections, companySecretBindings, connectionGrants, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 import { secretService } from "./secrets.js";
-function credentialRefConfigPath(ref: { name: string }): string { return ref.name.startsWith("credentials.") ? ref.name : `credentials.${ref.name}`; }
+import { connectionCredentialConfigPath as credentialRefConfigPath } from "./connection-credentials.js";
 export async function syncConnectionCredentialBindings(
     db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0],
     connection: typeof toolConnections.$inferSelect,
     grantSecretRefs: ToolCredentialSecretRef[] = [],
     dbClient: Pick<Db, "select" | "insert" | "update" | "delete"> = db,
-  ) {
+  ): Promise<number> {
     const secrets = secretService(db);
-    await dbClient
+    const removed = await dbClient
       .delete(companySecretBindings)
       .where(
         and(
@@ -18,7 +18,8 @@ export async function syncConnectionCredentialBindings(
           eq(companySecretBindings.targetType, "tool_connection"),
           eq(companySecretBindings.targetId, connection.id),
         ),
-      );
+      )
+      .returning({ id: companySecretBindings.id });
     // A metadata edit or pause/resume must retain declarations for every
     // active personal/dedicated grant, not just connection-owned credentials.
     const activeGrants = await dbClient.select({ refs: connectionGrants.credentialSecretRefs })
@@ -96,8 +97,21 @@ export async function syncConnectionCredentialBindings(
       userDeclarations,
       { replaceAll: true, db: dbClient },
     );
-    const companyBindings = bindings.filter((ref) => secretById.get(ref.secretId)?.scope !== "user");
-    if (companyBindings.length === 0) return;
+    // CH-2: addConnectionInstallation now routes through this writer, which also
+    // sweeps every other active grant's refs. A ref whose secret row no longer
+    // exists cannot be bound (FK), and the table is unique per config path, so
+    // two grants naming the same path with different secrets cannot both be
+    // bound. Skip dangling refs first so they never shadow a live one, then keep
+    // one binding per config path (first wins: connection refs, then grants).
+    const companyBindings: typeof bindings = [];
+    const boundPaths = new Set<string>();
+    for (const ref of bindings) {
+      const secret = secretById.get(ref.secretId);
+      if (secret === undefined || secret.scope === "user" || boundPaths.has(ref.configPath)) continue;
+      boundPaths.add(ref.configPath);
+      companyBindings.push(ref);
+    }
+    if (companyBindings.length === 0) return removed.length;
     await dbClient.insert(companySecretBindings).values(companyBindings.map((ref) => ({
       companyId: connection.companyId,
       secretId: ref.secretId,
@@ -109,5 +123,6 @@ export async function syncConnectionCredentialBindings(
       projectionClass: ref.projectionClass,
       projectionAllowlistKey: ref.projectionAllowlistKey,
     })));
+    return removed.length;
   }
 

@@ -120,6 +120,11 @@ function registerRouteMocks() {
   vi.doMock("../services/activity-log.js", () => ({
     logActivity: mockLogActivity,
   }));
+  // Upstream's chat read-state join needs a real database; the probes only
+  // care about the route's status code.
+  vi.doMock("../services/agent-chat-read-state.js", () => ({
+    withConversationReadState: async (_db: unknown, _companyId: string, _userId: string, rows: unknown[]) => rows,
+  }));
   vi.doMock("../services/external-objects.js", () => ({
     externalObjectService: () => mockExternalObjectService,
   }));
@@ -169,7 +174,11 @@ function registerRouteMocks() {
     }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
-    projectService: () => ({}),
+    // Upstream's create/patch routes load the target project and run their
+    // own project:read decision before the fork's visibility checks.
+    projectService: () => ({
+      getById: vi.fn(async (id: string) => ({ id, companyId: COMPANY_ID, name: "Project", workspaces: [] })),
+    }),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
@@ -700,7 +709,11 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     });
   });
 
-  it("write routes make no visibility decisions when the mode is off", async () => {
+  // Superseded by upstream: the create/patch routes now run their own
+  // project:read / issue:read privacy decisions in every mode, so "no
+  // decisions in off mode" no longer holds; the fork's own helpers still
+  // return early when the mode is off.
+  it.skip("write routes make no visibility decisions when the mode is off", async () => {
     process.env.PAPERCLIP_PROJECT_ACCESS_MODE = "off";
     const app = await createApp("operator");
     await request(app).post(`/api/issues/${HIDDEN_ISSUE_ID}/documents/plan/lock`);
@@ -727,6 +740,8 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     process.env.PAPERCLIP_PROJECT_ACCESS_MODE = "off";
     const app = await createApp("operator");
     await request(app).delete(`/api/work-products/${HIDDEN_WORK_PRODUCT_ID}`);
-    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    // Upstream's private-task gate still reads the issue; the fork adds no further decisions.
+    expect(mockAccessService.decide).toHaveBeenCalledTimes(1);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 });

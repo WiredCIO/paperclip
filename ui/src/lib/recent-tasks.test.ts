@@ -1,3 +1,5 @@
+import { clearIssueExecutionRun } from "./optimistic-issue-runs";
+import type { Issue } from "@paperclipai/shared";
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -53,6 +55,42 @@ describe("recent task persistence", () => {
     expect(entries.filter((entry) => entry.id === "4")).toHaveLength(1);
   });
 
+  it("refreshes conversation readiness when review or delivery changes without a task edit", () => {
+    const task = { ...issue("1"), status: "in_review" as const, externalConversationState: "waiting" as const };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, externalConversationState: "active" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.externalConversationState).toBe("active");
+  });
+
+  it("accepts server settlement after an optimistic run-lock clear", () => {
+    const running = { ...issue("1"), status: "in_progress" as const, externalConversationState: "active" as const, executionRunId: "run-1", updatedAt: new Date(10) } as Issue;
+    recordRecentTask(running, "user-1");
+    recordRecentTask(clearIssueExecutionRun(running, "run-1")!, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...running, status: "in_review", externalConversationState: "waiting", updatedAt: new Date(20) }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_review", externalConversationState: "waiting", snapshotUpdatedAt: 20 });
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...running, updatedAt: new Date(30) }]);
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...running, status: "in_review", externalConversationState: "waiting", updatedAt: new Date(20) }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_progress", externalConversationState: "active", snapshotUpdatedAt: 30 });
+  });
+
+  it("keeps readiness and task status together when a turn settles at the same timestamp", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, externalConversationState: "active" as const };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, status: "in_review", externalConversationState: "waiting" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_review", externalConversationState: "waiting" });
+  });
+
+  it("refreshes Monitoring when a run starts without a new task version", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, displayStatus: "monitoring" as const, externalConversationState: null };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, displayStatus: "in_progress" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.displayStatus).toBe("in_progress");
+  });
+
   it("publishes same-tab updates", () => {
     const listener = vi.fn();
     window.addEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
@@ -62,6 +100,14 @@ describe("recent task persistence", () => {
     recordRecentTask(issue("1"), "user-1");
     expect(listener).not.toHaveBeenCalled();
     window.removeEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
+  });
+
+  it("records a new display status without a task edit or newer activity", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, displayStatus: "monitoring" as const };
+    recordRecentTask(task, "user-1");
+    recordRecentTask({ ...task, displayStatus: "in_progress" }, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.displayStatus).toBe("in_progress");
   });
 
   it("prunes unavailable tasks and refreshes stored snapshots", () => {

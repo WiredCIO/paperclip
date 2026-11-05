@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { isUuidLike } from "@paperclipai/shared";
 import {
@@ -11,7 +12,7 @@ import {
 import { githubIdentityEnvKey } from "@paperclipai/adapter-utils/github-launcher";
 import { parseObject } from "../adapters/utils.js";
 import { forbidden } from "../errors.js";
-import { captureRunIdentity } from "./run-identity.js";
+import { captureRunIdentity, type RunIdentityContext } from "./run-identity.js";
 import {
   buildGitAuthInvocation,
   resolveManagedGitHubCredential,
@@ -184,6 +185,19 @@ async function resolveNamedGitHubIdentity(
  * Without `identity`, no company secrets or ambient credentials are consulted.
  * With `identity`, only the agent's own `<NAME>_GH_TOKEN` binding is.
  */
+async function saveGitHubSummary(
+  db: Db,
+  context: RunIdentityContext,
+  summary: GitHubCredentialSummary,
+) {
+  if (isDeepStrictEqual(context.github, JSON.parse(JSON.stringify(summary)))) return;
+  await db
+    .update(runIdentityContexts)
+    .set({ github: summary })
+    .where(eq(runIdentityContexts.id, context.id));
+}
+
+/** No company secrets or ambient credentials are consulted by this path. */
 export async function resolveGitHubOperationCredentials(
   db: Db,
   input: {
@@ -194,7 +208,7 @@ export async function resolveGitHubOperationCredentials(
     identity?: string;
   },
 ) {
-  const { run, context } = await captureRunIdentity(db, input);
+  const { run, context } = await captureRunIdentity(db, input, { readScope: "github_credentials" });
   if (!context) throw forbidden("This run predates managed GitHub credentials");
   let summary: GitHubCredentialSummary;
   let env: Record<string, string> = {};
@@ -208,10 +222,7 @@ export async function resolveGitHubOperationCredentials(
       reason:
         "GitHub credentials are not available to low-trust or unverified executions; use authorized read-only tools.",
     };
-    await db
-      .update(runIdentityContexts)
-      .set({ github: summary })
-      .where(eq(runIdentityContexts.id, context.id));
+    await saveGitHubSummary(db, context, summary);
     return {
       identityContextId: context.id,
       revision: context.revision,
@@ -287,11 +298,7 @@ export async function resolveGitHubOperationCredentials(
       reason: "GitHub credentials are temporarily unavailable",
     };
   }
-  if (context)
-    await db
-      .update(runIdentityContexts)
-      .set({ github: summary })
-      .where(eq(runIdentityContexts.id, context.id));
+  if (context) await saveGitHubSummary(db, context, summary);
   return {
     identityContextId: context?.id ?? null,
     revision: context?.revision ?? null,

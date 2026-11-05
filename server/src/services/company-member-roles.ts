@@ -39,6 +39,7 @@ export function grantsForHumanRole(
         { permissionKey: "tools:manage_runtime", scope: null },
         { permissionKey: "tools:use", scope: null },
         { permissionKey: "tools:admin", scope: null },
+        { permissionKey: "commentary:view", scope: null },
       ];
     case "admin":
       return [
@@ -53,19 +54,27 @@ export function grantsForHumanRole(
         { permissionKey: "tools:manage_runtime", scope: null },
         { permissionKey: "tools:use", scope: null },
         { permissionKey: "tools:admin", scope: null },
+        { permissionKey: "commentary:view", scope: null },
       ];
     case "operator":
-      // `agents:configure` lets an operator attach their own AI connection to
-      // an agent. Without it `assertAiConnectionCreateAccess` rejects the save
-      // with "You cannot configure this agent", so an operator can reach the
-      // browser sign-in panel and still not finish connecting a subscription.
       return [
-        { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "agents:create", scope: null },
         { permissionKey: "agents:configure", scope: null },
+        { permissionKey: "skills:create", scope: null },
+        { permissionKey: "environments:manage", scope: null },
+        { permissionKey: "users:invite", scope: null },
+        { permissionKey: "tasks:assign", scope: null },
         { permissionKey: "tools:manage_connections", scope: null },
+        { permissionKey: "tools:manage_profiles", scope: null },
+        { permissionKey: "tools:manage_runtime", scope: null },
+        { permissionKey: "tools:use", scope: null },
+        { permissionKey: "tools:admin", scope: null },
+        { permissionKey: "tools:view_audit", scope: null },
+        { permissionKey: "audit:view_agent_actions", scope: null },
+        { permissionKey: "commentary:view", scope: null },
       ];
     case "viewer":
-      return [];
+      return [{ permissionKey: "commentary:view", scope: null }];
   }
 }
 

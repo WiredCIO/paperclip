@@ -1,7 +1,9 @@
+import { connectionEventWakeRoutes } from "../routes/connection-event-wake.js";
+import { registerConnectionEventWake } from "../services/connection-event-wake.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLOUD_CONTROL_AUDIENCE,
   CLOUD_CONTROL_HEADER,
@@ -184,6 +186,7 @@ describe("verifyCloudControlAssertion", () => {
 });
 
 describe("cloudControlMiddleware", () => {
+  const eventOwner = {};
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -208,7 +211,14 @@ describe("cloudControlMiddleware", () => {
       next();
     });
     app.use(cloudControlMiddleware());
+    app.use(connectionEventWakeRoutes(eventOwner));
     app.all("/api/instance/task-drain", (req, res) => {
+      res.json({ actor: req.actor });
+    });
+    app.all("/api/instance/lifecycle", (req, res) => {
+      res.json({ actor: req.actor });
+    });
+    app.all("/api/instance/lifecycle/unarchive-primary", (req, res) => {
       res.json({ actor: req.actor });
     });
     app.get("/api/instance/settings", (req, res) => {
@@ -234,6 +244,22 @@ describe("cloudControlMiddleware", () => {
     const signature = sign(null, Buffer.from(`${header}.${payload}`, "ascii"), pair.privateKey).toString("base64url");
     return `${header}.${payload}.${signature}`;
   }
+
+  it("accepts only signed exact-action event hints and leaves unavailable receivers retryable", async () => {
+    const app = createApp(); const path = "/api/instance/connector-events/wake";
+    expect((await request(app).post(path)).status).toBe(403);
+    expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"))).status).toBe(401);
+    expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("connector-events:wake"))).status).toBe(503);
+    const wake = vi.fn(); const stop = registerConnectionEventWake(eventOwner, wake);
+    try {
+      const token = freshAssertion("connector-events:wake");
+      expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, token)).status).toBe(202);
+      expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, token)).status).toBe(401);
+      expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("connector-events:wake"))).status).toBe(202);
+      expect(wake).toHaveBeenCalledTimes(2);
+    } finally { stop(); }
+    expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("connector-events:wake"))).status).toBe(503);
+  });
 
   it("installs a synthetic instance-admin board actor for a valid assertion, per method", async () => {
     const app = createApp();
@@ -261,6 +287,38 @@ describe("cloudControlMiddleware", () => {
       .set(CLOUD_CONTROL_HEADER, freshAssertion("task-drain:read"));
     expect(res.status).toBe(401);
     expect(res.body.error).toBe("invalid_cloud_control_assertion");
+  });
+
+  it("authorizes the lifecycle endpoints, each bound to its own action", async () => {
+    const app = createApp();
+    const read = await request(app)
+      .get("/api/instance/lifecycle")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"));
+    expect(read.status).toBe(200);
+    expect(read.body.actor).toMatchObject({ type: "board", isInstanceAdmin: true, source: "cloud_control" });
+
+    const unarchive = await request(app)
+      .post("/api/instance/lifecycle/unarchive-primary")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:unarchive-primary"));
+    expect(unarchive.status).toBe(200);
+    expect(unarchive.body.actor).toMatchObject({ source: "cloud_control" });
+
+    // Cross-binding: a task-drain assertion opens no lifecycle door, a
+    // read assertion cannot unarchive, and lifecycle endpoints accept no
+    // extra methods.
+    const crossAction = await request(app)
+      .get("/api/instance/lifecycle")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("task-drain:read"));
+    expect(crossAction.status).toBe(401);
+    const readAsWrite = await request(app)
+      .post("/api/instance/lifecycle/unarchive-primary")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"));
+    expect(readAsWrite.status).toBe(401);
+    const wrongMethod = await request(app)
+      .post("/api/instance/lifecycle")
+      .set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"));
+    expect(wrongMethod.status).toBe(400);
+    expect(wrongMethod.body.error).toBe("cloud_control_wrong_endpoint");
   });
 
   it("accepts the conventional trailing-slash form of the endpoint", async () => {

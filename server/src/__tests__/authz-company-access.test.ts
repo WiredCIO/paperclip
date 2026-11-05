@@ -1,3 +1,4 @@
+import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
 import {
@@ -16,7 +17,7 @@ function makeReq(input: {
   return {
     method: input.method ?? "GET",
     actor: input.actor,
-  } as Express.Request;
+  } as unknown as Request;
 }
 
 describe("assertCompanyAccess", () => {
