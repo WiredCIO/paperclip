@@ -2042,6 +2042,14 @@ async function executeInSession(
 // plumbing, provision, probes) keep the cheaper one-shot path.
 const DETACHED_SESSION_MIN_TIMEOUT_MS = 10 * 60_000;
 
+// Bridge control-plane commands carry this marker. Some of them background a
+// long-lived process with `nohup … &` (the callback bridge server, the ACP
+// wrapper) and return at once, often with the run's full timeout. They must
+// never run in a detached session: deleting that session kills the process
+// they just started.
+const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
+const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
+
 // Run one long command in its own throwaway session. The Daytona gateway ends
 // any single HTTP request at 3600 s with a 504, so a one-shot `executeCommand`
 // for an agent run longer than an hour always fails with its output lost. The
@@ -2847,12 +2855,17 @@ const plugin = definePlugin({
       // A long `bypassSession` command (the agent process launch) runs in its own
       // detached session instead: one-shot holds a single HTTP request open for
       // the whole command, and the Daytona gateway cuts that off with a 504 at
-      // 3600 s.
+      // 3600 s. Bridge-channel commands are excluded: they return at once, and
+      // deleting the detached session would kill what they backgrounded.
+      const isBridgeChannel = params.env?.[SANDBOX_EXEC_CHANNEL_ENV] === SANDBOX_EXEC_CHANNEL_BRIDGE;
       let result: PluginEnvironmentExecuteResult;
       if (!params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
         result = await executeInSession(sandbox, sessionId, params, config);
-      } else if (resolveTimeoutMs(params.timeoutMs, config) > DETACHED_SESSION_MIN_TIMEOUT_MS) {
+      } else if (
+        !isBridgeChannel &&
+        resolveTimeoutMs(params.timeoutMs, config) > DETACHED_SESSION_MIN_TIMEOUT_MS
+      ) {
         result = await executeInDetachedSession(sandbox, params, config);
       } else {
         result = await executeOneShot(sandbox, params, config);
