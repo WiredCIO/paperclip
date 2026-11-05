@@ -545,6 +545,10 @@ export type CompanySearchOptions = {
   projectVisibility?: ProjectVisibilityResolution;
 };
 
+export function sortCountKeys(counts: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(Object.entries(counts).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
 export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
@@ -791,6 +795,14 @@ export function companySearchService(db: Db) {
             aggregates.totals.omit[row.kind.slice("total:omit:".length) as CompanySearchIssueFilterKey] = count;
           }
         }
+        // The facet rows arrive from a grouped query with no ORDER BY, so key
+        // insertion order varied between identical searches. Sort once so the
+        // serialized response is stable.
+        const counts = aggregates.filterOptionCounts;
+        counts.assigneeAgentId = sortCountKeys(counts.assigneeAgentId);
+        counts.assigneeUserId = sortCountKeys(counts.assigneeUserId);
+        counts.projectId = sortCountKeys(counts.projectId);
+        counts.labelId = sortCountKeys(counts.labelId);
         return { rows: await enrichIssueSnippets(issueRowsRaw), aggregates };
       }
 
