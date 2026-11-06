@@ -15,7 +15,6 @@ export function useCanManageProjectBindings(companyId: string | null | undefined
   const boardAccessQuery = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const membership = boardAccessQuery.data?.memberships?.find((m) => m.companyId === companyId);
   return (

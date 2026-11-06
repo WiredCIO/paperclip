@@ -79,7 +79,6 @@ export function ProjectAccessConfig({ project, onProjectUpdated }: ProjectAccess
   const boardAccessQuery = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const membership = boardAccessQuery.data?.memberships?.find((m) => m.companyId === companyId);
   // Mirrors `assertBoardCompanyOwnerOrAdmin` in server/src/routes/project-access.ts — every
