@@ -19,7 +19,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -444,6 +444,46 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await createAgentLifecycle(db).retry(agent.id);
     await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
+  });
+
+  async function cancelledDuringSetup(agentId: string, overrides: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    // The shape a claude_local run takes when a pause cancels it before dispatch.
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "cancelled",
+      invocationSource: "automation", runtimeMode: "legacy", executionStage: "preparing", errorCode: "cancelled",
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() - 1_000),
+      startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { stopReason: "cancelled", startupCancellation: { errorCode: "cancelled", beforeNativeSelection: false } },
+      ...overrides }).returning();
+    return run!;
+  }
+
+  it("finishes a pause after a legacy run was cancelled before it dispatched", async () => {
+    const agent = await hire();
+    await cancelledDuringSetup(agent.id);
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "paused", lifecycleHolds: ["manual"] });
+  });
+
+  it("still waits for a legacy run cancelled after it dispatched or with a live controller lease", async () => {
+    const agent = await hire();
+    const dispatched = await cancelledDuringSetup(agent.id, { executionStage: "dispatching" });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(heartbeatRuns).set({ executionStage: "preparing",
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, dispatched.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, dispatched.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
+  it("still waits for a preparing legacy run that recorded an adapter invocation", async () => {
+    const agent = await hire();
+    const run = await cancelledDuringSetup(agent.id);
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: run.id, agentId: agent.id, seq: 1,
+      eventType: "adapter.invoke", stream: "system", level: "info", message: "adapter invocation" });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
   });
 
   it("does not cancel a reporting agent when its manager pauses", async () => {

@@ -1,10 +1,29 @@
 import { readProcessStartedAt } from "./hot-restart.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
+
+type Run = typeof heartbeatRuns.$inferSelect;
+
+/** A legacy controller commits "dispatching" in the lease renewal that admits
+ * the adapter, and that renewal only matches a running row. A cancelled run
+ * still "preparing" with no process therefore never reached its adapter and
+ * never can. Without this, every adapter other than paperclip_runner that was
+ * stopped during setup blocked its agent's pause forever. The caller has
+ * already required the controller lease to be expired. */
+async function isCancelledBeforeLegacyDispatch(db: Db, run: Run) {
+  if (run.status !== "cancelled" || run.runtimeMode !== "legacy" || run.executionStage !== "preparing" ||
+      run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter ||
+      run.nativeIssueId || run.nativeSessionId) return false;
+  const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id), executionStartedEventPredicate(),
+  )).limit(1);
+  return !execution;
+}
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
@@ -57,6 +76,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId &&
         (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged" &&
         !(run.executionStage === "settled" && !await runUsedConversationAdapter(db, run)) &&
+        !await isCancelledBeforeLegacyDispatch(db, run) &&
         !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
   }
   // Release an expired owner only after its cancelled execution has stop proof.
