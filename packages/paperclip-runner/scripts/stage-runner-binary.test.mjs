@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -85,8 +85,10 @@ test("release metadata rejects incompatible native, harness and protocol contrac
 
 async function withOwnedChildren(root, action) {
   const owned = [];
-  const start = (command, args) => {
-    const child = spawn(command, args, { env: { PATH: "/usr/bin:/bin" }, stdio: "ignore" });
+  // argv0 names the applet: multicall coreutils (Ubuntu 26.04 uutils) dispatch on it,
+    // and the staged copy is named paperclip-runnerd.
+    const start = (command, args, argv0 = path.basename(command)) => {
+    const child = spawn(command, args, { argv0, env: { PATH: "/usr/bin:/bin" }, stdio: "ignore" });
     // close follows both exit and spawn error. A failed second spawn must not
     // interrupt retirement of the first still-running executable.
     const closed = new Promise(resolve => child.once("close", resolve));
@@ -114,7 +116,7 @@ test("atomically publishes while the previous executable is running", { skip: pr
   await withOwnedChildren(root, async start => {
     await stageRunnerBinary("/bin/sleep", destination);
     const previous = await stat(destination);
-    const old = start(destination, ["30"]);
+    const old = start(destination, ["30"], "sleep");
     await old.spawned;
     await stageRunnerBinary("/bin/sleep", destination);
     const published = await stat(destination);
@@ -123,7 +125,7 @@ test("atomically publishes while the previous executable is running", { skip: pr
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
     assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
-    const next = start(destination, ["0"]);
+    const next = start(destination, ["0"], "sleep");
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
@@ -152,6 +154,8 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await copyHostFixture("/bin/echo", built);
     const previousBuild = path.join(root, "previous-build");
     await copyHostFixture("/bin/sleep", previousBuild);
+    // /bin/echo and /bin/sleep are one multicall binary on uutils images; keep the old build's bytes distinct.
+    await appendFile(previousBuild, "previous-build");
     await stageRunnerBinary(previousBuild, hostTarget);
     await stageRunnerBinary(built, path.join(binaryRoot, "paperclip-runnerd"));
     const platforms = {}, releaseBytes = new Map();
@@ -177,7 +181,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     const manifestPath = path.join(binaryRoot, "release-manifest.json");
     const manifest = JSON.stringify({ schema: "paperclip.runner.release-binaries.v1", sourceRevision: "a".repeat(40), platforms });
     await writeFile(manifestPath, manifest);
-    const old = start(hostTarget, ["30"]);
+    const old = start(hostTarget, ["30"], "sleep");
     await old.spawned;
     const requirement = { repoRoot: root, nativeRunnerRequired: true };
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), true);
@@ -197,7 +201,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), false);
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
-    const next = start(selected.binary, ["rebuilt"]);
+    const next = start(selected.binary, ["rebuilt"], "echo");
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
