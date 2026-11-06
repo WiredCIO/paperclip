@@ -1,5 +1,5 @@
 -- WiredCIO fork migration (originally 0280_good_vision on wiredcio/deploy,
--- renumbered after upstream's 0434). Production already applied the original,
+-- renumbered after upstream's 0431). Production already applied the original,
 -- so every statement is idempotent: re-running against an up-to-date database
 -- is a no-op.
 CREATE TABLE IF NOT EXISTS "org_edges" (

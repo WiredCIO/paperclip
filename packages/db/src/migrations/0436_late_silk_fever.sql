@@ -1,7 +1,7 @@
 -- WiredCIO fork migration (originally 0281_late_silk_fever on wiredcio/deploy,
--- renumbered after upstream's 0434). Converts the projects.category_id foreign
+-- renumbered after upstream's 0431). Converts the projects.category_id foreign
 -- key to ON DELETE SET NULL. Idempotent: the drop/add pair always ends in the
--- same state, and 0435 already creates the constraint with SET NULL on a fresh
+-- same state, and 0432 already creates the constraint with SET NULL on a fresh
 -- database.
 DO $$ BEGIN
   IF EXISTS (
