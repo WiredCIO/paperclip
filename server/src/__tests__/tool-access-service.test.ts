@@ -10499,12 +10499,16 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       });
 
-      // A brand-new connection is seeded company-wide by design; narrow it to
-      // one agent, matching the S4Water incident's starting state, and clear
-      // the seeded default so only the explicit agent install remains.
-      await db
-        .delete(toolConnectionInstalls)
-        .where(eq(toolConnectionInstalls.connectionId, first.connectionId));
+      // A brand-new connection whose callback names no agent reaches nobody:
+      // company-wide reach must be chosen explicitly (2026-11-05, an
+      // API-created S4Water Dataverse connection defaulted to every agent).
+      await expect(
+        db
+          .select()
+          .from(toolConnectionInstalls)
+          .where(eq(toolConnectionInstalls.connectionId, first.connectionId)),
+      ).resolves.toEqual([]);
+      // Narrow it to one agent, matching the S4Water incident's starting state.
       await allowConnectionForAgent(
         db,
         company.id,
