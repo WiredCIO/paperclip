@@ -14,6 +14,8 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import {
   deriveOriginatingActor,
+  readProviderRateLimits,
+  summarizeProviderRateLimits,
   isArtifactReviewDocumentKey,
   type ExecutionWorkspace,
   type Issue,
@@ -70,7 +72,8 @@ import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { ProjectTile } from "../ProjectTile";
 import { IssueReferencePill } from "../IssueReferencePill";
-import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
+import { formatDate, formatDateTime, cn, projectUrl, agentUrl } from "../../lib/utils";
+import { AgentRateLimitPropertyValue } from "../AgentRateLimitGauge";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
 import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
@@ -116,6 +119,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { IssueContextUsageRow } from "./context-usage-row";
 import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
@@ -135,6 +139,7 @@ import {
   TaskDetailSubtasksPanel,
   type TaskDetailRelationItem,
 } from "../task-detail/TaskDetailRelationsPanel";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 function splitMiddleTruncation(value: string): { prefix: string; suffix: string } | null {
   const splitAt = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
@@ -211,6 +216,8 @@ interface IssuePropertiesProps {
   documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
   /** Render only the Properties body when a parent owns the side-panel tabs. */
   sidePanelContentOnly?: boolean;
+  /** Overrides the fetched Context row (Storybook fixtures); null hides it. */
+  contextUsage?: import("react").ReactNode;
 }
 
 export interface IssuePropertiesDocumentDeepLink {
@@ -249,6 +256,7 @@ export function IssueProperties({
   checkingMonitorNow = false,
   documentDeepLink,
   sidePanelContentOnly = false,
+  contextUsage,
 }: IssuePropertiesProps) {
   const policyResult = useExecutionPolicy(issue.executionPolicy);
   const policyAvailable = policyResult.success;
@@ -428,6 +436,16 @@ export function IssueProperties({
     queryFn: () => agentsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const assigneeRuntimeAgentId = issue.assigneeAgentId ?? null;
+  const { data: assigneeRuntimeState } = useQuery({
+    queryKey: queryKeys.agents.runtimeState(assigneeRuntimeAgentId ?? ""),
+    queryFn: () => agentsApi.runtimeState(assigneeRuntimeAgentId!, companyId ?? undefined),
+    // Optional detail: a 403 for board users without agent management access
+    // is not retried by the shared policy and simply hides the row.
+    enabled: !!assigneeRuntimeAgentId && !!companyId,
+  });
+  const assigneeRateLimits = readProviderRateLimits(assigneeRuntimeState?.stateJson);
+  const assigneeRateLimitAgent = assigneeRuntimeAgentId ? agents?.find((agent) => agent.id === assigneeRuntimeAgentId) : null;
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId!),
     queryFn: () => accessApi.listUserDirectory(companyId!),
@@ -2188,7 +2206,7 @@ export function IssueProperties({
               setParentOpen(false);
             }}
           >
-            <StatusIcon status={candidate.status} displayStatus={candidate.displayStatus} className="h-3 w-3" />
+            <StatusIcon {...taskStatusIconProps(candidate)} className="h-3 w-3" />
             <span className="truncate">
               {candidate.identifier ? `${candidate.identifier} ` : ""}
               {candidate.title}
@@ -2275,7 +2293,7 @@ export function IssueProperties({
               )}
               onClick={() => toggleBlockedBy(candidate.id)}
             >
-              <StatusIcon status={candidate.status} displayStatus={candidate.displayStatus} className="h-3 w-3" />
+              <StatusIcon {...taskStatusIconProps(candidate)} className="h-3 w-3" />
               <span className="truncate">
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
@@ -2313,7 +2331,7 @@ export function IssueProperties({
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50"
             onClick={() => setSubtasksOpen(false)}
           >
-            <StatusIcon status={child.status} displayStatus={child.displayStatus} className="h-3 w-3" />
+            <StatusIcon {...taskStatusIconProps(child)} className="h-3 w-3" />
             <span className="min-w-0 truncate">
               {child.identifier ? `${child.identifier} ` : ""}
               {child.title}
@@ -2350,8 +2368,7 @@ export function IssueProperties({
       >
         <PropertyRow label="Status">
           <StatusIcon
-            status={issue.status} displayStatus={issue.displayStatus}
-            externalConversationState={issue.externalConversationState}
+            {...taskStatusIconProps(issue)}
             glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
@@ -2402,6 +2419,15 @@ export function IssueProperties({
           >
             {assigneeOptionsContent}
           </PropertyPicker>
+        ) : null}
+
+        {assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now()) ? (
+          <PropertyRow label="Usage limit">
+            <AgentRateLimitPropertyValue
+              snapshot={assigneeRateLimits}
+              detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
+            />
+          </PropertyRow>
         ) : null}
 
         <PropertyPicker
@@ -2748,6 +2774,10 @@ export function IssueProperties({
         >
           {watchdogContent}
         </PropertyPicker>
+
+        {contextUsage !== undefined
+          ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
+          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
