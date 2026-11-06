@@ -125,7 +125,6 @@ export function Projects() {
   const boardAccessQuery = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const membership = boardAccessQuery.data?.memberships?.find((m) => m.companyId === selectedCompanyId);
   // Categories management is owner/admin-gated server-side (`assertBoardCompanyOwnerOrAdmin` in
