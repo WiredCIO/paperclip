@@ -316,6 +316,7 @@ import {
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
   completeConnectionIntentSchema,
+  connectionIntentPayloadSchema,
   connectionRequestInputSchema,
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
@@ -6308,6 +6309,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/context-usage",
+  tags: ["activity"],
+  summary: "Latest context-window usage for an issue's agent session",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/heartbeat-runs/{runId}/issues",
   tags: ["activity"],
   summary: "List issues for a heartbeat run",
@@ -11400,6 +11410,7 @@ registerCurrentRoute({
   body: z
     .object({
       phase: z.enum(["requested", "authorizing", "needs_retry"]),
+      setupAccess: connectionIntentPayloadSchema.shape.setupAccess,
     })
     .strict(),
   responses: {
