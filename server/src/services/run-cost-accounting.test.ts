@@ -197,6 +197,28 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId)))[0].costCents).toBe(1);
   });
 
+  it("accepts a late copy of a subscription receipt without opening accounting debt", async () => {
+    // Receipts say "subscription"; the run row stores "subscription_included". A
+    // repeated final receipt used to look changed, which held the agent in a
+    // budget hard stop that nothing could clear.
+    const sourceId = randomUUID();
+    const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
+    const subscription = (sequence: number): UsageReceiptEnvelope => {
+      const base = receipt(owner, sourceId, sequence, 0.27);
+      return { ...base, receipt: { ...base.receipt, billingType: "subscription",
+        usageByModel: [{ model: "test", usage: base.receipt.usage!, costUsd: 0.27 }] } };
+    };
+    await persistUsageReceipt(db, subscription(1));
+    await accountRunCost(db, owner.runId);
+    const [accounted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(accounted.usageJson).toMatchObject({ billingType: "subscription_included" });
+    await persistUsageReceipt(db, subscription(2));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.costAccountingPending).toBe(false);
+    expect(run.usageJson?.accountingLateReceiptPending).not.toBe(true);
+    expect(Object.keys((run.usageJson?.accountingLateReceiptDebts ?? {}) as object)).toHaveLength(0);
+  });
+
   it("corrects authoritative same-token late money on the original charge", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
