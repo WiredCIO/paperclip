@@ -14,6 +14,8 @@ permissions:
 jobs:
   ci:
     if: github.event.action != 'labeled' || github.event.label.name == 'profile-ci' || github.event.label.name == 'full-ci'
-    # Master requires CODEOWNERS review for .github/**, including this workflow.
-    # The AWS runner group permits pr-trusted.yml@refs/heads/master.
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@master
+    # WiredCIO deploy: call this branch's own reviewed pr-trusted.yml. Upstream's
+    # copy (paperclipai/paperclip@master) moves ahead of the deploy branch and runs
+    # steps whose scripts it does not have yet, so it fails every PR regardless of
+    # its code. The ruleset on wiredcio/deploy requires review, like upstream master.
+    uses: WiredCIO/paperclip/.github/workflows/pr-trusted.yml@wiredcio/deploy

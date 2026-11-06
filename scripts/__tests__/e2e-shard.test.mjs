@@ -30,8 +30,9 @@ function readTrustedPrWorkflow() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
   assert.match(
     caller,
-    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m,
-    "pr.yml must call the trusted workflow from CODEOWNERS-protected master",
+    // WiredCIO deploy: pr.yml calls this branch's own copy (see doc/DEVELOPING.md).
+    /^\s+uses: WiredCIO\/paperclip\/\.github\/workflows\/pr-trusted\.yml@wiredcio\/deploy\s*$/m,
+    "pr.yml must call the trusted workflow from the review-protected deploy branch",
   );
   // Validate proposed workflow changes locally; CI executes the merged master version.
   return readFileSync(trustedPrWorkflow, "utf8");
