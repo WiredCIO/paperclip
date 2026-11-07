@@ -54,7 +54,7 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
      * afterward reaches this function with the same empty installs a brand-new
      * one has. The caller must say which one this is from state it read before
      * writing this callback's own grant. Only a genuinely new connection gets
-     * the open default; a reconnect leaves installs alone, even when empty.
+     * its named agents seeded; a reconnect leaves installs alone, even when empty.
      */
     isNewConnection: boolean;
   }) {
@@ -89,19 +89,22 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
     const agentIds = installs
       .filter((install) => install.targetType === "agent")
       .map((install) => install.targetId);
-    const suggestedAccess = input.suggestedDefaults.access;
-    const suggestedAccessRecord = asRecord(suggestedAccess);
+    const suggestedAccessRecord = asRecord(input.suggestedDefaults.access);
     const suggestedAgentIds = Array.isArray(suggestedAccessRecord.agentIds)
       ? suggestedAccessRecord.agentIds.filter(
           (agentId): agentId is string => typeof agentId === "string",
         )
       : [];
+    // A callback seeds reach only for agents someone named (the dedicated or
+    // subject agent). Company-wide reach is an operator choice: the wizard's
+    // Access step commits it through finishApp + putConnectionInstalls after
+    // this callback. A connection created through the API names no agent, and
+    // defaulting it to every agent mounted one client's Dataverse into another
+    // client's agent.
     const normalizedSuggestedAccess: FinishToolApp["access"] =
-      suggestedAccess === "all_agents"
-        ? "all_agents"
-        : suggestedAgentIds.length > 0
-          ? { agentIds: suggestedAgentIds }
-          : "all_agents";
+      suggestedAgentIds.length > 0
+        ? { agentIds: suggestedAgentIds }
+        : { agentIds: [] };
     // Workspace setup saves the operator's install selection before OAuth too.
     // An empty selection means no agents, not permission to apply all-agent
     // defaults after the user returns from Google.
