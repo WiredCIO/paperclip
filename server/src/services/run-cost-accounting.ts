@@ -18,6 +18,15 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
 const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
+/** A lost legacy process can never deliver its shutdown receipt, and a
+ * subscription-included turn costs nothing whatever that receipt said. Waiting
+ * would only hold the agent's budget forever. Spooled receipts still replay
+ * first, so recorded usage is never discarded. */
+function lostSubscriptionRun(run: Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode" | "errorCode" | "usageJson">) {
+  return run.runtimeMode === "legacy" && run.errorCode === "process_lost"
+    && object(run.usageJson).billingType === "subscription_included";
+}
+
 /** The source/closed-provider identity is captured before filesystem reads and
  * checked again after run arbitration. A newly closed/replaced source retries
  * rather than acknowledging evidence from an earlier spool snapshot. */
@@ -101,7 +110,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // A stop can mark the run terminal before the provider's shutdown receipt
     // arrives. Keep the debt pending instead of acknowledging an invented zero
     // and permanently discarding that late receipt.
-    if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
+    if (!preProviderFailure && !lostSubscriptionRun(run) && object(run.usageJson).accountingReceiptReady === false) return false;
     if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
@@ -194,7 +203,9 @@ function actionableRunAccounting() {
         or not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
         and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
-      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false')`,
+      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
+        or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.errorCode} = 'process_lost'
+          and ${heartbeatRuns.usageJson}->>'billingType' = 'subscription_included'))`,
     )),
   );
 }

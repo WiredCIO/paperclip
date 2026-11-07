@@ -97,8 +97,10 @@ jobs:
     if: github.repository == 'WiredCIO/paperclip'
     runs-on: [self-hosted, wiredcio-deploy]
     # Pull, restart and health check take a few minutes. The headroom covers
-    # the on-VM build fallback (a rollback to a commit CI never built).
-    timeout-minutes: 30
+    # the on-VM build fallback (a rollback to a commit CI never built): a cold
+    # build of the 17 GB image takes 20-30 minutes, so leave room for a full
+    # rebuild plus rollback.
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: read

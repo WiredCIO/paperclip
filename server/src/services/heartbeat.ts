@@ -3958,9 +3958,17 @@ export function heartbeatService(
             logger.warn({ err: error, runId: run.id }, "failed to acknowledge Stop after native process settlement");
           });
         }
+        // "settled" erases whether a cancelled run dispatched. Keep this
+        // executor's answer so a later pause can prove the run never ran.
+        const dispatchSettlement = JSON.stringify({ legacyDispatchSettlement: { adapterEntered: false } });
         await db.update(heartbeatRuns).set({
           executionStage: sql`case when ${heartbeatRuns.status} = 'cancelled' then 'settled' else ${heartbeatRuns.executionStage} end`,
           controllerLeaseExpiresAt: null,
+          ...(legacyAdapterEntered ? {} : {
+            resultJson: sql`case when ${heartbeatRuns.status} = 'cancelled'
+              then coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${dispatchSettlement}::jsonb
+              else ${heartbeatRuns.resultJson} end`,
+          }),
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
           inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));

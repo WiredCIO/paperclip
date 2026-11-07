@@ -9,20 +9,41 @@ import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidenc
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
+/** Cancellation cleanup rewrites a legacy run's stage to "settled" whether or
+ * not it dispatched, so a settled run needs a recorded pre-dispatch outcome:
+ * the executor's own adapter-entry marker, a recovery record that says no
+ * provider work started, or a stale continuation cancelled before selection. */
+function settledBeforeLegacyDispatch(run: Run) {
+  const result = run.resultJson ?? {};
+  const settlement = result.legacyDispatchSettlement as Record<string, unknown> | undefined;
+  const recovery = result.executionRecovery as Record<string, unknown> | undefined;
+  const startup = result.startupCancellation as Record<string, unknown> | undefined;
+  return settlement?.adapterEntered === false || recovery?.providerWorkStarted === false ||
+    (!run.runtimeModeResolvedAt && startup?.errorCode === "continuation_task_ownership_changed");
+}
+
 /** A legacy controller commits "dispatching" in the lease renewal that admits
  * the adapter, and that renewal only matches a running row. A cancelled run
  * still "preparing" with no process therefore never reached its adapter and
- * never can. Without this, every adapter other than paperclip_runner that was
- * stopped during setup blocked its agent's pause forever. The caller has
- * already required the controller lease to be expired. */
+ * never can. A "settled" run qualifies only with a recorded pre-dispatch
+ * outcome and no environment lease. Without this, every adapter other than
+ * paperclip_runner that was stopped during setup blocked its agent's pause
+ * forever. The caller has already required the controller lease to be expired. */
 async function isCancelledBeforeLegacyDispatch(db: Db, run: Run) {
-  if (run.status !== "cancelled" || run.runtimeMode !== "legacy" || run.executionStage !== "preparing" ||
+  if (run.status !== "cancelled" || run.runtimeMode !== "legacy" ||
       run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter ||
       run.nativeIssueId || run.nativeSessionId) return false;
+  const settled = run.executionStage === "settled" && settledBeforeLegacyDispatch(run);
+  if (run.executionStage !== "preparing" && !settled) return false;
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id), executionStartedEventPredicate(),
   )).limit(1);
-  return !execution;
+  if (execution) return false;
+  if (!settled) return true;
+  // A finalization row requires nativeIssueId, already excluded above.
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+    .where(eq(environmentLeases.heartbeatRunId, run.id)).limit(1);
+  return !lease;
 }
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
