@@ -403,6 +403,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
   });
 
+  it("settles a lost subscription process at zero instead of waiting for its receipt", async () => {
+    // ConnectAbility 2026-11-07: a VM stop killed a claude_local turn mid-run.
+    const lost = { status: "failed" as const, runtimeMode: "legacy", errorCode: "process_lost",
+      usageJson: { accountingReceiptReady: false, billingType: "subscription_included", provider: "anthropic", model: "claude" } };
+    const { runId } = await seed(lost);
+    expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+    expect(await accountRunCost(db, runId)).toBe(true);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({ costAccountingPending: false, costAccountedAt: expect.any(Date) });
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+    expect(charges.map(charge => [charge.billingType, Number(charge.costCents)])).toEqual([["subscription_included", 0]]);
+  });
+
+  it.each([
+    ["metered billing", { billingType: "metered_api" }, "process_lost"],
+    ["a stop that may still deliver its receipt", { billingType: "subscription_included" }, "cancelled"],
+  ])("keeps waiting for a missing receipt with %s", async (_case, usage, errorCode) => {
+    const { runId } = await seed({ status: "failed", runtimeMode: "legacy", errorCode,
+      usageJson: { accountingReceiptReady: false, ...usage } });
+    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+    expect(await accountRunCost(db, runId)).toBe(false);
+  });
+
   it("reconstructs the actual interrupted-service deadline and disarms after settlement", async () => {
     const { companyId } = await seed({ costAccountingPending: false });
     const startedAt = new Date();
