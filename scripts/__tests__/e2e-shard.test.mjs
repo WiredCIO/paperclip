@@ -231,7 +231,15 @@ test("runner authorization uses reserved capacity and executes metadata checks o
 test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
-  assert.match(jobs.get("gate"), /uses: paperclipai\/paperclip\/\.github\/workflows\/ci-routing\.yml@master/);
+  // WiredCIO deploy: the gate uses this branch's routing, which returns no plan,
+  // so the jobs below run their built-in matrices on every full-CI layer.
+  assert.match(jobs.get("gate"), /uses: WiredCIO\/paperclip\/\.github\/workflows\/wiredcio-ci-routing\.yml@wiredcio\/deploy/);
+  const wiredcioRouting = readFileSync(path.join(repoRoot, ".github", "workflows", "wiredcio-ci-routing.yml"), "utf8");
+  for (const output of ["runner", "full_ci", "plan", "profile_ci"]) {
+    assert.match(wiredcioRouting, new RegExp(`^ {6}${output}:\\n {8}value: \\$\\{\\{ jobs\\.gate\\.outputs\\.${output} \\}\\}$`, "m"));
+  }
+  assert.match(wiredcioRouting, /echo 'plan='/);
+  assert.match(wiredcioRouting, /^ {4}name: Select trusted runner$/m);
   const gate = readWorkflowJobs(readFileSync(routingWorkflow, "utf8")).get("gate");
 
   assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
