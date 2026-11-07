@@ -71,6 +71,7 @@ import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { projectColumnPredicate, projectIdVisible, type ProjectVisibilityResolution } from "./project-visibility.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -1089,7 +1090,11 @@ export function routineService(
     return map;
   }
 
-  async function listLatestRunByRoutineIds(companyId: string, routineIds: string[]) {
+  async function listLatestRunByRoutineIds(
+    companyId: string,
+    routineIds: string[],
+    projectVisibility?: ProjectVisibilityResolution,
+  ) {
     if (routineIds.length === 0) return new Map<string, RoutineRunSummary>();
     const rows = await db
       .selectDistinctOn([routineRuns.routineId], {
@@ -1118,6 +1123,7 @@ export function routineService(
         issueStatus: issues.status,
         issuePriority: issues.priority,
         issueUpdatedAt: issues.updatedAt,
+        issueProjectId: issues.projectId,
       })
       .from(routineRuns)
       .leftJoin(routineTriggers, eq(routineRuns.triggerId, routineTriggers.id))
@@ -1127,6 +1133,7 @@ export function routineService(
 
     const map = new Map<string, RoutineRunSummary>();
     for (const row of rows) {
+      const issueVisible = projectIdVisible(projectVisibility, row.issueProjectId);
       map.set(row.routineId, {
         id: row.id,
         companyId: row.companyId,
@@ -1140,13 +1147,13 @@ export function routineService(
         createdByRunId: row.createdByRunId,
         dispatchFingerprint: row.dispatchFingerprint,
         routineRevisionId: row.routineRevisionId,
-        linkedIssueId: row.linkedIssueId,
+        linkedIssueId: issueVisible ? row.linkedIssueId : null,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
-        linkedIssue: row.linkedIssueId
+        linkedIssue: issueVisible && row.linkedIssueId
           ? {
             id: row.linkedIssueId,
             identifier: row.issueIdentifier,
@@ -1168,7 +1175,12 @@ export function routineService(
     return map;
   }
 
-  async function listLiveIssueByRoutineIds(companyId: string, routineIds: string[]) {
+  async function listLiveIssueByRoutineIds(
+    companyId: string,
+    routineIds: string[],
+    projectVisibility?: ProjectVisibilityResolution,
+  ) {
+    const projectCondition = projectVisibility ? [projectColumnPredicate(projectVisibility, issues.projectId)] : [];
     if (routineIds.length === 0) return new Map<string, RoutineListItem["activeIssue"]>();
     const executionBoundRows = await db
       .selectDistinctOn([issues.originId], {
@@ -1195,6 +1207,7 @@ export function routineService(
           inArray(issues.originId, routineIds),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           visibleIssueCondition(),
+          ...projectCondition,
         ),
       )
       .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
@@ -1233,6 +1246,7 @@ export function routineService(
             inArray(issues.originId, missingRoutineIds),
             inArray(issues.status, OPEN_ISSUE_STATUSES),
             visibleIssueCondition(),
+            ...projectCondition,
           ),
         )
         .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
@@ -1545,7 +1559,9 @@ export function routineService(
     executor: Db = db,
     dispatchFingerprint?: string | null,
     origin?: { kind: string; id: string | null; allowLegacyDefault?: boolean },
+    projectVisibility?: ProjectVisibilityResolution,
   ) {
+    const projectCondition = projectVisibility ? [projectColumnPredicate(projectVisibility, issues.projectId)] : [];
     const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint, origin?.allowLegacyDefault);
     const originKind = origin?.kind ?? "routine_execution";
     const originId = origin?.id ?? routine.id;
@@ -1566,6 +1582,7 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           visibleIssueCondition(),
+          ...projectCondition,
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1592,6 +1609,7 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           visibleIssueCondition(),
+          ...projectCondition,
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -2055,10 +2073,12 @@ export function routineService(
 
     list: async (
       companyId: string,
-      filters?: { projectId?: string | null },
+      filters?: { projectId?: string | null; projectVisibility?: ProjectVisibilityResolution },
     ): Promise<RoutineListItem[]> => {
+      const projectVisibility = filters?.projectVisibility;
       const conditions = [eq(routines.companyId, companyId)];
       if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+      if (projectVisibility) conditions.push(projectColumnPredicate(projectVisibility, routines.projectId));
 
       const rows = await db
         .select()
@@ -2068,8 +2088,8 @@ export function routineService(
       const routineIds = rows.map((row) => row.id);
       const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine] = await Promise.all([
         listTriggersForRoutineIds(companyId, routineIds),
-        listLatestRunByRoutineIds(companyId, routineIds),
-        listLiveIssueByRoutineIds(companyId, routineIds),
+        listLatestRunByRoutineIds(companyId, routineIds, projectVisibility),
+        listLiveIssueByRoutineIds(companyId, routineIds, projectVisibility),
         listManagedRoutineMetadata(routineIds),
       ]);
       return rows.map((row) => ({
@@ -2091,9 +2111,18 @@ export function routineService(
       }));
     },
 
-    getDetail: async (id: string): Promise<RoutineDetail | null> => {
+    // `resolveProjectVisibility` runs once the routine's company is known. A routine in a
+    // project the caller cannot see is reported as missing, and every embed inherits that scope.
+    getDetail: async (
+      id: string,
+      options?: {
+        resolveProjectVisibility?: (companyId: string) => Promise<ProjectVisibilityResolution | undefined>;
+      },
+    ): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;
+      const projectVisibility = await options?.resolveProjectVisibility?.(row.companyId);
+      if (!projectIdVisible(projectVisibility, row.projectId)) return null;
       const [project, assignee, parentIssue, descriptionDocument, triggers, recentRuns, activeIssue, managedByRoutine] = await Promise.all([
         row.projectId
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
@@ -2101,7 +2130,9 @@ export function routineService(
         row.assigneeAgentId
           ? getRoutineAgentSummary(row.companyId, row.assigneeAgentId)
           : null,
-        row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
+        row.parentIssueId
+          ? issueSvc.getById(row.parentIssueId).then((issue) => (issue && projectIdVisible(projectVisibility, issue.projectId) ? issue : null))
+          : null,
         getRoutineDescriptionDocument(row.id),
         db.select().from(routineTriggers).where(and(eq(routineTriggers.routineId, row.id), eq(routineTriggers.archived, false))).orderBy(asc(routineTriggers.createdAt)),
         db
@@ -2131,6 +2162,7 @@ export function routineService(
             issueStatus: issues.status,
             issuePriority: issues.priority,
             issueUpdatedAt: issues.updatedAt,
+            issueProjectId: issues.projectId,
           })
           .from(routineRuns)
           .leftJoin(routineTriggers, eq(routineRuns.triggerId, routineTriggers.id))
@@ -2152,13 +2184,13 @@ export function routineService(
               createdByRunId: run.createdByRunId,
               dispatchFingerprint: run.dispatchFingerprint,
               routineRevisionId: run.routineRevisionId,
-              linkedIssueId: run.linkedIssueId,
+              linkedIssueId: projectIdVisible(projectVisibility, run.issueProjectId) ? run.linkedIssueId : null,
               coalescedIntoRunId: run.coalescedIntoRunId,
               failureReason: run.failureReason,
               completedAt: run.completedAt,
               createdAt: run.createdAt,
               updatedAt: run.updatedAt,
-              linkedIssue: run.linkedIssueId
+              linkedIssue: run.linkedIssueId && projectIdVisible(projectVisibility, run.issueProjectId)
                 ? {
                   id: run.linkedIssueId,
                   identifier: run.issueIdentifier,
@@ -2177,7 +2209,7 @@ export function routineService(
                 : null,
             })),
           ),
-        findLiveExecutionIssue(row),
+        findLiveExecutionIssue(row, db, undefined, undefined, projectVisibility),
         listManagedRoutineMetadata([row.id]),
       ]);
 
@@ -3096,7 +3128,11 @@ export function routineService(
       });
     },
 
-    listRuns: async (routineId: string, limit = 50): Promise<RoutineRunSummary[]> => {
+    listRuns: async (
+      routineId: string,
+      limit = 50,
+      options?: { projectVisibility?: ProjectVisibilityResolution },
+    ): Promise<RoutineRunSummary[]> => {
       const cappedLimit = Math.max(1, Math.min(limit, 200));
       const rows = await db
         .select({
@@ -3125,6 +3161,7 @@ export function routineService(
           issueStatus: issues.status,
           issuePriority: issues.priority,
           issueUpdatedAt: issues.updatedAt,
+          issueProjectId: issues.projectId,
         })
         .from(routineRuns)
         .leftJoin(routineTriggers, eq(routineRuns.triggerId, routineTriggers.id))
@@ -3146,13 +3183,13 @@ export function routineService(
         createdByRunId: row.createdByRunId,
         dispatchFingerprint: row.dispatchFingerprint,
         routineRevisionId: row.routineRevisionId,
-        linkedIssueId: row.linkedIssueId,
+        linkedIssueId: projectIdVisible(options?.projectVisibility, row.issueProjectId) ? row.linkedIssueId : null,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
-        linkedIssue: row.linkedIssueId
+        linkedIssue: projectIdVisible(options?.projectVisibility, row.issueProjectId) && row.linkedIssueId
           ? {
             id: row.linkedIssueId,
             identifier: row.issueIdentifier,
