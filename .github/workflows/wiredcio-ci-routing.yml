@@ -1,0 +1,46 @@
+name: WiredCIO CI routing
+
+# WiredCIO deploy: replaces upstream ci-routing.yml for pr-trusted.yml. Upstream's
+# gate builds its CI plan from paperclipai/paperclip@master's live task matrix and
+# planner scripts, which this branch does not carry. When upstream changed the
+# Runner Vitest lanes (paperclipai/paperclip#19646), every PR into wiredcio/deploy
+# failed with an argument this branch's lane script does not know. With no plan,
+# pr-trusted.yml runs its own built-in matrices, which match this branch.
+on:
+  workflow_call:
+    outputs:
+      runner:
+        value: ${{ jobs.gate.outputs.runner }}
+      full_ci:
+        value: ${{ jobs.gate.outputs.full_ci }}
+      plan:
+        value: ${{ jobs.gate.outputs.plan }}
+      profile_ci:
+        value: ${{ jobs.gate.outputs.profile_ci }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # The job name is part of the "ci / gate / Select trusted runner" check.
+    name: Select trusted runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.route.outputs.runner }}
+      full_ci: ${{ steps.route.outputs.full_ci }}
+      plan: ${{ steps.route.outputs.plan }}
+      profile_ci: ${{ steps.route.outputs.profile_ci }}
+    steps:
+      - name: Run the full suite from this branch's matrices
+        id: route
+        shell: bash
+        run: |
+          {
+            echo 'runner=ubuntu-latest'
+            echo 'full_ci=true'
+            echo 'plan='
+            echo 'profile_ci=false'
+          } >> "$GITHUB_OUTPUT"
+          echo '::notice title=PR CI scope::wiredcio/deploy runs the full suite from its own matrices; full_ci=true'
