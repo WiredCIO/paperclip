@@ -1111,10 +1111,15 @@ describe("sandbox managed runtime", () => {
     expect(workspaceMembers).not.toContain("clean.txt");
     expect(workspaceMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
 
-    await git(remoteWorkspaceDir, ["config", "user.name", "Paperclip Sandbox"]);
-    await git(remoteWorkspaceDir, ["config", "user.email", "sandbox@paperclip.dev"]);
+    // The worktree has no identity of its own; the sandbox copy must carry the
+    // main repository's, so an agent can commit there without inventing one.
+    expect(await git(remoteWorkspaceDir, ["config", "--local", "user.name"])).toBe("Paperclip Test");
+    expect(await git(remoteWorkspaceDir, ["config", "--local", "user.email"])).toBe("test@paperclip.dev");
     await git(remoteWorkspaceDir, ["add", "-A"]);
     await git(remoteWorkspaceDir, ["commit", "-m", "sandbox update"]);
+    expect(await git(remoteWorkspaceDir, ["log", "-1", "--format=%an <%ae>"])).toBe("Paperclip Test <test@paperclip.dev>");
+    await git(remoteWorkspaceDir, ["config", "user.name", "Paperclip Sandbox"]);
+    await git(remoteWorkspaceDir, ["config", "user.email", "sandbox@paperclip.dev"]);
     await writeFile(path.join(remoteWorkspaceDir, "tracked.txt"), "remote dirty\n", "utf8");
     await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "from sandbox\n", "utf8");
 
