@@ -9581,17 +9581,15 @@ describeEmbeddedPostgres("tool access service", () => {
         ).id,
         effect: "include",
       });
+      // A callback that names no agent seeds no reach; company-wide reach is the wizard's explicit Access choice.
       await expect(
         db
           .select()
           .from(toolConnectionInstalls)
           .where(
-            and(
-              eq(toolConnectionInstalls.connectionId, connected.connectionId),
-              eq(toolConnectionInstalls.targetType, "company"),
-            ),
+            eq(toolConnectionInstalls.connectionId, connected.connectionId),
           ),
-      ).resolves.toHaveLength(1);
+      ).resolves.toEqual([]);
 
       const [grant] = await db
         .select()
@@ -9915,17 +9913,15 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toEqual([]);
+      // A callback that names no agent seeds no reach; company-wide reach is the wizard's explicit Access choice.
       await expect(
         db
           .select()
           .from(toolConnectionInstalls)
           .where(
-            and(
-              eq(toolConnectionInstalls.connectionId, connected.connectionId),
-              eq(toolConnectionInstalls.targetType, "company"),
-            ),
+            eq(toolConnectionInstalls.connectionId, connected.connectionId),
           ),
-      ).resolves.toHaveLength(1);
+      ).resolves.toEqual([]);
 
       const agent = await createAgent(db, company.id);
       await db
@@ -10207,12 +10203,7 @@ describeEmbeddedPostgres("tool access service", () => {
           .select()
           .from(toolProfileBindings)
           .where(eq(toolProfileBindings.profileId, profileRow!.id)),
-      ).resolves.toEqual([
-        expect.objectContaining({
-          targetType: "company",
-          targetId: company.id,
-        }),
-      ]);
+      ).resolves.toEqual([]);
       await expect(
         db
           .select()
@@ -10224,17 +10215,15 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toEqual([]);
+      // A callback that names no agent seeds no reach; company-wide reach is the wizard's explicit Access choice.
       await expect(
         db
           .select()
           .from(toolConnectionInstalls)
           .where(
-            and(
-              eq(toolConnectionInstalls.connectionId, connected.connectionId),
-              eq(toolConnectionInstalls.targetType, "company"),
-            ),
+            eq(toolConnectionInstalls.connectionId, connected.connectionId),
           ),
-      ).resolves.toHaveLength(1);
+      ).resolves.toEqual([]);
       await expect(
         db
           .select()
@@ -10430,17 +10419,13 @@ describeEmbeddedPostgres("tool access service", () => {
           .map((entry) => entry.id)
           .sort(),
       );
+      // Neither the first callback nor the revival names an agent, so no reach is seeded.
       await expect(
         db
           .select()
           .from(toolProfileBindings)
           .where(eq(toolProfileBindings.profileId, retainedProfile!.id)),
-      ).resolves.toEqual([
-        expect.objectContaining({
-          targetType: "company",
-          targetId: company.id,
-        }),
-      ]);
+      ).resolves.toEqual([]);
       await expect(
         db
           .select()
@@ -10507,12 +10492,16 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       });
 
-      // A brand-new connection is seeded company-wide by design; narrow it to
-      // one agent, matching the S4Water incident's starting state, and clear
-      // the seeded default so only the explicit agent install remains.
-      await db
-        .delete(toolConnectionInstalls)
-        .where(eq(toolConnectionInstalls.connectionId, first.connectionId));
+      // A brand-new connection whose callback names no agent reaches nobody:
+      // company-wide reach must be chosen explicitly (2026-11-05, an
+      // API-created S4Water Dataverse connection defaulted to every agent).
+      await expect(
+        db
+          .select()
+          .from(toolConnectionInstalls)
+          .where(eq(toolConnectionInstalls.connectionId, first.connectionId)),
+      ).resolves.toEqual([]);
+      // Narrow it to one agent, matching the S4Water incident's starting state.
       await allowConnectionForAgent(
         db,
         company.id,
@@ -11642,28 +11631,25 @@ describeEmbeddedPostgres("tool access service", () => {
             arguments: {},
           },
         });
+      // A callback that names no agent seeds no reach, from a page or a task alike; company-wide reach is the wizard's explicit Access choice.
       for (const entry of [searchMessagesEntry, sendMessageEntry]) {
-        await expect(decide(entry)).resolves.toMatchObject(
-          host !== "page"
-            ? { decision: "deny" }
-            : { decision: "allow", reasonCode: "allow_profile" },
-        );
+        await expect(decide(entry)).resolves.toMatchObject({ decision: "deny" });
       }
+      await expect(
+        db
+          .select()
+          .from(toolProfileBindings)
+          .where(eq(toolProfileBindings.profileId, callbackProfile!.id)),
+      ).resolves.toEqual([]);
+      await expect(
+        db
+          .select()
+          .from(toolConnectionInstalls)
+          .where(
+            eq(toolConnectionInstalls.connectionId, connected.connectionId),
+          ),
+      ).resolves.toEqual([]);
       if (host !== "page") {
-        await expect(
-          db
-            .select()
-            .from(toolProfileBindings)
-            .where(eq(toolProfileBindings.profileId, callbackProfile!.id)),
-        ).resolves.toEqual([]);
-        await expect(
-          db
-            .select()
-            .from(toolConnectionInstalls)
-            .where(
-              eq(toolConnectionInstalls.connectionId, connected.connectionId),
-            ),
-        ).resolves.toEqual([]);
         await expect(
           db
             .select()
@@ -11727,6 +11713,15 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toHaveLength(host === "task" ? 0 : 1);
+      if (host !== "task") {
+        // The explicit company-wide Access choice is what grants reach.
+        for (const entry of [searchMessagesEntry, sendMessageEntry]) {
+          await expect(decide(entry)).resolves.toMatchObject({
+            decision: "allow",
+            reasonCode: "allow_profile",
+          });
+        }
+      }
       if (host === "task-all-agents") {
         await expect(decide(searchMessagesEntry, otherAgent.id)).resolves.toMatchObject({ decision: "allow" });
         expect((await service.getEffectiveToolAssignmentsForAgent(company.id, otherAgent.id)).installedConnections)
@@ -14286,7 +14281,8 @@ describeEmbeddedPostgres("tool access service", () => {
         name: "Miro DCR",
       });
       const agent = await createAgent(db, company.id);
-      const installs = reach === "company" || reach === "default"
+      // "default" names no agent, so it seeds nothing, exactly like "none".
+      const installs = reach === "company"
         ? [{ targetType: "company" as const, targetId: company.id }]
         : reach === "agent"
           ? [{ targetType: "agent" as const, targetId: agent.id }]

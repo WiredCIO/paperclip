@@ -141,6 +141,12 @@ GitHub Actions owns `pnpm-lock.yaml`.
 ## Trusted PR Workflow
 
 The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+
+WiredCIO deploy branch: `pr.yml` calls `WiredCIO/paperclip/.github/workflows/pr-trusted.yml@wiredcio/deploy`
+instead. Upstream's copy runs ahead of the deploy branch and calls scripts it does not
+have yet (for example `scripts/typecheck-test-programs.mjs`), so every deploy PR failed
+CI regardless of its code. When syncing from upstream, keep this caller.
+
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
 New workflow versions merged into master then receive runner access without a

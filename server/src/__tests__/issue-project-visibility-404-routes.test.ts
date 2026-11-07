@@ -14,6 +14,7 @@ import type { StorageService } from "../storage/types.js";
 const COMPANY_ID = "company-1";
 const DELIVERY_PROJECT_ID = "77777777-7777-4777-8777-777777777777";
 const DELIVERY_AGENT_ID = "agent-delivery";
+const UNKNOWN_PROJECT_ID = "00000000-0000-4000-8000-0000000000aa";
 const HIDDEN_ISSUE_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_COMPANY_ISSUE_ID = "22222222-2222-4222-8222-222222222222";
 const HIDDEN_ATTACHMENT_ID = "33333333-3333-4333-8333-333333333333";
@@ -177,7 +178,7 @@ function registerRouteMocks() {
     // Upstream's create/patch routes load the target project and run their
     // own project:read decision before the fork's visibility checks.
     projectService: () => ({
-      getById: vi.fn(async (id: string) => ({ id, companyId: COMPANY_ID, name: "Project", workspaces: [] })),
+      getById: vi.fn(async (id: string) => id === UNKNOWN_PROJECT_ID ? null : ({ id, companyId: COMPANY_ID, name: "Project", workspaces: [] })),
     }),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
@@ -206,9 +207,22 @@ function createStorage(): StorageService {
   } as unknown as StorageService;
 }
 
-type Role = "operator" | "owner";
+type Role = "operator" | "owner" | "agent-operator" | "agent-owner";
 
 function boardActor(role: Role) {
+  if (role === "agent-operator" || role === "agent-owner") {
+    return {
+      type: "agent",
+      agentId: "agent-caller",
+      companyId: COMPANY_ID,
+      source: "agent_jwt",
+      runId: "run-1",
+      onBehalfOfUserId: role === "agent-owner" ? "user-owner" : "user-sales",
+      onBehalfOfMemberships: [
+        { companyId: COMPANY_ID, status: "active", membershipRole: role === "agent-owner" ? "owner" : "operator" },
+      ],
+    };
+  }
   return {
     type: "board",
     userId: role === "owner" ? "user-owner" : "user-sales",
@@ -269,7 +283,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
     vi.clearAllMocks();
 
     mockAccessService.decide.mockImplementation(async (input: any) => {
-      const restricted = input.actor?.userId === "user-sales";
+      const restricted = (input.actor?.userId ?? input.actor?.onBehalfOfUserId) === "user-sales";
       const hidden =
         (input.resource.type === "issue" && input.resource.projectId === DELIVERY_PROJECT_ID) ||
         (input.resource.type === "project" && input.resource.projectId === DELIVERY_PROJECT_ID) ||
@@ -582,6 +596,8 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       probe: (app: express.Express) => request.Test;
       error: string;
       status?: number;
+      // Agents get upstream's explicit write-denial contract for a hidden parent.
+      agentDenial?: { status: number; code: string };
     }> = [
       {
         name: "POST /companies/:companyId/issues into a hidden project",
@@ -594,6 +610,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
         probe: (app) => request(app).post(`/api/companies/${COMPANY_ID}/issues`)
           .send({ title: "New", parentId: HIDDEN_ISSUE_ID }),
         error: "Parent issue not found",
+        agentDenial: { status: 403, code: "issue_write_not_visible" },
       },
       {
         name: "POST /issues/:id/children into a hidden project",
@@ -661,7 +678,7 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       },
     ];
 
-    for (const { name, probe, error, status = 404 } of moves) {
+    for (const { name, probe, error, status = 404, agentDenial } of moves) {
       it(`${name}: Sales-only operator gets ${status}`, async () => {
         const res = await probe(await createApp("operator"));
         expect(res.status).toBe(status);
@@ -671,6 +688,42 @@ describe("project visibility renders read denials as 404 (WIR-124)", { timeout: 
       it(`${name}: owner is not refused for visibility`, async () => {
         const res = await probe(await createApp("owner"));
         expect(res.body?.error).not.toBe(error);
+      });
+
+      // WIR-1389 (T5d): the same refusals for an agent acting for the user.
+      it(`${name}: agent for a Sales-only user gets ${status}`, async () => {
+        const res = await probe(await createApp("agent-operator"));
+        if (agentDenial) {
+          expect(res.status).toBe(agentDenial.status);
+          expect(res.body.details?.code).toBe(agentDenial.code);
+        } else {
+          expect(res.status).toBe(status);
+          expect(res.body).toEqual({ error });
+        }
+        expect(mockIssueService.create).not.toHaveBeenCalled();
+      });
+
+      it(`${name}: agent for an owner is not refused for visibility`, async () => {
+        const res = await probe(await createApp("agent-owner"));
+        expect(res.body?.error).not.toBe(error);
+      });
+    }
+
+    for (const role of ["operator", "agent-operator"] as const) {
+      it(`${role}: an unknown project id answers like a hidden one (create and move)`, async () => {
+        const app = await createApp(role);
+        const hiddenCreate = await request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", projectId: DELIVERY_PROJECT_ID });
+        const unknownCreate = await request(app).post(`/api/companies/${COMPANY_ID}/issues`)
+          .send({ title: "New", projectId: UNKNOWN_PROJECT_ID });
+        expect(unknownCreate.status).toBe(hiddenCreate.status);
+        expect(unknownCreate.text).toBe(hiddenCreate.text);
+        const hiddenMove = await request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+          .send({ projectId: DELIVERY_PROJECT_ID });
+        const unknownMove = await request(app).patch(`/api/issues/${VISIBLE_ISSUE_ID}`)
+          .send({ projectId: UNKNOWN_PROJECT_ID });
+        expect(unknownMove.status).toBe(hiddenMove.status);
+        expect(unknownMove.text).toBe(hiddenMove.text);
       });
     }
 
