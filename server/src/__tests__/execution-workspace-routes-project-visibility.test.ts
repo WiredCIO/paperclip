@@ -95,9 +95,11 @@ describeEmbeddedPostgres("execution workspace routes honour project visibility",
 
     const ownerId = `user-${randomUUID()}`;
     const salesOperatorId = `user-${randomUUID()}`;
+    const noGrantOperatorId = `user-${randomUUID()}`;
     await db.insert(companyMemberships).values([
       { companyId, principalType: "user", principalId: ownerId, status: "active", membershipRole: "owner" },
       { companyId, principalType: "user", principalId: salesOperatorId, status: "active", membershipRole: "operator" },
+      { companyId, principalType: "user", principalId: noGrantOperatorId, status: "active", membershipRole: "operator" },
     ]);
     await db.insert(principalPermissionGrants).values({
       companyId,
@@ -112,6 +114,8 @@ describeEmbeddedPostgres("execution workspace routes honour project visibility",
       companyId,
       owner: actorFor(companyId, ownerId, "owner"),
       salesOperator: actorFor(companyId, salesOperatorId, "operator"),
+      noGrantOperator: actorFor(companyId, noGrantOperatorId, "operator"),
+      deliveryProject: deliveryProject!,
       salesWorkspace: salesWorkspace!,
       deliveryWorkspace: deliveryWorkspace!,
       unboundWorkspace: unboundWorkspace!,
@@ -178,6 +182,39 @@ describeEmbeddedPostgres("execution workspace routes honour project visibility",
     const missing = await client.patch(`/api/execution-workspaces/${randomUUID()}`).send({ name: "x" });
     expect(hidden.status, hidden.text).toBe(404);
     expect(hidden.body).toEqual(missing.body);
+  });
+
+  it("applies the same predicate to ?summary=true and the ?projectId filter", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+    const client = request(app(fixture.salesOperator));
+    const base = `/api/companies/${fixture.companyId}/execution-workspaces`;
+
+    const summary = await client.get(`${base}?summary=true`);
+    expect(summary.status, summary.text).toBe(200);
+    expect((summary.body as Array<{ name: string }>).map((workspace) => workspace.name).sort()).toEqual(VISIBLE_NAMES);
+
+    const filtered = await client.get(`${base}?projectId=${fixture.deliveryProject.id}`);
+    expect(filtered.status, filtered.text).toBe(200);
+    expect(filtered.body).toEqual([]);
+
+    const overview = await client.get(
+      `/api/companies/${fixture.companyId}/workspace-overview?projectId=${fixture.deliveryProject.id}`,
+    );
+    expect(overview.status, overview.text).toBe(200);
+    expect(overview.body.items).toEqual([]);
+  });
+
+  it("shows an operator with no projects:access grant only project-less workspaces", async () => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+
+    expect(await listNames(fixture.noGrantOperator, fixture.companyId)).toEqual({
+      list: ["Unbound workspace"],
+      overview: ["Unbound workspace"],
+    });
+    const hidden = await request(app(fixture.noGrantOperator)).get(`/api/execution-workspaces/${fixture.salesWorkspace.id}`);
+    expect(hidden.status, hidden.text).toBe(404);
   });
 
   it("leaves an owner's list, overview and detail unnarrowed", async () => {
