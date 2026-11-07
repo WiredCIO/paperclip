@@ -68,6 +68,12 @@ export async function spoolUsageReceipt(envelope: UsageReceiptEnvelope, director
   return target;
 }
 
+/** Receipts say "api"/"subscription"; the run row and cost ledger store
+ * "metered_api"/"subscription_included". Compare in ledger vocabulary. */
+function ledgerBillingType(value: unknown) {
+  return value === "api" ? "metered_api" : value === "subscription" ? "subscription_included" : value;
+}
+
 function lateReceiptDebts(usage: Record<string, unknown>): Record<string, boolean> {
   const raw = usage.accountingLateReceiptDebts;
   const debts = Object.fromEntries(Object.entries(raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {})
@@ -127,6 +133,8 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
       || envelope.receipt.usageBasis === "session_cumulative"
       || ["provider", "biller", "model", "billingType"].some(key => {
         const value = envelope.receipt[key as keyof typeof envelope.receipt];
+        if (key === "billingType") return value !== undefined && value !== null
+          && ledgerBillingType(value) !== ledgerBillingType(previous[key]);
         return value !== undefined && value !== null && value !== previous[key];
       }) || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
       || (!rateCardOnly && incomingMoney !== null && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
@@ -174,7 +182,7 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     return { reconciliationRequired: false };
   }
   const receipt = envelope.receipt;
-  const billingType = receipt.billingType === "api" ? "metered_api" : receipt.billingType === "subscription" ? "subscription_included" : receipt.billingType ?? "unknown";
+  const billingType = (ledgerBillingType(receipt.billingType) ?? "unknown") as string;
   const oldProjection = previous.budgetExposure && typeof previous.budgetExposure === "object"
     ? previous.budgetExposure as Record<string, unknown> : {};
   const canonicalProjection = typeof oldProjection.sourceId === "string" && typeof oldProjection.sequence === "number";
@@ -241,8 +249,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
   const sameTokens = receipt?.usage && ["inputTokens", "cachedInputTokens", "outputTokens"].every(key =>
     Number(previous[key] ?? 0) === Number(receipt.usage?.[key as keyof typeof receipt.usage] ?? 0));
   const authoritative = receipt?.pricingProvenance && !["rate_card", "unknown"].includes(receipt.pricingProvenance.source);
-  const billingType = receipt?.billingType === "api" ? "metered_api"
-    : receipt?.billingType === "subscription" ? "subscription_included" : receipt?.billingType ?? "unknown";
+  const billingType = (ledgerBillingType(receipt?.billingType) ?? "unknown") as string;
   const biller = receipt?.biller ?? receipt?.provider ?? "unknown";
   const qualified = late && receipt?.complete && receipt.usageBasis !== "session_cumulative"
     && late.sourceId === previous.accountingReceiptSourceId && sameTokens && authoritative
