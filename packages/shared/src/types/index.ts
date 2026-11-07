@@ -833,6 +833,8 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueCreationSource,
+  IssueParentAdjustment,
+  IssueParentAdjustmentReason,
   IssueLabel,
   IssueWatchdog,
   IssueWatchdogStatus,

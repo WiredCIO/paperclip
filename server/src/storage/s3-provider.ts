@@ -8,8 +8,9 @@ import {
   ListObjectVersionsCommand,
 } from "@aws-sdk/client-s3";
 import { putS3Multipart } from "./s3-multipart.js";
-import { withS3FailureDiagnostics } from "./s3-failure.js";
+import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { addAbortSignal, Readable } from "node:stream";
+import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -79,6 +80,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
   });
+  retryS3RequestTimeouts(client);
 
   async function listExactVersions(key: string, signal?: AbortSignal) {
     const versions = new Set<string>(), cursors = new Set<string>();
@@ -167,6 +169,12 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         ));
 
         const stream = await toReadableStream(output.Body);
+        // Observe, do not handle: a consumer without an error listener still
+        // sees the failure exactly as it would without this one.
+        stream.on("error", function recordBodyFailure(error) {
+          recordS3BodyFailure(error, output);
+          if (stream.listenerCount("error") === 1) throw error;
+        });
         if (input.signal) addAbortSignal(input.signal, stream);
         return {
           stream,
