@@ -486,6 +486,34 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
   });
 
+  // Cancellation cleanup rewrites the stage to "settled"; claude_local makes it a conversation run.
+  const settledConversation = { executionStage: "settled", runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } } };
+
+  it.each([
+    ["the executor recorded no adapter entry", { legacyDispatchSettlement: { adapterEntered: false } }],
+    ["a workspace-busy deferral recorded no provider work", { workspaceBusy: true, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }],
+    ["a stale continuation was cancelled before selection", { startupCancellation: { errorCode: "continuation_task_ownership_changed", beforeNativeSelection: false } }],
+  ])("finishes a pause after a settled conversation run when %s", async (_case, resultJson) => {
+    const agent = await hire();
+    await cancelledDuringSetup(agent.id, { ...settledConversation, resultJson: { stopReason: "cancelled", ...resultJson } });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
+  it("still waits for a settled conversation run without a pre-dispatch outcome", async () => {
+    const agent = await hire();
+    await cancelledDuringSetup(agent.id, { ...settledConversation, resultJson: { stopReason: "cancelled" } });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
+  it("still waits for a settled pre-dispatch run that recorded an adapter invocation", async () => {
+    const agent = await hire();
+    const run = await cancelledDuringSetup(agent.id, { ...settledConversation,
+      resultJson: { stopReason: "cancelled", legacyDispatchSettlement: { adapterEntered: false } } });
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: run.id, agentId: agent.id, seq: 1,
+      eventType: "adapter.invoke", stream: "system", level: "info", message: "adapter invocation" });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
   it("does not cancel a reporting agent when its manager pauses", async () => {
     const parent = await hire();
     const [child] = await db.insert(agents).values({ companyId, name: "Report", reportsTo: parent.id,
