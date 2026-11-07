@@ -37,7 +37,9 @@ jobs:
   deploy:
     if: github.repository == 'WiredCIO/paperclip'
     runs-on: [self-hosted, wiredcio-deploy]
-    timeout-minutes: 20
+    # A cold on-VM build of the 17 GB image takes 20-30 minutes (it was cancelled
+    # at 20 on 2026-11-06), so leave room for a full rebuild plus rollback.
+    timeout-minutes: 60
     steps:
       - name: Deploy
         run: /opt/paperclip/scripts/wiredcio-deploy.sh
