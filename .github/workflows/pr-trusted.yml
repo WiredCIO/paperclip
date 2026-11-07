@@ -22,7 +22,8 @@ concurrency:
 
 jobs:
   gate:
-    uses: paperclipai/paperclip/.github/workflows/ci-routing.yml@master
+    # WiredCIO deploy: this branch's own routing; upstream's plans from its live master.
+    uses: WiredCIO/paperclip/.github/workflows/wiredcio-ci-routing.yml@wiredcio/deploy
 
   test_selection:
     name: Select Vitest files

@@ -197,6 +197,28 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId)))[0].costCents).toBe(1);
   });
 
+  it("accepts a late copy of a subscription receipt without opening accounting debt", async () => {
+    // Receipts say "subscription"; the run row stores "subscription_included". A
+    // repeated final receipt used to look changed, which held the agent in a
+    // budget hard stop that nothing could clear.
+    const sourceId = randomUUID();
+    const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
+    const subscription = (sequence: number): UsageReceiptEnvelope => {
+      const base = receipt(owner, sourceId, sequence, 0.27);
+      return { ...base, receipt: { ...base.receipt, billingType: "subscription",
+        usageByModel: [{ model: "test", usage: base.receipt.usage!, costUsd: 0.27 }] } };
+    };
+    await persistUsageReceipt(db, subscription(1));
+    await accountRunCost(db, owner.runId);
+    const [accounted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(accounted.usageJson).toMatchObject({ billingType: "subscription_included" });
+    await persistUsageReceipt(db, subscription(2));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.costAccountingPending).toBe(false);
+    expect(run.usageJson?.accountingLateReceiptPending).not.toBe(true);
+    expect(Object.keys((run.usageJson?.accountingLateReceiptDebts ?? {}) as object)).toHaveLength(0);
+  });
+
   it("corrects authoritative same-token late money on the original charge", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
@@ -379,6 +401,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(run.costAccountingPending).toBe(true);
     await db.update(heartbeatRuns).set({ usageJson: { accountingReceiptReady: true, costUsd: 0.01 } }).where(eq(heartbeatRuns.id, runId));
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+  });
+
+  it("settles a lost subscription process at zero instead of waiting for its receipt", async () => {
+    // ConnectAbility 2026-11-07: a VM stop killed a claude_local turn mid-run.
+    const lost = { status: "failed" as const, runtimeMode: "legacy", errorCode: "process_lost",
+      usageJson: { accountingReceiptReady: false, billingType: "subscription_included", provider: "anthropic", model: "claude" } };
+    const { runId } = await seed(lost);
+    expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+    expect(await accountRunCost(db, runId)).toBe(true);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({ costAccountingPending: false, costAccountedAt: expect.any(Date) });
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+    expect(charges.map(charge => [charge.billingType, Number(charge.costCents)])).toEqual([["subscription_included", 0]]);
+  });
+
+  it.each([
+    ["metered billing", { billingType: "metered_api" }, "process_lost"],
+    ["a stop that may still deliver its receipt", { billingType: "subscription_included" }, "cancelled"],
+  ])("keeps waiting for a missing receipt with %s", async (_case, usage, errorCode) => {
+    const { runId } = await seed({ status: "failed", runtimeMode: "legacy", errorCode,
+      usageJson: { accountingReceiptReady: false, ...usage } });
+    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+    expect(await accountRunCost(db, runId)).toBe(false);
   });
 
   it("reconstructs the actual interrupted-service deadline and disarms after settlement", async () => {
