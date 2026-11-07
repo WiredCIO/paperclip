@@ -10472,12 +10472,10 @@ describeEmbeddedPostgres("tool access service", () => {
           .select()
           .from(toolProfileBindings)
           .where(eq(toolProfileBindings.profileId, retainedProfile!.id)),
-      ).resolves.toEqual([
-        expect.objectContaining({
-          targetType: "company",
-          targetId: company.id,
-        }),
-      ]);
+      // CH-3: a revived connection gets its profile and entries back, but no
+      // reach. Bindings and installs are saved together now, so neither is
+      // widened to company-wide by the reconnect.
+      ).resolves.toEqual([]);
       await expect(
         db
           .select()

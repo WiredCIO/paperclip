@@ -111,10 +111,14 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
       input.connection.config.connectionMethodKey,
     ) || (input.connection.transport === "mcp_remote"
       && input.connection.config.mcpAgentAccessConfigured === true);
+    // CH-3: finishGalleryAppConnection now saves profile bindings and installs
+    // together from `access`, so a reconnect of a connection with no installs
+    // must pass no access at all; the seeded default below is for new
+    // connections only.
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0
-        ? preserveEmptyInstalls ? { agentIds: [] } : normalizedSuggestedAccess
+        ? preserveEmptyInstalls || !input.isNewConnection ? { agentIds: [] } : normalizedSuggestedAccess
         : companyInstall
           ? "all_agents"
           : { agentIds };
