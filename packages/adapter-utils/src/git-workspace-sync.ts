@@ -614,6 +614,38 @@ export async function copyCloneTree(source: string, target: string): Promise<voi
   }
 }
 
+/** Repository identity keys carried from the host checkout into the clone that lands in the sandbox. */
+const GIT_COMMIT_IDENTITY_KEYS = ["user.name", "user.email"] as const;
+
+async function readGitConfigValue(localDir: string, key: string): Promise<string | null> {
+  try {
+    const result = await runLocalGit(localDir, ["config", "--get", key], { timeout: 10_000, maxBuffer: 16 * 1024 });
+    const value = result.stdout.trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    // `git config --get` exits 1 for an unset key. Any other failure is also
+    // non-fatal here: the clone simply carries no identity, as before.
+    return null;
+  }
+}
+
+/**
+ * Copy the host checkout's effective commit identity into a clone's local config.
+ * The clone's `.git/config` is what the sandbox receives, and an agent that
+ * commits there with no identity either stops on "Author identity unknown" or
+ * invents an address that no GitHub account owns. `git config --get` run inside
+ * a worktree resolves to the main repository's config, so isolated worktree
+ * workspaces inherit the project clone's identity the same way the shared
+ * checkout does. When the host has no identity, nothing is written.
+ */
+export async function copyGitCommitIdentity(sourceDir: string, targetDir: string): Promise<void> {
+  for (const key of GIT_COMMIT_IDENTITY_KEYS) {
+    const value = await readGitConfigValue(sourceDir, key);
+    if (value === null) continue;
+    await runLocalGit(targetDir, ["config", "--local", key, value], { timeout: 10_000, maxBuffer: 16 * 1024 });
+  }
+}
+
 export async function withShallowGitWorkspaceClone<T>(
   input: {
     localDir: string;
@@ -664,6 +696,7 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    await copyGitCommitIdentity(input.localDir, cloneDir);
     for (const repository of input.snapshot.repositories ?? []) {
       await withShallowGitWorkspaceClone({
         localDir: path.join(input.localDir, repository.path),

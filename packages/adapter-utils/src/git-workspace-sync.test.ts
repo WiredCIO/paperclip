@@ -340,6 +340,60 @@ describe("git workspace sync", () => {
     });
   });
 
+  it("carries the host checkout's commit identity into the shallow clone, also from a worktree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-identity-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const worktree = path.join(rootDir, "worktree");
+    await git(repo, ["worktree", "add", "-b", "work", worktree, "HEAD"]);
+    // The worktree has no config of its own; git resolves to the main repository's.
+    expect((await lstat(path.join(worktree, ".git"))).isFile()).toBe(true);
+
+    const snapshot = await readGitWorkspaceSnapshot(worktree);
+    await withShallowGitWorkspaceClone({
+      localDir: worktree,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["config", "--local", "user.name"])).toBe("Paperclip Test");
+      expect(await git(cloneDir, ["config", "--local", "user.email"])).toBe("test@paperclip.dev");
+      await writeFile(path.join(cloneDir, "tracked.txt"), "from clone\n", "utf8");
+      await git(cloneDir, ["commit", "-am", "clone commit"]);
+      expect(await git(cloneDir, ["log", "-1", "--format=%an <%ae>"])).toBe("Paperclip Test <test@paperclip.dev>");
+    });
+  });
+
+  it("writes no identity into the shallow clone when the host checkout has none", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-identity-"));
+    cleanupDirs.push(rootDir);
+    const previousEnv = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
+    // Hide the developer's global and system identity so only repository config counts.
+    process.env.GIT_CONFIG_GLOBAL = path.join(rootDir, "absent-gitconfig");
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    try {
+      const repo = path.join(rootDir, "repo");
+      await mkdir(repo, { recursive: true });
+      await git(repo, ["init"]);
+      await git(repo, ["checkout", "-b", "main"]);
+      await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+      await git(repo, ["add", "tracked.txt"]);
+      await git(repo, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "base"]);
+
+      const snapshot = await readGitWorkspaceSnapshot(repo);
+      await withShallowGitWorkspaceClone({
+        localDir: repo,
+        snapshot: snapshot!,
+      }, async (cloneDir) => {
+        await expect(git(cloneDir, ["config", "--local", "user.name"])).rejects.toThrow();
+        await expect(git(cloneDir, ["config", "--local", "user.email"])).rejects.toThrow();
+      });
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("drops a filesystem-path origin instead of copying it into the shallow clone", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-path-origin-"));
     cleanupDirs.push(rootDir);

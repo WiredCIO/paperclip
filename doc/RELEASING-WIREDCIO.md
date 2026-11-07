@@ -9,9 +9,25 @@ item 3.3. It is separate from upstream's npm/GHCR release pipeline
 A merge to `wiredcio/deploy` **deploys to production immediately, with no
 approval step.** `.github/workflows/wiredcio-deploy.yml` runs on every push to
 that branch and executes `/opt/paperclip/scripts/wiredcio-deploy.sh` directly
-on `vm-paperclip`: `git reset --hard` to the new commit, rebuild the `server`
-image, restart it, poll `/api/health`, and roll back automatically if it
-doesn't come back healthy within 60 seconds.
+on `vm-paperclip`: `git reset --hard` to the new commit, pull the `server`
+image CI built for that commit, restart it, poll `/api/health`, and roll back
+automatically if it doesn't come back healthy.
+
+The image is built by the workflow's `build-image` job on a GitHub-hosted
+runner and pushed to `ghcr.io/wiredcio/paperclip:deploy-<sha>`, with its
+layer cache at `:deploy-buildcache`. The deploy job runs only after that
+succeeds, so a failed build never reaches the VM. The VM pulls with the run's
+own `GITHUB_TOKEN` in a throwaway docker config, so it holds no registry
+credential, and retags the image as the one compose already runs
+(`docker-server`), so the VM-local compose file needs no change. It keeps the
+running image and the one before it, and deletes older `deploy-` images.
+
+Until 2026-11-06 the VM built the image itself. That took 15-20 minutes on the
+production box and needed ~30 GB free, and it failed three deploys in a row
+that night (disk full twice, then the 20-minute job timeout). The script still
+builds on the VM as a fallback when no CI image exists for a commit: a run
+started by hand without the registry settings, or a rollback to a commit from
+before the switch.
 
 This is a deliberate choice, made explicitly on 2026-09-24 in favor of no
 human checkpoint on the deploy itself. The safety net is entirely upstream of
@@ -155,9 +171,11 @@ commit on `wiredcio/deploy` through the same PR path — there is no separate
 manual rollback command, because a revert PR going through the pipeline again
 is the tested path, and an ad hoc `git reset` on the VM outside of it is not.
 
-A failed image build (for example a full disk) does not touch the running
-container: the script resets the checkout to the previous commit and fails
-the job. A failed `docker compose up -d` takes the full rollback path.
+A failed image build in CI skips the deploy job entirely. A failed pull on
+the VM (for example a GHCR outage) does not touch the running container: the
+script resets the checkout to the previous commit and fails the job. The same
+holds for a failed fallback build on the VM. Rollback pulls (or reuses) the
+previous commit's image instead of rebuilding it. A failed `docker compose up -d` takes the full rollback path.
 
 The script decides whether there is anything to deploy by comparing the new
 commit with the commit production is actually running, not with git `HEAD`.

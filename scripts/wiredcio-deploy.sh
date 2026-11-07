@@ -83,24 +83,99 @@ compose() {
 }
 
 # Stamp the image with the commit it was built from, so /api/health reports
-# it and the next run can tell what production is really running.
+# it and the next run can tell what production is really running. Only the
+# fallback path builds here now: see acquire_image.
 build_server() {
+  # The VM disk sits at ~88-96% and the 2026-10-17 deploy of #92 died
+  # exporting the image with "no space left on device". Trim the build cache
+  # to a cap before building. Never let the prune itself fail a deploy.
+  local keep="${WIREDCIO_DEPLOY_BUILD_CACHE_KEEP:-10gb}"
+  echo "==> Pruning build cache down to ${keep}"
+  docker builder prune -f --keep-storage "$keep" || echo "==> WARN: build cache prune failed; building anyway" >&2
   compose build --build-arg "PAPERCLIP_BUILD_COMMIT=$1" server
 }
 
-# The VM disk sits at ~88-96% and the 2026-10-17 deploy of #92 died exporting
-# the image with "no space left on device". Trim the build cache to a cap
-# before building. Never let the prune itself fail a deploy.
-BUILD_CACHE_KEEP="${WIREDCIO_DEPLOY_BUILD_CACHE_KEEP:-10gb}"
-echo "==> Pruning build cache down to ${BUILD_CACHE_KEEP}"
-docker builder prune -f --keep-storage "$BUILD_CACHE_KEEP" || echo "==> WARN: build cache prune failed; building anyway" >&2
+# CI builds every deploy commit on a GitHub-hosted runner and pushes it as
+# ${WIREDCIO_DEPLOY_IMAGE_REPO}:deploy-<sha> (wiredcio-deploy.yml,
+# build-image job). Building here instead cost 15-20 minutes on the
+# production box, threw away its own cache to fit the disk, and on
+# 2026-11-06 failed three deploys in a row on disk space and the job timeout.
+#
+# The pulled image is retagged as the image compose already runs for the
+# server service, so `compose up --no-build` picks it up and the VM-local
+# compose file needs no change. GHCR_TOKEN is the run's own short-lived
+# GITHUB_TOKEN; it goes into a throwaway docker config, never the runner's.
+server_image="$(compose config --images server 2>/dev/null | head -n1 || true)"
+server_image="${server_image:-docker-server}"
+image_repo="${WIREDCIO_DEPLOY_IMAGE_REPO:-}"
 
-echo "==> Building server image"
+pull_server() {
+  local sha=$1 config status=0
+  [ -n "$image_repo" ] && [ -n "${GHCR_TOKEN:-}" ] || return 1
+  config="$(mktemp -d)"
+  printf '%s' "$GHCR_TOKEN" | docker --config "$config" login ghcr.io -u x-access-token --password-stdin >/dev/null     && docker --config "$config" pull "${image_repo}:deploy-${sha}"     && docker tag "${image_repo}:deploy-${sha}" "$server_image" || status=$?
+  rm -rf "$config"
+  return "$status"
+}
+
+# Pull the CI image for a commit, or build it here when CI never built it:
+# a run started by hand without the registry settings, or a rollback to a
+# commit from before images were built in CI.
+acquire_image() {
+  local sha=$1
+  if [ -n "$image_repo" ] && docker image inspect "${image_repo}:deploy-${sha}" >/dev/null 2>&1; then
+    echo "==> Using local image ${image_repo}:deploy-${sha}"
+    docker tag "${image_repo}:deploy-${sha}" "$server_image"
+    return
+  fi
+  if [ -n "$image_repo" ]; then
+    echo "==> Pulling ${image_repo}:deploy-${sha}"
+    pull_server "$sha" && return
+    echo "==> WARN: no CI image for ${sha}" >&2
+  fi
+  echo "==> Building server image for ${sha} on this VM"
+  build_server "$sha"
+}
+
+# Keep the image now running and the one before it (the rollback target);
+# drop older deploy images so pulled images cannot fill the disk the way
+# build cache did. Never fails the deploy.
+prune_deploy_images() {
+  [ -n "$image_repo" ] || return 0
+  docker image ls "$image_repo" --format '{{.Repository}}:{{.Tag}}' | while read -r ref; do
+    case "$ref" in
+      *":deploy-$1" | *":deploy-$2") ;;
+      *":deploy-"*) docker image rm "$ref" >/dev/null || true ;;
+    esac
+  done || true
+}
+
 # Under `set -e` a failed build used to exit right here, before any rollback,
 # leaving the checkout at the new commit while the old container kept running.
 # Nothing has been restarted yet, so the old container is still serving: put
 # the checkout back and fail the job loudly.
-if ! build_server "$after_sha"; then
+#
+# When this run was triggered by an older commit and a newer one has already
+# landed, CI may not have pushed the newer commit's image yet. Its own run is
+# queued behind this one (concurrency group wiredcio-deploy) and deploys it,
+# so skip instead of building it here.
+if [ -n "$image_repo" ] && [ -n "${WIREDCIO_DEPLOY_TRIGGER_SHA:-}" ] && [ "$after_sha" != "$WIREDCIO_DEPLOY_TRIGGER_SHA" ]   && ! docker image inspect "${image_repo}:deploy-${after_sha}" >/dev/null 2>&1 && ! pull_server "$after_sha"; then
+  echo "==> ${after_sha} is newer than this run's commit ${WIREDCIO_DEPLOY_TRIGGER_SHA} and its image is not built yet; its own run will deploy it"
+  git reset --hard "$before_sha"
+  exit 0
+fi
+if [ -n "$image_repo" ] && [ "$after_sha" = "${WIREDCIO_DEPLOY_TRIGGER_SHA:-}" ]; then
+  # CI built and pushed exactly this commit before this job started, so a
+  # failed pull is a registry problem, not a missing image. Fail without
+  # touching production rather than fall back to the slow build on the VM.
+  echo "==> Pulling ${image_repo}:deploy-${after_sha}"
+  if ! pull_server "$after_sha"; then
+    echo "==> FAILED: pulling the CI image for ${after_sha}; the running server was not touched" >&2
+    echo "==> Resetting checkout to ${before_sha}" >&2
+    git reset --hard "$before_sha"
+    exit 1
+  fi
+elif ! acquire_image "$after_sha"; then
   echo "==> FAILED: building ${after_sha}; the running server was not touched" >&2
   df -h / /var/lib/docker 2>/dev/null >&2 || true
   echo "==> Resetting checkout to ${before_sha}" >&2
@@ -134,10 +209,11 @@ wait_for_health() {
 }
 
 echo "==> Restarting server"
-if compose up -d server; then
+if compose up -d --no-build server; then
   echo "==> Waiting for health check (up to $((HEALTH_ATTEMPTS * HEALTH_INTERVAL))s)"
   if wait_for_health "$HEALTH_ATTEMPTS"; then
     echo "$after_sha" >"$deployed_marker"
+    prune_deploy_images "$after_sha" "$before_sha"
     exit 0
   fi
   echo "==> FAILED: server did not report healthy within $((HEALTH_ATTEMPTS * HEALTH_INTERVAL))s after deploying ${after_sha}" >&2
@@ -165,8 +241,8 @@ fi
 
 echo "==> Rolling back to ${before_sha}" >&2
 git reset --hard "$before_sha"
-if ! build_server "$before_sha" || ! compose up -d server; then
-  echo "==> CRITICAL: rollback build/restart of ${before_sha} failed -- production may be down" >&2
+if ! acquire_image "$before_sha" || ! compose up -d --no-build server; then
+  echo "==> CRITICAL: rollback image/restart of ${before_sha} failed -- production may be down" >&2
   compose ps server >&2 || true
   exit 1
 fi
