@@ -4969,19 +4969,27 @@ export function issueRoutes(
     return source?.projectId ?? null;
   }
 
-  // Board writes may not place an issue in a project the actor cannot see.
+  // Board and agent writes may not place an issue in a project the actor (for
+  // an agent, its responsible user) cannot see. Unknown, cross-company and
+  // hidden projects all get the same 404. `off` makes no query.
   async function assertBoardIssueProjectVisible(
     req: Request,
     companyId: string,
     projectId: string | null | undefined,
   ) {
-    if (req.actor.type !== "board") return;
-    if (await isProjectHiddenByProjectVisibility(req, access, companyId, projectId)) {
+    if (req.actor.type !== "board" && req.actor.type !== "agent") return;
+    if (!projectId || projectAccessMode() === "off") return;
+    const project = await projectsSvc.getById(projectId);
+    if (
+      !project ||
+      project.companyId !== companyId ||
+      (await isProjectHiddenByProjectVisibility(req, access, companyId, projectId))
+    ) {
       throw notFound("Project not found");
     }
   }
 
-  // Board writes may not reference an issue the actor cannot see (a workspace
+  // Board and agent writes may not reference an issue the actor cannot see (a workspace
   // inheritance source, a new blocker). Unknown, cross-company and hidden ids
   // all fail here, before any other check, so the response cannot tell them
   // apart.
@@ -4991,7 +4999,7 @@ export function issueRoutes(
     issueIds: ReadonlyArray<string | null | undefined> | null | undefined,
     hiddenError: () => Error,
   ) {
-    if (req.actor.type !== "board" || projectAccessMode() === "off" || !issueIds) return;
+    if ((req.actor.type !== "board" && req.actor.type !== "agent") || projectAccessMode() === "off" || !issueIds) return;
     const ids = new Set(
       issueIds.filter((id): id is string => typeof id === "string" && id.length > 0),
     );
