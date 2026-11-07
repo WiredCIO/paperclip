@@ -426,6 +426,28 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   return { claimKind: null, reason: "ambiguous_provider_recovery_evidence" };
 }
 
+/** A blocked run normally stays unpriced: its provider may still have worked.
+ * When the current attempt already failed before any provider session, that
+ * failure belongs to the run's recorded process, and nothing durable shows
+ * provider work, no work happened. Accounting can then release the run instead
+ * of waiting for a receipt that cannot arrive. */
+export function nativeAttemptFailedBeforeProviderSession(input: {
+  attempt: number;
+  failureDetail: Record<string, unknown> | null;
+  recoveryHistory: Array<Record<string, unknown>>;
+  processStartedAt: Date | null;
+  hasCheckpoint: boolean;
+  hasProviderEvidence: boolean;
+}): boolean {
+  const detail = input.failureDetail ?? {};
+  if (input.hasCheckpoint || input.hasProviderEvidence || detail.recoveryMode !== "bootstrap_retry" ||
+      detail.providerSessionEstablished !== false || detail.providerEventsExist !== false) return false;
+  const failure = input.recoveryHistory.findLast(entry => entry.disposition === "retryable_failure");
+  const failedAt = typeof failure?.at === "string" ? new Date(failure.at).getTime() : Number.NaN;
+  return failure?.providerAttempt === input.attempt && failure.providerSessionEstablished === false &&
+    Number.isFinite(failedAt) && (!input.processStartedAt || failedAt >= input.processStartedAt.getTime());
+}
+
 function historyEntry(input: {
   now: Date;
   restartKind: NativeRestartKind;
@@ -1106,6 +1128,11 @@ export async function claimNativeRestartRecoveries(input: {
           await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
         }
+        const unusedAttempt = !row.run.costAccountedAt && nativeAttemptFailedBeforeProviderSession({
+          attempt: row.coordinator.attempt, failureDetail: row.coordinator.failureDetail,
+          recoveryHistory: row.coordinator.recoveryHistory, processStartedAt: row.run.processStartedAt,
+          hasCheckpoint, hasProviderEvidence,
+        });
         const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
@@ -1116,6 +1143,10 @@ export async function claimNativeRestartRecoveries(input: {
             finishedAt: now,
             errorCode: "native_restart_recovery_blocked",
             error: reason,
+            ...(unusedAttempt ? {
+              usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
+              costAccountingPending: true,
+            } : {}),
             updatedAt: now,
           })
           .where(eq(heartbeatRuns.id, row.run.id))
