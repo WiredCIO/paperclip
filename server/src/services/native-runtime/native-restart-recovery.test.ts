@@ -4,8 +4,38 @@ import {
   classifyNativeRunnerRecoveryEvidence,
   evaluateNativeControllerTakeover,
   evaluateNativeProviderProcesses,
+  nativeAttemptFailedBeforeProviderSession,
   nextNativeProviderAttempt,
 } from "./native-restart-recovery.js";
+
+describe("native attempt accounting evidence", () => {
+  // AppDev 2026-11-06: Daytona rejected session.open, then a restart blocked recovery.
+  const processStartedAt = new Date("2026-11-06T16:01:32.304Z");
+  const evidence = {
+    attempt: 1,
+    failureDetail: { recoveryMode: "bootstrap_retry", providerSessionEstablished: false, providerEventsExist: false,
+      originalFailureCode: "provider_session_open_rejected" },
+    recoveryHistory: [{ at: "2026-11-06T16:01:34.812Z", reason: "provider_session_open_rejected",
+      disposition: "retryable_failure", providerAttempt: 1, providerSessionEstablished: false }],
+    processStartedAt, hasCheckpoint: false, hasProviderEvidence: false,
+  };
+
+  it("proves no provider work when the current attempt failed before a session", () => {
+    expect(nativeAttemptFailedBeforeProviderSession(evidence)).toBe(true);
+  });
+
+  it.each([
+    ["a checkpoint exists", { hasCheckpoint: true }],
+    ["provider evidence exists", { hasProviderEvidence: true }],
+    ["the failure is ambiguous", { failureDetail: { ...evidence.failureDetail, recoveryMode: "ambiguous_state" } }],
+    ["a session was established", { failureDetail: { ...evidence.failureDetail, providerSessionEstablished: true } }],
+    ["a later attempt started", { attempt: 2 }],
+    ["a newer process started after the failure", { processStartedAt: new Date("2026-11-06T16:01:40.000Z") }],
+    ["no failure was recorded", { recoveryHistory: [] }],
+  ])("keeps the run unpriced when %s", (_case, override) => {
+    expect(nativeAttemptFailedBeforeProviderSession({ ...evidence, ...override })).toBe(false);
+  });
+});
 
 describe("native restart recovery classification", () => {
   it.each([false, true])("recognizes verified staged remote evidence with target snapshot=%s", hasCheckpoint => {
