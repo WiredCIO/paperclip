@@ -5,10 +5,10 @@ import { canActorReadExecutionWorkspace, executionWorkspaceReadSqlCondition } fr
 import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   readRemoteWorkspaceAuthority,
@@ -49,7 +49,15 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+  isProjectHiddenByProjectVisibility,
+  issueListProjectVisibility,
+} from "./authz.js";
+import { projectColumnPredicate } from "../services/project-visibility.js";
 import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -102,10 +110,24 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     pluginWorkerManager: opts.pluginWorkerManager,
   });
 
-  async function assertWorkspacePrivacy(req: Request, res: Response, id: string) {
-    if (await canActorReadExecutionWorkspace(db, req.actor, id)) return true;
+  async function assertWorkspacePrivacy(
+    req: Request,
+    res: Response,
+    workspace: { id: string; companyId: string; projectId: string | null },
+  ) {
+    if (
+      !(await isProjectHiddenByProjectVisibility(req, access, workspace.companyId, workspace.projectId)) &&
+      await canActorReadExecutionWorkspace(db, req.actor, workspace.id)
+    ) return true;
     res.status(404).json({ error: "Execution workspace not found" });
     return false;
+  }
+
+  async function workspaceListReadCondition(req: Request, companyId: string): Promise<SQL<boolean>> {
+    const readCondition = await executionWorkspaceReadSqlCondition(db, req.actor);
+    const visibility = await issueListProjectVisibility(req, db, companyId);
+    if (!visibility) return readCondition;
+    return sql<boolean>`(${readCondition} and ${projectColumnPredicate(visibility, executionWorkspaces.projectId)})`;
   }
 
   async function assertExecutionWorkspaceReadAllowed(req: Request, res: Response, companyId: string) {
@@ -135,7 +157,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     assertCompanyAccess(req, companyId);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
     const filters = {
-      readCondition: await executionWorkspaceReadSqlCondition(db, req.actor),
+      readCondition: await workspaceListReadCondition(req, companyId),
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
       issueId: req.query.issueId as string | undefined,
@@ -172,7 +194,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
 
-    const overview = await svc.listOverview(companyId, parsed.data, await executionWorkspaceReadSqlCondition(db, req.actor));
+    const overview = await svc.listOverview(companyId, parsed.data, await workspaceListReadCondition(req, companyId));
     res.json(overview);
   });
 
@@ -180,7 +202,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
-    if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, workspace))) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
@@ -189,7 +211,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
-    if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, workspace))) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
@@ -212,7 +234,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     assertBoard(req);
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
-    if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, workspace))) return;
     // Opening a workspace board is a runtime-control-grade action: it hands the
     // caller an authenticated session inside the cloned instance.
     if (!(await assertRuntimeManageAllowed(req, res, workspace.companyId))) return;
@@ -285,7 +307,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
-    if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, workspace))) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     const visibleOperations = [];
@@ -305,7 +327,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
-    if (!(await assertWorkspacePrivacy(req, res, existing.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, existing))) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     const authorization = await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
@@ -1095,7 +1117,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
-    if (!(await assertWorkspacePrivacy(req, res, existing.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, existing))) return;
     assertBoard(req);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
@@ -1185,7 +1207,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
-    if (!(await assertWorkspacePrivacy(req, res, existing.id))) return;
+    if (!(await assertWorkspacePrivacy(req, res, existing))) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
