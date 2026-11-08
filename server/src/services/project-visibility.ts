@@ -171,6 +171,15 @@ export function projectColumnPredicate(
   return or(isNull(projectIdColumn), inArray(projectIdColumn, [...resolution.projectIds]))!;
 }
 
+/** In-memory counterpart of `projectColumnPredicate`: an unbound (null) project is always visible. */
+export function projectIdVisible(
+  resolution: ProjectVisibilityResolution | undefined,
+  projectId: string | null | undefined,
+): boolean {
+  if (!resolution || resolution.kind === "unrestricted" || !projectId) return true;
+  return resolution.projectIds.has(projectId);
+}
+
 /**
  * SQL predicate for an entity governed by `project_bindings` (agent,
  * tool_connection, skill, document). An entity with no binding row is

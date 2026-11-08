@@ -14,7 +14,14 @@ import {
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
-import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import {
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+  hasCompanyAccess,
+  isProjectHiddenByProjectVisibility,
+  issueListProjectVisibility,
+} from "./authz.js";
 import { badRequest, forbidden, unauthorized, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -119,6 +126,7 @@ export function routineRoutes(
   async function assertCanManageExistingRoutine(req: Request, routineId: string) {
     const routine = await svc.get(routineId);
     if (!routine || !hasCompanyAccess(req, routine.companyId)) return null;
+    if (await isProjectHiddenByProjectVisibility(req, access, routine.companyId, routine.projectId)) return null;
     assertCompanyAccess(req, routine.companyId);
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
@@ -161,7 +169,10 @@ export function routineRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const result = await svc.list(companyId, { projectId });
+    const result = await svc.list(companyId, {
+      projectId,
+      projectVisibility: await issueListProjectVisibility(req, db, companyId),
+    });
     res.json(result);
   });
 
@@ -204,7 +215,14 @@ export function routineRoutes(
   });
 
   router.get("/routines/:id", async (req, res) => {
-    const detail = await getAccessibleResource(req, res, svc.getDetail(req.params.id as string), "Routine not found");
+    const detail = await getAccessibleResource(
+      req,
+      res,
+      svc.getDetail(req.params.id as string, {
+        resolveProjectVisibility: (companyId) => issueListProjectVisibility(req, db, companyId),
+      }),
+      "Routine not found",
+    );
     if (!detail) return;
     res.json({ ...detail, canChangeResponsibleUser: await canChangeResponsibleUser(req, detail.companyId) });
   });
@@ -485,8 +503,14 @@ export function routineRoutes(
   router.get("/routines/:id/runs", async (req, res) => {
     const routine = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Routine not found");
     if (!routine) return;
+    if (await isProjectHiddenByProjectVisibility(req, access, routine.companyId, routine.projectId)) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
     const limit = Number(req.query.limit ?? 50);
-    const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50);
+    const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50, {
+      projectVisibility: await issueListProjectVisibility(req, db, routine.companyId),
+    });
     res.json(result);
   });
 
