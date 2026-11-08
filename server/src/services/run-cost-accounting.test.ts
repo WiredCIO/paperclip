@@ -491,9 +491,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
   });
 
-  it("settles a lost subscription process at zero instead of waiting for its receipt", async () => {
+  it.each([
     // ConnectAbility 2026-11-07: a VM stop killed a claude_local turn mid-run.
-    const lost = { status: "failed" as const, runtimeMode: "legacy", errorCode: "process_lost",
+    ["a lost process", "failed" as const, "process_lost"],
+    // ConnectAbility 2026-11-07 (again): a deploy restart interrupted the turn.
+    ["a server shutdown", "interrupted" as const, "server_shutdown_interrupted"],
+  ])("settles a subscription run ended by %s at zero instead of waiting for its receipt", async (_case, status, errorCode) => {
+    const lost = { status, runtimeMode: "legacy", errorCode,
       usageJson: { accountingReceiptReady: false, billingType: "subscription_included", provider: "anthropic", model: "claude" } };
     const { runId } = await seed(lost);
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);

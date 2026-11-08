@@ -31,8 +31,13 @@ const amount = (value: unknown) => typeof value === "number" && Number.isFinite(
  * subscription-included turn costs nothing whatever that receipt said. Waiting
  * would only hold the agent's budget forever. Spooled receipts still replay
  * first, so recorded usage is never discarded. */
+/** A legacy process that is gone for good: lost from under the control plane,
+ * or killed with it by a server shutdown. Neither can deliver a usage receipt. */
+const LOST_LEGACY_PROCESS_ERROR_CODES = ["process_lost", "server_shutdown_interrupted"] as const;
+
 function lostSubscriptionRun(run: Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode" | "errorCode" | "usageJson">) {
-  return run.runtimeMode === "legacy" && run.errorCode === "process_lost"
+  return run.runtimeMode === "legacy"
+    && (LOST_LEGACY_PROCESS_ERROR_CODES as readonly string[]).includes(run.errorCode ?? "")
     && object(run.usageJson).billingType === "subscription_included";
 }
 
@@ -274,7 +279,8 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // given up and the provider process is verified stopped, no producer can
     // deliver it: settle the known part as unpriced usage. A later receipt
     // still posts through late-receipt reconciliation. A lost legacy process
-    // on a subscription seat (WiredCIO) settles at $0 the same way.
+    // on a subscription seat (WiredCIO) settles at $0 the same way, whether
+    // the process vanished or a server shutdown took it down with the run.
     const receiptUnavailable = !preProviderFailure && !lostSubscriptionRun(run) && object(run.usageJson).accountingReceiptReady === false;
     const receiptClosure = receiptUnavailable ? await readNativeReceiptClosure(tx, run.id) : null;
     if (receiptUnavailable && !receiptClosure) return false;
@@ -404,7 +410,7 @@ function actionableRunAccounting(at: Date = new Date()) {
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
       sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
         or (${closedNativeReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted})
-        or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.errorCode} = 'process_lost'
+        or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.errorCode} in ('process_lost', 'server_shutdown_interrupted')
           and ${heartbeatRuns.usageJson}->>'billingType' = 'subscription_included'))`,
     )),
   );
