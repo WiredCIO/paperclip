@@ -6208,6 +6208,15 @@ export function createToolGatewayService(
     // and connections whose stored grant/catalog predates scope reduction.
     assertGoogleChatToolArgumentsSupported(connection, entry.toolName, parameters);
     assertGmailArchiveToolArgumentsSupported(connection, entry.toolName, parameters);
+    if (useDefaultTimeout) {
+      // Some servers are routinely slower than the 10s interactive default
+      // (Business Central's bc_actions_* tools), so an operator can raise the
+      // budget per connection. Still bounded by the gateway's 60s cap.
+      const configured = connection.config.toolTimeoutMs;
+      if (typeof configured === "number" && Number.isFinite(configured)) {
+        ms = timeoutMs(configured);
+      }
+    }
     if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
       ms = railwayCommandBudgetMs(parameters);
     }
@@ -6649,7 +6658,9 @@ export function createToolGatewayService(
           },
         );
       }
-      if (error instanceof Error && error.name === "AbortError") {
+      // The pinned transport surfaces our own abort as whatever error the
+      // socket or body stream raised, so trust the signal over the error name.
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         if (mcpSession) forgetMcpHttpSession(mcpSession);
         throw new ToolGatewayHttpError(
           504,
