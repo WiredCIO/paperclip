@@ -20,7 +20,7 @@ import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
 import { useTaskPluginPanels, taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import { useTaskBrowsers, useBrowserArrivals } from "@/hooks/useTaskBrowsers";
-import { WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
+import { isPreviousServerStopCause, WorkspaceExportRecovery } from "../components/WorkspaceExportRecovery";
 import { DispositionRecoveryProvider } from "../components/DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components/task-chat/composer-run-settings";
@@ -1207,6 +1207,7 @@ type IssueDetailChatTabProps = {
   blockedBy: Issue["blockedBy"];
   liveIssueIds: ReadonlySet<string>;
   blockerAttention: Issue["blockerAttention"] | null;
+  stalledDependencies?: Issue["stalledDependencies"];
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
@@ -1373,6 +1374,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockedBy,
   liveIssueIds,
   blockerAttention,
+  stalledDependencies,
   successfulRunHandoff,
   scheduledRetry,
   recoveryAction,
@@ -2688,9 +2690,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             blockedBy={blockedBy ?? []}
             liveIssueIds={liveIssueIds}
             blockerAttention={blockerAttention}
+            stalledDependencies={stalledDependencies}
             successfulRunHandoff={successfulRunHandoff}
             scheduledRetry={scheduledRetry}
-            recoveryAction={recoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : recoveryAction ?? null}
+            recoveryAction={isPreviousServerStopCause(recoveryAction?.cause) ? null : recoveryAction ?? null}
             onResolveRecoveryAction={onResolveRecoveryAction}
             onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
             reissueIsolatedRecoveryActionPending={
@@ -8188,7 +8191,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               action={issue.activeRecoveryAction ?? null} />
           )}
           {resolvedDetailTab === "chat" && (
-            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
+            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption} blockers={issue.blockedBy}
               issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
                 && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
@@ -8562,9 +8565,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockedBy={issue.blockedBy ?? []}
                   liveIssueIds={liveIssueIds}
                   blockerAttention={issue.blockerAttention ?? null}
+                  stalledDependencies={issue.stalledDependencies}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={issue.interruption?.responsibility === "system" || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
+                  recoveryAction={issue.interruption?.responsibility === "system" || isPreviousServerStopCause(issue.activeRecoveryAction?.cause) ? null : issue.activeRecoveryAction ?? null}
                   onResolveRecoveryAction={handleResolveRecoveryAction}
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
