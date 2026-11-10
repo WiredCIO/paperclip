@@ -65,7 +65,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, chatConversations, companies, executionWorkspaces, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { sha256Digest } from "../services/feedback-redaction.js";
 import {
@@ -140,7 +140,8 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess, isProjectHiddenByProjectVisibility } from "./authz.js";
+import { projectAccessMode } from "../services/project-visibility.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -828,6 +829,29 @@ export function agentRoutes(
     if (await actorCanReadRun(req, run)) return true;
     res.status(404).json({ error: notFoundMessage });
     return false;
+  }
+
+  // Only `enforce` narrows, so `off` and `shadow` run no extra queries here.
+  async function projectHiddenWorkspaceIds(req: Request, companyId: string, workspaceIds: unknown[]) {
+    const hidden = new Set<string>();
+    if (projectAccessMode() !== "enforce") return hidden;
+    const ids = [...new Set(workspaceIds.filter((id): id is string => typeof id === "string" && id === id.trim() && isUuidLike(id)))];
+    if (ids.length === 0) return hidden;
+    const rows = await db
+      .select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId })
+      .from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, ids)));
+    const projectHidden = new Map<string, boolean>();
+    for (const row of rows) {
+      if (!row.projectId) continue;
+      let isHidden = projectHidden.get(row.projectId);
+      if (isHidden === undefined) {
+        isHidden = await isProjectHiddenByProjectVisibility(req, access, companyId, row.projectId);
+        projectHidden.set(row.projectId, isHidden);
+      }
+      if (isHidden) hidden.add(row.id);
+    }
+    return hidden;
   }
 
   // The company-scoped adapter login-session service. It runs the device-login
@@ -7782,8 +7806,18 @@ export function agentRoutes(
 
     const executionWorkspaceId = asNonEmptyString(run.executionWorkspaceId);
     const operations = await workspaceOperations.listForRun(runId, executionWorkspaceId);
+    const hiddenWorkspaceIds = await projectHiddenWorkspaceIds(
+      req,
+      run.companyId,
+      [executionWorkspaceId, ...operations.map((operation) => operation.executionWorkspaceId)],
+    );
+    if (executionWorkspaceId && hiddenWorkspaceIds.has(executionWorkspaceId)) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
     const visibleOperations = [];
     for (const operation of operations) {
+      if (operation.executionWorkspaceId && hiddenWorkspaceIds.has(operation.executionWorkspaceId)) continue;
       if (await canActorReadWorkspaceOperation(db, access, req.actor, operation)) visibleOperations.push(operation);
     }
     res.json(redactCurrentUserValue(visibleOperations, await getCurrentUserRedactionOptions()));
@@ -7794,7 +7828,11 @@ export function agentRoutes(
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
     if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId))) return;
-    if (!(await canActorReadWorkspaceOperation(db, access, req.actor, operation))) {
+    const hiddenWorkspaceIds = await projectHiddenWorkspaceIds(req, operation.companyId, [operation.executionWorkspaceId]);
+    if (
+      (operation.executionWorkspaceId && hiddenWorkspaceIds.has(operation.executionWorkspaceId)) ||
+      !(await canActorReadWorkspaceOperation(db, access, req.actor, operation))
+    ) {
       res.status(404).json({ error: "Workspace operation not found" });
       return;
     }
