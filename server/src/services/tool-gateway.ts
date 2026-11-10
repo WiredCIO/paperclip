@@ -41,7 +41,11 @@ import { runIdentityContexts } from "@paperclipai/db";
 import { executeSpekoVoiceTool, spekoToolsForSession } from "./voice/speko-agent-tools.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
-import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
+import {
+  NO_MANAGED_GITHUB_IDENTITY,
+  resolveAgentScopedGitHubOrganizationGrant,
+  resolveManagedGitHubIdentitySelection,
+} from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
@@ -3030,6 +3034,14 @@ export function createToolGatewayService(
             allowStandingDelegation: false,
           },
         );
+        if (!selected.grant && selected.error === NO_MANAGED_GITHUB_IDENTITY) {
+          const scoped = await resolveAgentScopedGitHubOrganizationGrant(
+            db,
+            session.companyId,
+            session.agentId,
+          );
+          if (scoped) selected = { ...selected, grant: scoped };
+        }
         if (!selected.grant)
           throw new ToolGatewayHttpError(
             409,
@@ -4196,7 +4208,7 @@ export function createToolGatewayService(
             github: {
               status: "available",
               login: grant.providerTenant?.github?.login,
-              source: grant.kind === "agent" ? "dedicated" : "personal",
+              source: grant.kind === "user" ? "personal" : "dedicated",
               connectionId: connection.id,
               grantId: grant.id,
               authenticationMode: "managed",
@@ -4217,7 +4229,7 @@ export function createToolGatewayService(
             github: {
               status: "unavailable",
               reason: "GitHub authorization is unavailable",
-              source: grant.kind === "agent" ? "dedicated" : "personal",
+              source: grant.kind === "user" ? "personal" : "dedicated",
             },
           })
           .where(
@@ -4691,13 +4703,21 @@ export function createToolGatewayService(
         connection.transportConfig?.sourceTemplateKey === "github")
     ) {
       const captured = githubOperationCredentials.get(session);
-      const selected = captured
+      let selected = captured
         ? { grant: captured.grant, error: undefined }
         : await resolveManagedGitHubIdentitySelection(db, session.companyId, {
             agentId: session.agentId,
             responsibleUserId: session.responsibleUserId,
             allowStandingDelegation: false,
           });
+      if (!selected.grant && selected.error === NO_MANAGED_GITHUB_IDENTITY) {
+        const scoped = await resolveAgentScopedGitHubOrganizationGrant(
+          db,
+          session.companyId,
+          session.agentId,
+        );
+        if (scoped) selected = { grant: scoped, error: undefined };
+      }
       if (!selected.grant || selected.grant.connectionId !== connection.id) {
         throw new ToolGatewayHttpError(
           409,
