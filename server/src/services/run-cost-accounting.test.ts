@@ -501,7 +501,8 @@ const support = await getEmbeddedPostgresTestSupport();
     // AppDev 2026-11-10: the adapter failed and released its controller lease.
     ["a failure", "failed" as const, "workspace_restore_failed"],
     ["a timeout", "timed_out" as const, "timeout"],
-  ])("settles a subscription run ended by %s at zero instead of waiting for its receipt", async (_case, status, errorCode, resultJson = {}) => {
+  ] as [string, "failed" | "interrupted" | "cancelled" | "timed_out", string, Record<string, unknown>?][])(
+    "settles a subscription run ended by %s at zero instead of waiting for its receipt", async (_case, status, errorCode, resultJson = {}) => {
     const lost = { status, runtimeMode: "legacy", errorCode, resultJson,
       usageJson: { accountingReceiptReady: false, billingType: "subscription_included", provider: "anthropic", model: "claude" } };
     const { runId } = await seed(lost);
