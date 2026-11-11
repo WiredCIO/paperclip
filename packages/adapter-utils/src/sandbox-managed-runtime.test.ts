@@ -1381,6 +1381,74 @@ describe("sandbox managed runtime", () => {
     expect(downloadMembers.some((entry) => entry.includes("/node_modules/") || entry.endsWith("/node_modules"))).toBe(false);
   });
 
+  it("leaves Paperclip task worktrees nested in a project checkout out of the sync and intact after restore", async () => {
+    // Isolated task workspaces live under <project checkout>/.paperclip/worktrees.
+    // A run on the project primary checkout must neither ship them to the sandbox
+    // nor merge them back: on 2026-11-10 each such restore emptied every nested
+    // worktree except heavy-dir paths, stranding their issues on validation.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-nested-task-worktrees-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "project-checkout");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(path.join(localWorkspaceDir, "src"), { recursive: true });
+    await git(localWorkspaceDir, ["init"]);
+    await git(localWorkspaceDir, ["checkout", "-b", "main"]);
+    await git(localWorkspaceDir, ["config", "user.name", "Paperclip Test"]);
+    await git(localWorkspaceDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localWorkspaceDir, "src", "tracked.ts"), "export const tracked = true;\n", "utf8");
+    await git(localWorkspaceDir, ["add", "src/tracked.ts"]);
+    await git(localWorkspaceDir, ["commit", "-m", "base"]);
+    const taskWorktreeDir = path.join(localWorkspaceDir, ".paperclip", "worktrees", "WIR-2-task");
+    await git(localWorkspaceDir, ["worktree", "add", "-b", "WIR-2-task", taskWorktreeDir, "HEAD"]);
+    await writeFile(path.join(taskWorktreeDir, "src", "task-work.ts"), "export const task = true;\n", "utf8");
+    const taskGitLink = await readFile(path.join(taskWorktreeDir, ".git"), "utf8");
+
+    const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        const buffer = Buffer.from(bytes);
+        if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
+        await writeFile(remotePath, buffer);
+      },
+      readFile: async (remotePath) => {
+        const buffer = await readFile(remotePath);
+        if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        return buffer;
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    attachFallbackSyncIn(client);
+    const prepared = await prepareSandboxManagedRuntime(sandboxRuntimeInput(sandboxSpec("sandbox-1", remoteWorkspaceDir), "test-adapter", client, localWorkspaceDir));
+
+    const workspaceUpload = uploadedTars.find((entry) => path.posix.basename(entry.remotePath) === "workspace-upload.tar");
+    expect(workspaceUpload).toBeDefined();
+    const workspaceMembers = await listTarMembers(rootDir, "nested-task-worktrees-upload.tar", workspaceUpload!.bytes);
+    expect(workspaceMembers.some((entry) => entry.startsWith(".paperclip/worktrees"))).toBe(false);
+
+    await writeFile(path.join(remoteWorkspaceDir, "src", "remote-only.ts"), "export const remote = true;\n", "utf8");
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localWorkspaceDir, "src", "remote-only.ts"), "utf8")).resolves.toBe("export const remote = true;\n");
+    await expect(readFile(path.join(taskWorktreeDir, ".git"), "utf8")).resolves.toBe(taskGitLink);
+    await expect(readFile(path.join(taskWorktreeDir, "src", "tracked.ts"), "utf8")).resolves.toBe("export const tracked = true;\n");
+    await expect(readFile(path.join(taskWorktreeDir, "src", "task-work.ts"), "utf8")).resolves.toBe("export const task = true;\n");
+    expect(downloadedTars).toHaveLength(1);
+    const downloadMembers = await listTarMembers(rootDir, "nested-task-worktrees-download.tar", downloadedTars[0]!.bytes);
+    expect(downloadMembers.some((entry) => entry.startsWith(".paperclip/worktrees"))).toBe(false);
+  });
+
   it.each(["symlink", "root_symlink", "root_alias", "root_alias_retarget", "case_alias", "EACCES", "EIO", "ENOENT"])("handles an overlay source changed after the snapshot: %s", async (change) => {
     // The runtime pins a realpath root before staging. Match that spelling so
     // injected I/O errors also reach the selected file on macOS's /var alias.
