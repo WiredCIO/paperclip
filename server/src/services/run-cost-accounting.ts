@@ -35,10 +35,20 @@ const amount = (value: unknown) => typeof value === "number" && Number.isFinite(
  * or killed with it by a server shutdown. Neither can deliver a usage receipt. */
 const LOST_LEGACY_PROCESS_ERROR_CODES = ["process_lost", "server_shutdown_interrupted"] as const;
 
-function lostSubscriptionRun(run: Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode" | "errorCode" | "usageJson">) {
-  return run.runtimeMode === "legacy"
-    && (LOST_LEGACY_PROCESS_ERROR_CODES as readonly string[]).includes(run.errorCode ?? "")
-    && object(run.usageJson).billingType === "subscription_included";
+/** Also gone: a stop the executor acknowledged, or a failure/timeout whose
+ * controller lease has lapsed. Such a run's last receipt is incomplete by nature
+ * (usageComplete=false), so waiting for a ready one only refuses the agent's next
+ * wake (ConnectAbility and Sales Engineer after a user Stop, AppDev after
+ * workspace_restore_failed, 2026-11-10). A receipt that still lands afterwards
+ * posts through late-receipt reconciliation. Keep in step with the SQL in
+ * actionableRunAccounting. */
+function lostSubscriptionRun(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "usageJson" | "resultJson" | "controllerLeaseExpiresAt">, at: Date = new Date()) {
+  if (run.runtimeMode !== "legacy" || object(run.usageJson).billingType !== "subscription_included") return false;
+  if ((LOST_LEGACY_PROCESS_ERROR_CODES as readonly string[]).includes(run.errorCode ?? "")) return true;
+  if (run.status === "cancelled") return object(object(run.resultJson).executionCancellation).state === "acknowledged";
+  return (run.status === "failed" || run.status === "timed_out")
+    && (!run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt <= at);
 }
 
 /** The source/closed-provider identity is captured before filesystem reads and
@@ -410,8 +420,11 @@ function actionableRunAccounting(at: Date = new Date()) {
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
       sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
         or (${closedNativeReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted})
-        or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.errorCode} in ('process_lost', 'server_shutdown_interrupted')
-          and ${heartbeatRuns.usageJson}->>'billingType' = 'subscription_included'))`,
+        or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.usageJson}->>'billingType' = 'subscription_included'
+          and (${heartbeatRuns.errorCode} in ('process_lost', 'server_shutdown_interrupted')
+            or (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'acknowledged')
+            or (${heartbeatRuns.status} in ('failed', 'timed_out') and (${heartbeatRuns.controllerLeaseExpiresAt} is null
+              or ${heartbeatRuns.controllerLeaseExpiresAt} <= ${at.toISOString()}::timestamptz)))))`,
     )),
   );
 }
