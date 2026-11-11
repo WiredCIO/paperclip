@@ -496,8 +496,14 @@ const support = await getEmbeddedPostgresTestSupport();
     ["a lost process", "failed" as const, "process_lost"],
     // ConnectAbility 2026-11-07 (again): a deploy restart interrupted the turn.
     ["a server shutdown", "interrupted" as const, "server_shutdown_interrupted"],
-  ])("settles a subscription run ended by %s at zero instead of waiting for its receipt", async (_case, status, errorCode) => {
-    const lost = { status, runtimeMode: "legacy", errorCode,
+    // ConnectAbility / Sales Engineer 2026-11-10: a user Stop the executor acknowledged.
+    ["an acknowledged stop", "cancelled" as const, "operator_interrupted", { executionCancellation: { state: "acknowledged" } }],
+    // AppDev 2026-11-10: the adapter failed and released its controller lease.
+    ["a failure", "failed" as const, "workspace_restore_failed"],
+    ["a timeout", "timed_out" as const, "timeout"],
+  ] as [string, "failed" | "interrupted" | "cancelled" | "timed_out", string, Record<string, unknown>?][])(
+    "settles a subscription run ended by %s at zero instead of waiting for its receipt", async (_case, status, errorCode, resultJson = {}) => {
+    const lost = { status, runtimeMode: "legacy", errorCode, resultJson,
       usageJson: { accountingReceiptReady: false, billingType: "subscription_included", provider: "anthropic", model: "claude" } };
     const { runId } = await seed(lost);
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
@@ -509,10 +515,15 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it.each([
-    ["metered billing", { billingType: "metered_api" }, "process_lost"],
-    ["a stop that may still deliver its receipt", { billingType: "subscription_included" }, "cancelled"],
-  ])("keeps waiting for a missing receipt with %s", async (_case, usage, errorCode) => {
-    const { runId } = await seed({ status: "failed", runtimeMode: "legacy", errorCode,
+    ["metered billing", { billingType: "metered_api" }, { status: "failed" as const, errorCode: "process_lost" }],
+    // The executor has not confirmed the process stopped; its receipt may still come.
+    ["a stop that may still deliver its receipt", { billingType: "subscription_included" },
+      { status: "cancelled" as const, errorCode: "cancelled" }],
+    // A failed run whose controller still holds its lease may still be reporting.
+    ["a failure whose controller is still live", { billingType: "subscription_included" },
+      { status: "failed" as const, errorCode: "adapter_failed", controllerLeaseExpiresAt: new Date(Date.now() + 3_600_000) }],
+  ])("keeps waiting for a missing receipt with %s", async (_case, usage, change) => {
+    const { runId } = await seed({ runtimeMode: "legacy", ...change,
       usageJson: { accountingReceiptReady: false, ...usage } });
     expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
     expect(await accountRunCost(db, runId)).toBe(false);
