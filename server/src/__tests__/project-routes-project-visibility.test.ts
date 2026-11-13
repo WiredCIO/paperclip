@@ -8,6 +8,7 @@ import {
   createDb,
   principalPermissionGrants,
   projectCategories,
+  projectWorkspaces,
   projects,
 } from "@paperclipai/db";
 import {
@@ -39,6 +40,7 @@ describeEmbeddedPostgres("project routes honour project visibility", () => {
     vi.unstubAllEnvs();
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(projectCategories);
     await db.delete(companies);
@@ -206,5 +208,52 @@ describeEmbeddedPostgres("project routes honour project visibility", () => {
     const summary = await request(app(outsider)).get(`/api/projects/${fixture.salesProject.id}/external-object-summary`);
     expect(summary.status, summary.text).toBe(404);
     expect(summary.body).toEqual({ error: "Project not found" });
+  });
+
+  // WIR-1385: GET /projects/:id/workspaces answers a hidden project like a missing one.
+  describe("project workspace list", () => {
+    async function seedWorkspaces(fixture: Awaited<ReturnType<typeof seed>>) {
+      await db.insert(projectWorkspaces).values([
+        { companyId: fixture.companyId, projectId: fixture.salesProject.id, name: "Sales checkout" },
+        { companyId: fixture.companyId, projectId: fixture.deliveryProject.id, name: "Delivery checkout" },
+      ]);
+    }
+
+    it("404s a hidden project's workspace list exactly like a random id and lists a visible one", async () => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+      const fixture = await seed();
+      await seedWorkspaces(fixture);
+      const client = request(app(fixture.salesOperator));
+
+      const hidden = await client.get(`/api/projects/${fixture.deliveryProject.id}/workspaces`);
+      const missing = await client.get(`/api/projects/${randomUUID()}/workspaces`);
+      expect(hidden.status, hidden.text).toBe(404);
+      expect(hidden.body).toEqual({ error: "Project not found" });
+      expect(hidden.body).toEqual(missing.body);
+
+      const visible = await client.get(`/api/projects/${fixture.salesProject.id}/workspaces`);
+      expect(visible.status, visible.text).toBe(200);
+      expect((visible.body as Array<{ name: string }>).map((workspace) => workspace.name)).toEqual(["Sales checkout"]);
+    });
+
+    it.each(["shadow", "off"])("still lists the Delivery project's workspaces in %s mode", async (mode) => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", mode);
+      const fixture = await seed();
+      await seedWorkspaces(fixture);
+
+      const res = await request(app(fixture.salesOperator)).get(`/api/projects/${fixture.deliveryProject.id}/workspaces`);
+      expect(res.status, res.text).toBe(200);
+      expect((res.body as Array<{ name: string }>).map((workspace) => workspace.name)).toEqual(["Delivery checkout"]);
+    });
+
+    it("lists an owner's hidden-category project workspaces", async () => {
+      vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+      const fixture = await seed();
+      await seedWorkspaces(fixture);
+
+      const res = await request(app(fixture.owner)).get(`/api/projects/${fixture.deliveryProject.id}/workspaces`);
+      expect(res.status, res.text).toBe(200);
+      expect(res.body).toHaveLength(1);
+    });
   });
 });
