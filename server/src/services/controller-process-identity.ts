@@ -2,13 +2,42 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readlinkSync } from "node:fs";
 import { hostname, uptime } from "node:os";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
 
 /**
  * Identity of the server process that started a provider side effect, saved
  * with its durable record. After a restart, recovery uses it to prove that the
  * starter has exited, so the side effect cannot still be in flight there.
  */
-export type ControllerProcess = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
+export type ControllerDeployment = { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId: string | null };
+export type ControllerProcess = {
+  bootId: string; pid: number; hostHash: string; processStartedAt: string | null; deployment?: ControllerDeployment;
+};
+
+export function currentControllerDeployment(env: NodeJS.ProcessEnv = process.env): ControllerDeployment | null {
+  const worker = currentWorkspaceWorker(env);
+  if (!worker) return null;
+  const volumeId = env.RAILWAY_VOLUME_ID?.trim() || null;
+  return { worker, exclusiveVolume: Boolean(volumeId && env.RAILWAY_VOLUME_MOUNT_PATH?.trim()), volumeId };
+}
+
+function deploymentField(): { deployment?: ControllerDeployment } {
+  const deployment = currentControllerDeployment();
+  return deployment ? { deployment } : {};
+}
+
+function readDeployment(value: unknown): ControllerDeployment | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const worker = record.worker as Record<string, unknown> | null | undefined;
+  if (!worker || typeof worker !== "object" || worker.provider !== "railway") return null;
+  const ids = [worker.projectId, worker.environmentId, worker.serviceId, worker.deploymentId];
+  if (ids.some(id => typeof id !== "string" || id.length === 0)) return null;
+  return { worker: { provider: "railway", projectId: ids[0] as string, environmentId: ids[1] as string,
+    serviceId: ids[2] as string, deploymentId: ids[3] as string },
+  exclusiveVolume: record.exclusiveVolume === true,
+  volumeId: typeof record.volumeId === "string" ? record.volumeId : null };
+}
 
 /**
  * The one boot id of this server process. Native coordinator claims
@@ -20,7 +49,7 @@ export type ControllerProcess = { bootId: string; pid: number; hostHash: string;
  * from any earlier boot never did.
  */
 const bootId = randomUUID();
-const UNKNOWN_PROCESS_SPACE = "unknown";
+export const UNKNOWN_PROCESS_SPACE = "unknown";
 
 /**
  * Names the space in which PIDs are comparable: one kernel boot and, on Linux,
@@ -48,7 +77,8 @@ function processSpaceHash(): string {
 
 const hostHash = processSpaceHash();
 
-async function observedProcessStartedAt(pid: number): Promise<number | null> {
+/** OS-observed start time of any PID (epoch ms), or null when it cannot be read. */
+export async function observedProcessStartedAt(pid: number): Promise<number | null> {
   try {
     const startedAt = Date.parse(await readProcessStartedAt(pid) ?? "");
     return Number.isFinite(startedAt) ? startedAt : null;
@@ -62,6 +92,8 @@ async function observedProcessStartedAt(pid: number): Promise<number | null> {
 // claim, preparation check and lease renewal. A failed read is not cached, so
 // a transient failure is retried by the next caller.
 let ownStartedAt: Promise<number | null> | undefined;
+/** The start time from the last resolved read, for `currentControllerProcessStamp`. */
+let resolvedProcessStartedAt: string | null = null;
 
 /** OS-observed start time of this server process (epoch ms), read at most once
  * successfully per process. Null when the OS cannot report it. */
@@ -71,6 +103,8 @@ export function currentProcessStartedAtMs(): Promise<number | null> {
     ownStartedAt = read;
     void read.then(value => {
       if (value === null && ownStartedAt === read) ownStartedAt = undefined;
+      // Any resolved read also feeds the no-I/O stamp.
+      if (value !== null) resolvedProcessStartedAt = new Date(value).toISOString();
     });
   }
   return ownStartedAt;
@@ -85,10 +119,35 @@ export function currentControllerBootId(): string {
   return bootId;
 }
 
+const stampListeners = new Set<() => void>();
+/** Called (synchronously, without I/O) whenever this process stamps ownership of a record. */
+export function onControllerStamp(listener: () => void): () => void {
+  stampListeners.add(listener);
+  return () => { stampListeners.delete(listener); };
+}
+function notifyStamp() {
+  for (const listener of stampListeners) {
+    try { listener(); } catch { /* a listener never blocks a stamp */ }
+  }
+}
+
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
-  return { bootId, pid: process.pid, hostHash,
-    processStartedAt: startedAt === null ? null : new Date(startedAt).toISOString() };
+  const iso = startedAt === null ? null : new Date(startedAt).toISOString();
+  resolvedProcessStartedAt = iso;
+  notifyStamp();
+  return { bootId, pid: process.pid, hostHash, processStartedAt: iso, ...deploymentField() };
+}
+
+/**
+ * This process's identity without any I/O, for stamps written on the turn
+ * path. The start time is present only once an earlier call resolved it. A
+ * stamp without one still proves exit when its PID is gone in this PID space;
+ * a live PID then stays ambiguous, which fails closed.
+ */
+export function currentControllerProcessStamp(): ControllerProcess {
+  notifyStamp();
+  return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt, ...deploymentField() };
 }
 
 export function readControllerProcess(value: unknown): ControllerProcess | null {
@@ -96,8 +155,10 @@ export function readControllerProcess(value: unknown): ControllerProcess | null 
   const record = value as Record<string, unknown>;
   if (typeof record.bootId !== "string" || typeof record.hostHash !== "string" ||
       typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return null;
+  const deployment = readDeployment(record.deployment);
   return { bootId: record.bootId, pid: record.pid, hostHash: record.hostHash,
-    processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null };
+    processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null,
+    ...(deployment ? { deployment } : {}) };
 }
 
 /**
@@ -137,6 +198,8 @@ export function processStartsDefinitelyDiffer(
 export async function controllerProcessExited(controller: ControllerProcess): Promise<boolean> {
   if (controller.bootId === bootId || hostHash === UNKNOWN_PROCESS_SPACE || controller.hostHash !== hostHash) return false;
   if (!processExists(controller.pid)) return true;
+  // Without a recorded start time a live PID can never prove exit; skip the probe.
+  if (!Number.isFinite(Date.parse(controller.processStartedAt ?? ""))) return false;
   // The PID now belongs to a live process, possibly this restarted server.
   // Only a definitely different start time proves the recorded process is gone.
   const observed = await observedProcessStartedAt(controller.pid);

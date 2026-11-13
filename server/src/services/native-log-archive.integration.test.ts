@@ -105,8 +105,8 @@ describeEmbeddedPostgres("online native historical log preservation", () => {
       expect(Buffer.concat([await archive.readRange(head, 0, 4 * 1024 * 1024),
         await archive.readRange(head, 4 * 1024 * 1024, 7)])).toEqual(bytes);
     });
-    // Moves 4 MiB through the archive journal: ~12s on a normal CI runner,
-    // which a slow runner pushes past the default 15s test timeout.
+    // A 4 MiB migration plus two segment reads against embedded PostgreSQL
+    // exceeds the 15 s default on loaded CI runners.
   }, 60_000);
 
   it.each(["expired_owner", "pending_attempt", "pending_recovery", "allocation", "process_group", "physical_owner", "task_bound"])("refuses unresolved source authority: %s", async kind => {

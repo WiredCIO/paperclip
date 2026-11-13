@@ -772,6 +772,18 @@ queueing, preparation and execution; do not add its duration to those phases.
 No text or provider event identifiers are exported. The existing duration attribute
 is `paperclip.native.span.duration_ms`.
 
+`task.time_to_first_agent_activity` uses the same start and `anchor` as
+`task.time_to_first_token`, and ends when Core commits the first event that
+`provider.time_to_first_agent_event` counts: a text delta, a tool-call start, or
+a reasoning item, whichever comes first. That is when the user sees the agent
+respond, so the native speed budgets judge this span (metric
+`time_to_first_activity`, measured from run creation). Its `eventKind` is
+`agentMessage`, `reasoning`, `toolCall` or `dynamicToolCall`. Time to first text
+stays a reported metric without a budget: tool-first adapters (for example
+Claude) often call tools before they write any text, so first text includes
+model tool work rather than control-plane latency. Like TTFT, it is a cumulative
+child of `task.provider_session`; do not add it to the phases it overlaps.
+
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports
 the tool complete. It can include provider buffering and transport. It is not
@@ -1026,7 +1038,16 @@ receives a successful HTTP delivery response. The process retains the latest
 processing backpressure, network errors and rate limits can discard the event.
 Unconfirmed captures wait 60 seconds before a later task read can try again;
 this pending cache also holds at most 1,000 entries and starts no background
-timer. A server restart or cache eviction can report an old failure again.
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
 This task-state event can accompany a separate terminal run-failure report;
 the `failure_source` tag distinguishes them.
 
