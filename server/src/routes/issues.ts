@@ -16657,9 +16657,14 @@ export function issueRoutes(
       const assigneeChanged =
         issue.assigneeAgentId !== existing.assigneeAgentId ||
         issue.assigneeUserId !== existing.assigneeUserId;
+      // Leaving backlog only means "ready for the agent" when the new status
+      // is open. A backlog issue closed straight to done/cancelled must not
+      // wake its assignee: dispatch would cancel that run on arrival as
+      // issue_terminal_status, leaving one dead run per closed issue.
       const statusChangedFromBacklog =
         existing.status === "backlog" &&
         issue.status !== "backlog" &&
+        !isClosedIssueStatus(issue.status) &&
         req.body.status !== undefined;
       const statusChangedFromClosedToTodo =
         isClosedIssueStatus(existing.status) &&

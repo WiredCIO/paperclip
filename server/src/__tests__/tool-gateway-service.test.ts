@@ -3208,6 +3208,38 @@ describeEmbeddedPostgres("tool gateway service", () => {
       userId: "board", toolName, parameters: {} })).resolves.toMatchObject({ error: { reasonCode: "oauth_insufficient_scope" } });
     expect(provider).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    ["the connection budget, reported as a timeout", undefined, "rejects"],
+    ["an explicit caller budget over the connection's", 2_000, "resolves"],
+  ] as const)("bounds a remote call by %s", async (_label, callerTimeoutMs, outcome) => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({
+      config: { ...connection.config, toolTimeoutMs: 50 },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
+    const gateway = createTestToolGatewayService(db, {
+      // The pinned transport rejects an aborted call with a socket error, not
+      // an AbortError, so the gateway has to recognise its own deadline.
+      remoteHttpRequest: (_url, init) => new Promise((resolve, reject) => {
+        const payload = JSON.parse(String(init.body)) as { id?: string };
+        const timer = setTimeout(() => resolve(Response.json({
+          jsonrpc: "2.0", id: payload.id, result: { content: [{ type: "text", text: "slow ok" }] },
+        })), 300);
+        init.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("socket hang up"));
+        }, { once: true });
+      }),
+    });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.connectionId === connection.id)!;
+    const call = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {}, timeoutMs: callerTimeoutMs });
+
+    if (outcome === "rejects") await expect(call).rejects.toMatchObject({ status: 504, reasonCode: "tool_timeout" });
+    else await expect(call).resolves.toMatchObject({ status: "completed" });
+  });
+
   it("keeps direct tools/call for generic connections without the curated session preference", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);

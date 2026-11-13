@@ -355,6 +355,50 @@ export function createGitRemoteAuthProvider(
   };
 }
 
+export const NO_MANAGED_GITHUB_IDENTITY = "No managed GitHub identity is available for this run";
+
+/**
+ * A GitHub connection installed only for this agent and authorized by an organization grant
+ * (the "Personal access token (advanced)" method) is that agent's GitHub tool credential. The
+ * owner scoped it to this one agent, so no person's identity is being replaced. Only the tool
+ * gateway uses this, and only when no managed identity exists; git still needs a managed OAuth
+ * identity or a named PAT identity. Returns undefined unless exactly one such grant exists.
+ */
+export async function resolveAgentScopedGitHubOrganizationGrant(
+  db: Db,
+  companyId: string,
+  agentId: string,
+): Promise<typeof connectionGrants.$inferSelect | undefined> {
+  const connections = await db.select().from(toolConnections).where(and(
+    eq(toolConnections.companyId, companyId),
+    eq(toolConnections.enabled, true),
+    eq(toolConnections.status, "active"),
+    or(
+      sql`${toolConnections.config}->'sourceTemplateKey' = '"github"'::jsonb`,
+      sql`${toolConnections.transportConfig}->'sourceTemplateKey' = '"github"'::jsonb`,
+    ),
+  ));
+  if (connections.length === 0) return undefined;
+  const installs = await db.select().from(toolConnectionInstalls).where(and(
+    eq(toolConnectionInstalls.companyId, companyId),
+    inArray(toolConnectionInstalls.connectionId, connections.map((connection) => connection.id)),
+  ));
+  const scopedConnectionIds = connections.map((connection) => connection.id).filter((id) => {
+    const targets = installs.filter((install) => install.connectionId === id);
+    return targets.length > 0
+      && targets.every((install) => install.targetType === "agent" && install.targetId === agentId);
+  });
+  if (scopedConnectionIds.length === 0) return undefined;
+  const grants = await db.select().from(connectionGrants).where(and(
+    eq(connectionGrants.companyId, companyId),
+    inArray(connectionGrants.connectionId, scopedConnectionIds),
+    eq(connectionGrants.kind, "organization"),
+    eq(connectionGrants.isDefault, true),
+    eq(connectionGrants.status, "active"),
+  ));
+  return grants.length === 1 ? grants[0] : undefined;
+}
+
 export async function resolveManagedGitHubIdentitySelection(
   db: Db,
   companyId: string,
@@ -449,7 +493,7 @@ export async function resolveManagedGitHubIdentitySelection(
     return {
       configured: true, identitySource,
       error: candidates.length === 0
-        ? "No managed GitHub identity is available for this run"
+        ? NO_MANAGED_GITHUB_IDENTITY
         : "More than one managed GitHub identity matches this run",
     };
   }

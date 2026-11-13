@@ -41,7 +41,11 @@ import { materializeNativeInteractionResponses } from "../services/native-runtim
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
-import { resolveManagedGitHubIdentitySelection } from "../services/git-credentials.js";
+import {
+  NO_MANAGED_GITHUB_IDENTITY,
+  resolveAgentScopedGitHubOrganizationGrant,
+  resolveManagedGitHubIdentitySelection,
+} from "../services/git-credentials.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -994,6 +998,23 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(select(f.agent.id)).resolves.toMatchObject({ configured: false });
     expect(await access.listConnectionInstalls(f.connection.id, f.company.id)).toEqual([]);
     expect((await access.getConnection(f.connection.id, f.company.id))?.config?.mcpAgentAccessConfigured).toBe(true);
+  });
+
+  it("treats an agent-only GitHub PAT connection as that agent's tool credential when no managed identity exists", async () => {
+    const f = await accessFixture("github");
+    await db.update(connectionGrants).set({ isDefault: true }).where(eq(connectionGrants.connectionId, f.connection.id));
+    const scoped = (agentId: string) => resolveAgentScopedGitHubOrganizationGrant(db, f.company.id, agentId);
+    // Company-wide: an organization grant must never stand in for a person's identity.
+    await expect(scoped(f.agent.id)).resolves.toBeUndefined();
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
+    await db.insert(toolConnectionInstalls).values({ companyId: f.company.id, connectionId: f.connection.id, targetType: "agent", targetId: f.agent.id });
+    await expect(resolveManagedGitHubIdentitySelection(db, f.company.id, { agentId: f.agent.id, responsibleUserId: "grant-user" }))
+      .resolves.toMatchObject({ configured: true, error: NO_MANAGED_GITHUB_IDENTITY });
+    await expect(scoped(f.agent.id)).resolves.toMatchObject({ connectionId: f.connection.id, kind: "organization" });
+    await expect(scoped(f.otherAgent.id)).resolves.toBeUndefined();
+    // Shared with a second agent, it is no longer one agent's credential.
+    await db.insert(toolConnectionInstalls).values({ companyId: f.company.id, connectionId: f.connection.id, targetType: "agent", targetId: f.otherAgent.id });
+    await expect(scoped(f.agent.id)).resolves.toBeUndefined();
   });
 
   it("keeps installations with a separate narrow profile when account completion is additive", async () => {

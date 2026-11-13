@@ -81,6 +81,11 @@ const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
   // Claude Code worktrees: full checkouts git lists as one untracked entry each,
   // so they ride along in the overlay and can exceed the sandbox disk.
   ".claude/worktrees",
+  // Paperclip's own isolated task worktrees (git_worktree strategy) live under
+  // the project checkout. A project-primary run must not ship or merge them
+  // back: the restore deletes every baseline file the sandbox does not return,
+  // which emptied 44 PSA task worktrees and dropped their .git links (2026-11-10).
+  ".paperclip/worktrees",
 ] as const;
 const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.flatMap((entry) => [
   entry,

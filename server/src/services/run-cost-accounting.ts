@@ -30,9 +30,24 @@ const amount = (value: unknown) => typeof value === "number" && Number.isFinite(
  * subscription-included turn costs nothing whatever that receipt said. Waiting
  * would only hold the agent's budget forever. Spooled receipts still replay
  * first, so recorded usage is never discarded. */
-function lostSubscriptionRun(run: Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode" | "errorCode" | "usageJson">) {
-  return run.runtimeMode === "legacy" && run.errorCode === "process_lost"
-    && object(run.usageJson).billingType === "subscription_included";
+/** A legacy process that is gone for good: lost from under the control plane,
+ * or killed with it by a server shutdown. Neither can deliver a usage receipt. */
+const LOST_LEGACY_PROCESS_ERROR_CODES = ["process_lost", "server_shutdown_interrupted"] as const;
+
+/** Also gone: a stop the executor acknowledged, or a failure/timeout whose
+ * controller lease has lapsed. Such a run's last receipt is incomplete by nature
+ * (usageComplete=false), so waiting for a ready one only refuses the agent's next
+ * wake (ConnectAbility and Sales Engineer after a user Stop, AppDev after
+ * workspace_restore_failed, 2026-11-10). A receipt that still lands afterwards
+ * posts through late-receipt reconciliation. Keep in step with the SQL in
+ * actionableRunAccounting. */
+function lostSubscriptionRun(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "usageJson" | "resultJson" | "controllerLeaseExpiresAt">, at: Date = new Date()) {
+  if (run.runtimeMode !== "legacy" || object(run.usageJson).billingType !== "subscription_included") return false;
+  if ((LOST_LEGACY_PROCESS_ERROR_CODES as readonly string[]).includes(run.errorCode ?? "")) return true;
+  if (run.status === "cancelled") return object(object(run.resultJson).executionCancellation).state === "acknowledged";
+  return (run.status === "failed" || run.status === "timed_out")
+    && (!run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt <= at);
 }
 
 /** The source/closed-provider identity is captured before filesystem reads and
@@ -297,8 +312,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // given up and the provider process is verified stopped, no producer can
     // deliver it: settle the known part as unpriced usage. A later receipt
     // still posts through late-receipt reconciliation. A lost legacy process
-    // on a subscription seat (WiredCIO) settles at $0 the same way, unless the
-    // capture itself failed, which settles as possibly incomplete spend.
+    // on a subscription seat (WiredCIO) settles at $0 the same way, whether
+    // the process vanished or a server shutdown took it down with the run,
+    // unless the capture itself failed, which settles as possibly incomplete spend.
     const receiptUnavailable = !preProviderFailure
       && (captureFailed || (!lostSubscriptionRun(run) && object(run.usageJson).accountingReceiptReady === false));
     const receiptClosure = captureFailed ? "timed_out" as const
@@ -456,8 +472,11 @@ function actionableRunAccounting(at: Date = new Date()) {
           and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
         sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
           or (${closedNativeReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted})
-          or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.errorCode} = 'process_lost'
-            and ${heartbeatRuns.usageJson}->>'billingType' = 'subscription_included'))`,
+          or (${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.usageJson}->>'billingType' = 'subscription_included'
+            and (${heartbeatRuns.errorCode} in ('process_lost', 'server_shutdown_interrupted')
+              or (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'acknowledged')
+              or (${heartbeatRuns.status} in ('failed', 'timed_out') and (${heartbeatRuns.controllerLeaseExpiresAt} is null
+                or ${heartbeatRuns.controllerLeaseExpiresAt} <= ${at.toISOString()}::timestamptz)))))`,
       )),
     )),
   );

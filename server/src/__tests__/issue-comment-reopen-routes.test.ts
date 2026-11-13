@@ -2354,6 +2354,32 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it("does not wake the assignee when an assigned backlog issue is closed", async () => {
+    for (const status of ["cancelled", "done"] as const) {
+      mockHeartbeatService.wakeup.mockClear();
+      const issue = makeIssue("backlog");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(
+        async (_id: string, patch: Record<string, unknown>) => ({
+          ...issue,
+          ...patch,
+          updatedAt: new Date(),
+        }),
+      );
+
+      const res = await request(await installActor(createApp()))
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ status });
+
+      expect(res.status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ reason: "issue_status_changed" }),
+      );
+    }
+  });
+
   it("wakes the assignee when an assigned done issue moves back to todo", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
