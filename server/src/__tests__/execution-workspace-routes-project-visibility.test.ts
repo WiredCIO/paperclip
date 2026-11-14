@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -182,6 +183,32 @@ describeEmbeddedPostgres("execution workspace routes honour project visibility",
     const missing = await client.patch(`/api/execution-workspaces/${randomUUID()}`).send({ name: "x" });
     expect(hidden.status, hidden.text).toBe(404);
     expect(hidden.body).toEqual(missing.body);
+  });
+
+  // WIR-1385: every mutating route 404s a hidden project's workspace like a random id, with no side effect.
+  it.each([
+    ["PATCH", "", { name: "renamed" }],
+    ["POST", "/login-handoff", {}],
+    ["POST", "/runtime-services/start", {}],
+    ["POST", "/runtime-commands/run", {}],
+    ["POST", "/reconcile-branch", { mode: "forward" }],
+  ] as const)("404s %s %s on a hidden workspace like a random id and changes nothing", async (method, suffix, body) => {
+    vi.stubEnv("PAPERCLIP_PROJECT_ACCESS_MODE", "enforce");
+    const fixture = await seed();
+    const client = request(app(fixture.salesOperator));
+    const send = (id: string) => {
+      const url = `/api/execution-workspaces/${id}${suffix}`;
+      return (method === "PATCH" ? client.patch(url) : client.post(url)).send(body);
+    };
+
+    const hidden = await send(fixture.deliveryWorkspace.id);
+    const missing = await send(randomUUID());
+    expect(hidden.status, hidden.text).toBe(404);
+    expect(hidden.body).toEqual({ error: "Execution workspace not found" });
+    expect(hidden.body).toEqual(missing.body);
+
+    const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, fixture.deliveryWorkspace.id));
+    expect(after).toEqual(fixture.deliveryWorkspace);
   });
 
   it("applies the same predicate to ?summary=true and the ?projectId filter", async () => {
